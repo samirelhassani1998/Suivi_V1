@@ -27,4 +27,9 @@ ax.set_title('Evolution du poids')
 
 # Corriger l'axe des poids et des dates
 ax.set_ylim(bottom=80, top=100)  # La plage minimale est 80 et la plage maximale est 100
+
+# Afficher toutes les dates sur l'axe des x
+ax.set_xticks(df['Date'])
+ax.set_xticklabels(df['Date'].dt.strftime('%Y-%m-%d'), rotation=45, ha='right')
+
 st.pyplot(fig)
