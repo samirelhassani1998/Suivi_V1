@@ -18,10 +18,6 @@ df['Date'] = pd.to_datetime(df['Date'], format='%d/%m/%Y') # à adapter selon le
 # Trier le DataFrame par ordre croissant en fonction de la colonne "Date"
 df = df.sort_values('Date')
 
-# Filtrer les données pour afficher uniquement les poids entre 80 et 100
-mask = (df['Poids (Kgs)'] >= 80) & (df['Poids (Kgs)'] <= 100)
-df = df[mask]
-
 # Afficher le graphique de l'évolution du poids par rapport à la date
 fig, ax = plt.subplots()
 ax.plot(df['Date'], df['Poids (Kgs)'])
@@ -30,5 +26,5 @@ ax.set_ylabel('Poids (Kgs)')
 ax.set_title('Evolution du poids')
 
 # Corriger l'axe des poids et des dates
-ax.set_ylim(bottom=0)  # La plage minimale est 0
+ax.set_ylim(bottom=80, top=100)  # La plage minimale est 80 et la plage maximale est 100
 st.pyplot(fig)
