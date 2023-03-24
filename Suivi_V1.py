@@ -6,8 +6,10 @@ import matplotlib.pyplot as plt
 url = 'https://docs.google.com/spreadsheets/d/1qPhLKvm4BREErQrm0L38DcZFG4a-K0msSzARVIG_T_U/export?format=csv'
 df = pd.read_csv(url)
 
-# Transformer la colonne "Date" en objet datetime et trier le DataFrame par ordre croissant en fonction de la colonne "Poids (Kgs)"
-df['Date'] = pd.to_datetime(df['Date'], format='%Y-%m-%d')
+# Modifier le format de la chaîne de date dans la colonne "Date"
+df['Date'] = pd.to_datetime(df['Date'], format='%d/%m/%Y') # à adapter selon le format de date utilisé
+
+# Trier le DataFrame par ordre croissant en fonction de la colonne "Poids (Kgs)" et "Date"
 df = df.sort_values(['Poids (Kgs)', 'Date'])
 
 # Afficher le graphique de l'évolution du poids par rapport à la date
