@@ -9,8 +9,8 @@ df = pd.read_csv(url)
 # Modifier le format de la chaîne de date dans la colonne "Date"
 df['Date'] = pd.to_datetime(df['Date'], format='%d/%m/%Y') # à adapter selon le format de date utilisé
 
-# Trier le DataFrame par ordre croissant en fonction de la colonne "Poids (Kgs)" et "Date"
-df = df.sort_values(['Poids (Kgs)', 'Date'])
+# Trier le DataFrame par ordre croissant en fonction de la colonne "Date"
+df = df.sort_values('Date')
 
 # Afficher le graphique de l'évolution du poids par rapport à la date
 fig, ax = plt.subplots()
@@ -21,5 +21,4 @@ ax.set_title('Evolution du poids')
 
 # Corriger l'axe des poids et des dates
 ax.set_ylim(bottom=0)  # La plage minimale est 0
-ax.invert_xaxis()  # Inverser l'axe des dates
 st.pyplot(fig)
