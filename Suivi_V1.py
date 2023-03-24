@@ -6,6 +6,9 @@ import matplotlib.pyplot as plt
 url = 'https://docs.google.com/spreadsheets/d/1qPhLKvm4BREErQrm0L38DcZFG4a-K0msSzARVIG_T_U/export?format=csv'
 df = pd.read_csv(url)
 
+# Trier le DataFrame par ordre croissant en fonction de la colonne "Poids (Kgs)"
+df = df.sort_values('Poids (Kgs)')
+
 # Afficher le graphique de l'évolution du poids par rapport à la date
 fig, ax = plt.subplots()
 ax.plot(df['Date'], df['Poids (Kgs)'])
