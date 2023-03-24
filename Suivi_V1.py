@@ -1,4 +1,3 @@
-
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -13,4 +12,7 @@ ax.plot(df['Date'], df['Poids (Kgs)'])
 ax.set_xlabel('Date')
 ax.set_ylabel('Poids (Kgs)')
 ax.set_title('Evolution du poids')
+
+# Corriger l'axe des poids
+ax.set_ylim(bottom=0)  # La plage minimale est 0
 st.pyplot(fig)
