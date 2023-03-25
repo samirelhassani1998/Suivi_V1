@@ -20,7 +20,7 @@ df = df.sort_values('Date')
 
 # Afficher le graphique de l'évolution du poids par rapport à la date
 fig, ax = plt.subplots()
-ax.plot(df['Date'], df['Poids (Kgs)'])
+ax.plot(df['Date'], df['Poids (Kgs)'], marker='o')
 ax.set_xlabel('Date')
 ax.set_ylabel('Poids (Kgs)')
 ax.set_title('Evolution du poids')
@@ -28,7 +28,7 @@ ax.set_title('Evolution du poids')
 # Corriger l'axe des poids et des dates
 ax.set_ylim(bottom=80, top=100)  # La plage minimale est 80 et la plage maximale est 100
 
-# Afficher toutes les dates sur l'axe des x
+# Afficher uniquement les dates pour lesquelles il y a des données de poids
 ax.set_xticks(df['Date'])
 ax.set_xticklabels(df['Date'].dt.strftime('%Y-%m-%d'), rotation=45, ha='right')
 
