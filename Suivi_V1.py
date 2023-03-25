@@ -30,7 +30,7 @@ plt.plot(df["Date"], df["Poids (Kgs)"], marker="o")
 plt.xlabel("Date")
 plt.ylabel("Poids (Kgs)")
 plt.title("Evolution du poids")
-plt.axhline(85, color="red", linestyle="--", label="Objectif")  # Ajouter cette ligne pour la ligne rouge à 80 kg
+plt.axhline(80, color="red", linestyle="--", label="Objectif")  # Ajouter cette ligne pour la ligne rouge à 80 kg
 plt.xlim(df["Date"].min(), df["Date"].max())
 plt.legend()
 st.pyplot(fig1)
@@ -48,4 +48,12 @@ fig2 = plt.figure()
 plt.scatter(df["Date"], df["Poids (Kgs)"], label="Données")
 plt.plot(df["Date"], reg.predict(X), color="red", label="Régression linéaire")
 plt.xlabel("Date")
-plt.ylabel("Poids (K
+plt.ylabel("Poids (Kgs)")
+plt.title("Evolution du poids avec régression linéaire")
+plt.legend()
+plt.xlim(df["Date"].min(), df["Date"].max())
+st.pyplot(fig2)
+
+# Calculer le coefficient de détermination (R²)
+r_squared = reg.score(X, y)
+st.write(f"R²: {r_squared}")
