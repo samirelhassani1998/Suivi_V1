@@ -48,3 +48,14 @@ fig.add_scatter(x=df_filtered["Date"], y=df_filtered["Poids_rolling_mean"], mode
 fig.update_layout(title="Evolution du poids")
 fig.add_hline(y=target_weight, line_dash="dash", annotation_text="Objectif", annotation_position="bottom right")
 st.plotly_chart(fig)
+
+# Histogramme de la distribution des poids
+fig2 = px.histogram(df_filtered, x="Poids (Kgs)", nbins=30, title="Distribution des poids")
+st.plotly_chart(fig2)
+
+# Prédiction de la date d'atteinte de l'objectif de poids
+df_filtered["Date_numeric"] = (df_filtered["Date"] - df_filtered["Date"].min()) / np.timedelta64(1, "D")
+X = df_filtered[["Date_numeric"]]
+y = df_filtered["Poids (Kgs)"]
+reg = LinearRegression().fit(X, y)
+days_to_target = int((target_weight - reg.intercept_)
