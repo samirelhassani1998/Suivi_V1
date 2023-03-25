@@ -58,4 +58,13 @@ df_filtered["Date_numeric"] = (df_filtered["Date"] - df_filtered["Date"].min()) 
 X = df_filtered[["Date_numeric"]]
 y = df_filtered["Poids (Kgs)"]
 reg = LinearRegression().fit(X, y)
-days_to_target = int((target_weight - reg.intercept_)
+days_to_target = int((target_weight - reg.intercept_) / reg.coef_[0])
+
+target_date = df_filtered["Date"].min() + pd.to_timedelta(days_to_target, unit="D")
+st.write(f"Date estimée pour atteindre l'objectif de poids : {target_date.date()}")
+
+# Calculer le taux de changement moyen du poids
+df_filtered["Poids_diff"] = df_filtered["Poids (Kgs)"].diff()
+mean_change_rate = df_filtered["Poids_diff"].mean()
+st.write(f"Taux de changement moyen du poids : {mean_change_rate:.2f} Kgs par jour")
+
