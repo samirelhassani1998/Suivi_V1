@@ -30,7 +30,9 @@ plt.plot(df["Date"], df["Poids (Kgs)"], marker="o")
 plt.xlabel("Date")
 plt.ylabel("Poids (Kgs)")
 plt.title("Evolution du poids")
-plt.xlim(df["Date"].min(), df["Date"].max())  # Ajouter cette ligne pour définir l'intervalle de l'axe des x
+plt.axhline(85, color="red", linestyle="--", label="Objectif")  # Ajouter cette ligne pour la ligne rouge à 80 kg
+plt.xlim(df["Date"].min(), df["Date"].max())
+plt.legend()
 st.pyplot(fig1)
 
 # Convertir les dates en nombres pour la régression linéaire
@@ -49,7 +51,7 @@ plt.xlabel("Date")
 plt.ylabel("Poids (Kgs)")
 plt.title("Evolution du poids avec régression linéaire")
 plt.legend()
-plt.xlim(df["Date"].min(), df["Date"].max())  # Ajouter cette ligne pour définir l'intervalle de l'axe des x
+plt.xlim(df["Date"].min(), df["Date"].max())
 st.pyplot(fig2)
 
 # Calculer le coefficient de détermination (R²)
