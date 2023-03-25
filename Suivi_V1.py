@@ -31,7 +31,7 @@ plt.show()
 # Convertir les dates en nombres pour la régression linéaire
 df["Date_numeric"] = (df["Date"] - df["Date"].min()) / np.timedelta64(1, "D")
 
-# Entraîner le modèle de régression linéaire
+# Entraîner le modèle de régression linéair
 X = df[["Date_numeric"]]
 y = df["Poids (Kgs)"]
 reg = LinearRegression().fit(X, y)
