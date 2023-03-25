@@ -6,7 +6,7 @@ import streamlit as st
 
 st.title("Evolution du poids")
 
-# Charger le fichier CSV à partir du lie
+# Charger le fichier CSV à partir du lien
 url = 'https://docs.google.com/spreadsheets/d/1qPhLKvm4BREErQrm0L38DcZFG4a-K0msSzARVIG_T_U/export?format=csv'
 df = pd.read_csv(url)
 
@@ -27,7 +27,7 @@ start_date = st.date_input("Date de début", df["Date"].min().date())
 end_date = st.date_input("Date de fin", df["Date"].max().date())
 
 # Filtrer le DataFrame en fonction de la plage de dates
-df_filtered = df[(df["Date"] >= start_date) & (df["Date"] <= end_date)]
+df_filtered = df[(df["Date"] >= pd.to_datetime(start_date)) & (df["Date"] <= pd.to_datetime(end_date))]
 
 poids_stats = df_filtered["Poids (Kgs)"].describe()
 st.write("Statistiques des poids :", poids_stats)
