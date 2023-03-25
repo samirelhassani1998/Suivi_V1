@@ -29,6 +29,9 @@ end_date = st.date_input("Date de fin", df["Date"].max().date())
 # Filtrer le DataFrame en fonction de la plage de dates
 df_filtered = df[(df["Date"] >= pd.to_datetime(start_date)) & (df["Date"] <= pd.to_datetime(end_date))]
 
+# Mettre à jour l'index du DataFrame
+df_filtered = df_filtered.reset_index(drop=True)
+
 # Calculer la moyenne mobile
 window_size = st.slider("Taille de la fenêtre pour la moyenne mobile (jours)", 1, 30, 7)
 df_filtered["Poids_rolling_mean"] = df_filtered["Poids (Kgs)"].rolling(window=window_size).mean()
