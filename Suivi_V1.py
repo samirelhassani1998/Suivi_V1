@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
+import plotly.express as px
 from sklearn.linear_model import LinearRegression
 import streamlit as st
 
@@ -22,37 +22,29 @@ df['Date'] = pd.to_datetime(df['Date'], format='%d/%m/%Y') # à adapter selon le
 # Trier le DataFrame par ordre croissant en fonction de la colonne "Date"
 df = df.sort_values('Date')
 
-poids_stats = df["Poids (Kgs)"].describe()
+# Sélectionner la plage de dates
+start_date = st.date_input("Date de début", df["Date"].min().date())
+end_date = st.date_input("Date de fin", df["Date"].max().date())
+
+# Filtrer le DataFrame en fonction de la plage de dates
+df_filtered = df[(df["Date"] >= start_date) & (df["Date"] <= end_date)]
+
+poids_stats = df_filtered["Poids (Kgs)"].describe()
 st.write("Statistiques des poids :", poids_stats)
 
-fig1 = plt.figure()
-plt.plot(df["Date"], df["Poids (Kgs)"], marker="o")
-plt.xlabel("Date")
-plt.ylabel("Poids (Kgs)")
-plt.title("Evolution du poids")
-plt.axhline(85, color="red", linestyle="--", label="Objectif")  # Ajouter cette ligne pour la ligne rouge à 80 kg
-plt.xlim(df["Date"].min(), df["Date"].max())
-plt.legend()
-st.pyplot(fig1)
+# Créer un graphique interactif avec Plotly
+fig = px.line(df_filtered, x="Date", y="Poids (Kgs)", markers=True, labels={"Poids (Kgs)": "Poids (Kgs)", "Date": "Date"})
+fig.update_layout(title="Evolution du poids")
+fig.add_hline(y=85, line_dash="dash", annotation_text="Objectif", annotation_position="bottom right")
+st.plotly_chart(fig)
 
 # Convertir les dates en nombres pour la régression linéaire
-df["Date_numeric"] = (df["Date"] - df["Date"].min()) / np.timedelta64(1, "D")
+df_filtered["Date_numeric"] = (df_filtered["Date"] - df_filtered["Date"].min()) / np.timedelta64(1, "D")
 
 # Entraîner le modèle de régression linéaire
-X = df[["Date_numeric"]]
-y = df["Poids (Kgs)"]
+X = df_filtered[["Date_numeric"]]
+y = df_filtered["Poids (Kgs)"]
 reg = LinearRegression().fit(X, y)
-
-# Tracer la ligne de régression
-fig2 = plt.figure()
-plt.scatter(df["Date"], df["Poids (Kgs)"], label="Données")
-plt.plot(df["Date"], reg.predict(X), color="red", label="Régression linéaire")
-plt.xlabel("Date")
-plt.ylabel("Poids (Kgs)")
-plt.title("Evolution du poids avec régression linéaire")
-plt.legend()
-plt.xlim(df["Date"].min(), df["Date"].max())
-st.pyplot(fig2)
 
 # Calculer le coefficient de détermination (R²)
 r_squared = reg.score(X, y)
