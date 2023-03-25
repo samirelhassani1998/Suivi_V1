@@ -31,5 +31,4 @@ ax.set_ylim(bottom=80, top=100)  # La plage minimale est 80 et la plage maximale
 # Afficher uniquement les dates pour lesquelles il y a des données de poids
 ax.set_xticks(df['Date'])
 ax.set_xticklabels(df['Date'].dt.strftime('%Y-%m-%d'), rotation=45, ha='right')
-
 st.pyplot(fig)
