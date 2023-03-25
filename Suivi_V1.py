@@ -68,3 +68,28 @@ df_filtered["Poids_diff"] = df_filtered["Poids (Kgs)"].diff()
 mean_change_rate = df_filtered["Poids_diff"].mean()
 st.write(f"Taux de changement moyen du poids : {mean_change_rate:.2f} Kgs par jour")
 
+# Demander l'âge, la taille et le sexe de l'utilisateur
+age = st.number_input("Âge (années)", value=25)
+height = st.number_input("Taille (cm)", value=175)
+sex = st.selectbox("Sexe", options=["Homme", "Femme"])
+
+# Calculer le taux métabolique de base (TMB) en utilisant la formule de Mifflin-St Jeor
+if sex == "Homme":
+    bmr = 10 * target_weight + 6.25 * height - 5 * age + 5
+else:
+    bmr = 10 * target_weight + 6.25 * height - 5 * age - 161
+
+# Demander le niveau d'activité de l'utilisateur
+activity_levels = {
+    "Sédentaire": 1.2,
+    "Légèrement actif": 1.375,
+    "Modérément actif": 1.55,
+    "Très actif": 1.725,
+    "Extrêmement actif": 1.9,
+}
+activity_level = st.selectbox("Niveau d'activité", options=list(activity_levels.keys()))
+
+# Calculer les calories nécessaires pour maintenir le poids cible
+calories_needed = bmr * activity_levels[activity_level]
+
+st.write(f"Calories nécessaires pour atteindre et maintenir l'objectif de poids : {calories_needed:.0f} kcal par jour")
