@@ -30,7 +30,7 @@ plt.plot(df["Date"], df["Poids (Kgs)"], marker="o")
 plt.xlabel("Date")
 plt.ylabel("Poids (Kgs)")
 plt.title("Evolution du poids")
-plt.axhline(80, color="red", linestyle="--", label="Objectif")  # Ajouter cette ligne pour la ligne rouge à 80 kg
+plt.axhline(85, color="red", linestyle="--", label="Objectif")  # Ajouter cette ligne pour la ligne rouge à 80 kg
 plt.xlim(df["Date"].min(), df["Date"].max())
 plt.legend()
 st.pyplot(fig1)
