@@ -98,6 +98,6 @@ estimated_days_to_target = weight_difference / mean_change_rate
 caloric_difference = weight_difference * 7700 / estimated_days_to_target
 
 # Calculer les calories nécessaires pour atteindre l'objectif de poids
-calories_needed_to_reach_target = calories_needed_to_maintain_target + caloric_difference
+calories_needed_to_reach_target = calories_needed + caloric_difference
 
 st.write(f"Calories nécessaires pour atteindre l'objectif de poids : {calories_needed_to_reach_target:.0f} kcal par jour")
