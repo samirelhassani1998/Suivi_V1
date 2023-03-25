@@ -18,17 +18,32 @@ df['Date'] = pd.to_datetime(df['Date'], format='%d/%m/%Y') # à adapter selon le
 # Trier le DataFrame par ordre croissant en fonction de la colonne "Date"
 df = df.sort_values('Date')
 
-# Afficher le graphique de l'évolution du poids par rapport à la date
-fig, ax = plt.subplots()
-ax.plot(df['Date'], df['Poids (Kgs)'], marker='o')
-ax.set_xlabel('Date')
-ax.set_ylabel('Poids (Kgs)')
-ax.set_title('Evolution du poids')
+poids_stats = df["Poids (Kgs)"].describe()
+print(poids_stats)
 
-# Corriger l'axe des poids et des dates
-ax.set_ylim(bottom=80, top=100)  # La plage minimale est 80 et la plage maximale est 100
+plt.plot(df["Date"], df["Poids (Kgs)"], marker="o")
+plt.xlabel("Date")
+plt.ylabel("Poids (Kgs)")
+plt.title("Evolution du poids")
+plt.show()
 
-# Afficher uniquement les dates pour lesquelles il y a des données de poids
-ax.set_xticks(df['Date'])
-ax.set_xticklabels(df['Date'].dt.strftime('%Y-%m-%d'), rotation=45, ha='right')
-st.pyplot(fig)
+# Convertir les dates en nombres pour la régression linéaire
+df["Date_numeric"] = (df["Date"] - df["Date"].min()) / np.timedelta64(1, "D")
+
+# Entraîner le modèle de régression linéaire
+X = df[["Date_numeric"]]
+y = df["Poids (Kgs)"]
+reg = LinearRegression().fit(X, y)
+
+# Tracer la ligne de régression
+plt.scatter(df["Date"], df["Poids (Kgs)"], label="Données")
+plt.plot(df["Date"], reg.predict(X), color="red", label="Régression linéaire")
+plt.xlabel("Date")
+plt.ylabel("Poids (Kgs)")
+plt.title("Evolution du poids avec régression linéaire")
+plt.legend()
+plt.show()
+
+# Calculer le coefficient de détermination (R²)
+r_squared = reg.score(X, y)
+print(f"R²: {r_squared}")
