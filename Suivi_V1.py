@@ -58,6 +58,8 @@ df_filtered["Date_numeric"] = (df_filtered["Date"] - df_filtered["Date"].min()) 
 X = df_filtered[["Date_numeric"]]
 y = df_filtered["Poids (Kgs)"]
 reg = LinearRegression().fit(X, y)
+
+target_weight = st.number_input("Objectif de poids (Kgs)", value=85.0)
 days_to_target = int((target_weight - reg.intercept_) / reg.coef_[0])
 
 target_date = df_filtered["Date"].min() + pd.to_timedelta(days_to_target, unit="D")
@@ -68,18 +70,15 @@ df_filtered["Poids_diff"] = df_filtered["Poids (Kgs)"].diff()
 mean_change_rate = df_filtered["Poids_diff"].mean()
 st.write(f"Taux de changement moyen du poids : {mean_change_rate:.2f} Kgs par jour")
 
-# Demander l'âge, la taille et le sexe de l'utilisateur
 age = st.number_input("Âge (années)", value=25)
 height = st.number_input("Taille (cm)", value=175)
 sex = st.selectbox("Sexe", options=["Homme", "Femme"])
 
-# Calculer le taux métabolique de base (TMB) en utilisant la formule de Mifflin-St Jeor
 if sex == "Homme":
     bmr = 10 * target_weight + 6.25 * height - 5 * age + 5
 else:
     bmr = 10 * target_weight + 6.25 * height - 5 * age - 161
 
-# Demander le niveau d'activité de l'utilisateur
 activity_levels = {
     "Sédentaire": 1.2,
     "Légèrement actif": 1.375,
@@ -89,17 +88,14 @@ activity_levels = {
 }
 activity_level = st.selectbox("Niveau d'activité", options=list(activity_levels.keys()))
 
-# Calculer la différence de poids et estimer les jours restants pour atteindre l'objectif
 current_weight = df_filtered["Poids (Kgs)"].iloc[-1]
 weight_difference = target_weight - current_weight
 estimated_days_to_target = weight_difference / mean_change_rate
 
-# ...
-
-# Calculer les calories nécessaires pour atteindre l'objectif de poids
 if estimated_days_to_target != 0:
+    caloric_difference = 7700 * weight_difference
+    calories_needed = bmr * activity_levels[activity_level]
     calories_needed_to_reach_target = calories_needed + (caloric_difference / estimated_days_to_target)
     st.write(f"Calories nécessaires pour atteindre l'objectif de poids : {calories_needed_to_reach_target:.0f} kcal par jour")
 else:
     st.write("Impossible de calculer les calories nécessaires pour atteindre l'objectif de poids en raison d'une division par zéro.")
-
