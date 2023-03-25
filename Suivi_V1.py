@@ -89,7 +89,11 @@ activity_levels = {
 }
 activity_level = st.selectbox("Niveau d'activité", options=list(activity_levels.keys()))
 
-# Calculer les calories nécessaires pour maintenir le poids cible
-calories_needed = bmr * activity_levels[activity_level]
+# Calculer les calories nécessaires pour atteindre l'objectif de poids
+calories_needed_to_reach_target = bmr * activity_levels[activity_level] + mean_change_rate * 7700
 
-st.write(f"Calories nécessaires pour atteindre et maintenir l'objectif de poids : {calories_needed:.0f} kcal par jour")
+# Calculer les calories nécessaires pour maintenir le poids cible
+calories_needed_to_maintain_target = bmr * activity_levels[activity_level]
+
+st.write(f"Calories nécessaires pour atteindre l'objectif de poids : {calories_needed_to_reach_target:.0f} kcal par jour")
+st.write(f"Calories nécessaires pour maintenir l'objectif de poids : {calories_needed_to_maintain_target:.0f} kcal par jour")
