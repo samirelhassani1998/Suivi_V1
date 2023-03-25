@@ -6,7 +6,7 @@ import streamlit as st
 
 st.title("Evolution du poids")
 
-# Charger le fichier CSV à partir du lien
+# Charger le fichier CSV à partir du lie
 url = 'https://docs.google.com/spreadsheets/d/1qPhLKvm4BREErQrm0L38DcZFG4a-K0msSzARVIG_T_U/export?format=csv'
 df = pd.read_csv(url)
 
