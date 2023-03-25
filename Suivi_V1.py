@@ -44,4 +44,4 @@ fig = px.line(df_filtered, x="Date", y="Poids (Kgs)", markers=True, labels={"Poi
 fig.add_scatter(x=df_filtered["Date"], y=df_filtered["Poids_rolling_mean"], mode="lines", name="Moyenne mobile")
 fig.update_layout(title="Evolution du poids")
 fig.add_hline(y=target_weight, line_dash="dash", annotation_text="Objectif", annotation_position="bottom right")
-st.plotly
+st.plotly_chart(fig)
