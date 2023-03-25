@@ -17,7 +17,7 @@ df['Poids (Kgs)'] = pd.to_numeric(df['Poids (Kgs)'], errors='coerce')
 df = df.dropna()
 
 # Modifier le format de la chaîne de date dans la colonne "Date"
-df['Date'] = pd.to_datetime(df['Date'], format='%d/%m/%Y') # à adapter selon le format de date utilisé
+df['Date'] = pd.to_datetime(df['Date'], format='%d/%m/%Y')
 
 # Trier le DataFrame par ordre croissant en fonction de la colonne "Date"
 df = df.sort_values('Date')
@@ -29,23 +29,19 @@ end_date = st.date_input("Date de fin", df["Date"].max().date())
 # Filtrer le DataFrame en fonction de la plage de dates
 df_filtered = df[(df["Date"] >= pd.to_datetime(start_date)) & (df["Date"] <= pd.to_datetime(end_date))]
 
+# Calculer la moyenne mobile
+window_size = st.slider("Taille de la fenêtre pour la moyenne mobile (jours)", 1, 30, 7)
+df_filtered["Poids_rolling_mean"] = df_filtered["Poids (Kgs)"].rolling(window=window_size).mean()
+
+# Entrer l'objectif de poids
+target_weight = st.number_input("Objectif de poids (Kgs)", value=85.0)
+
 poids_stats = df_filtered["Poids (Kgs)"].describe()
 st.write("Statistiques des poids :", poids_stats)
 
 # Créer un graphique interactif avec Plotly
 fig = px.line(df_filtered, x="Date", y="Poids (Kgs)", markers=True, labels={"Poids (Kgs)": "Poids (Kgs)", "Date": "Date"})
+fig.add_scatter(x=df_filtered["Date"], y=df_filtered["Poids_rolling_mean"], mode="lines", name="Moyenne mobile")
 fig.update_layout(title="Evolution du poids")
-fig.add_hline(y=85, line_dash="dash", annotation_text="Objectif", annotation_position="bottom right")
-st.plotly_chart(fig)
-
-# Convertir les dates en nombres pour la régression linéaire
-df_filtered["Date_numeric"] = (df_filtered["Date"] - df_filtered["Date"].min()) / np.timedelta64(1, "D")
-
-# Entraîner le modèle de régression linéaire
-X = df_filtered[["Date_numeric"]]
-y = df_filtered["Poids (Kgs)"]
-reg = LinearRegression().fit(X, y)
-
-# Calculer le coefficient de détermination (R²)
-r_squared = reg.score(X, y)
-st.write(f"R²: {r_squared}")
+fig.add_hline(y=target_weight, line_dash="dash", annotation_text="Objectif", annotation_position="bottom right")
+st.plotly
