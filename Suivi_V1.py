@@ -37,8 +37,7 @@ window_size = st.slider("Taille de la fenêtre pour la moyenne mobile (jours)", 
 df_filtered["Poids_rolling_mean"] = df_filtered["Poids (Kgs)"].rolling(window=window_size).mean()
 
 # Entrer l'objectif de poids
-target_weight1 = st.number_input("Objectif de poids 1 (Kgs)", value=85.0)
-target_weight2 = st.number_input("Objectif de poids 2 (Kgs)", value=85.0)
+target_weight = st.number_input("Objectif de poids (Kgs)", value=85.0)
 
 poids_stats = df_filtered["Poids (Kgs)"].describe()
 st.write("Statistiques des poids :", poids_stats)
@@ -47,8 +46,7 @@ st.write("Statistiques des poids :", poids_stats)
 fig = px.line(df_filtered, x="Date", y="Poids (Kgs)", markers=True, labels={"Poids (Kgs)": "Poids (Kgs)", "Date": "Date"})
 fig.add_scatter(x=df_filtered["Date"], y=df_filtered["Poids_rolling_mean"], mode="lines", name="Moyenne mobile")
 fig.update_layout(title="Evolution du poids")
-fig.add_hline(y=target_weight1, line_dash="dash", annotation_text="Objectif 1", annotation_position="bottom right")
-fig.add_hline(y=target_weight2, line_dash="dash", annotation_text="Objectif 2", annotation_position="bottom right")
+fig.add_hline(y=target_weight, line_dash="dash", annotation_text="Objectif", annotation_position="bottom right")
 st.plotly_chart(fig)
 
 # Histogramme de la distribution des poids
@@ -61,8 +59,7 @@ X = df_filtered[["Date_numeric"]]
 y = df_filtered["Poids (Kgs)"]
 reg = LinearRegression().fit(X, y)
 
-target_weight3 = st.number_input("Objectif de poids 3 (Kgs)", value=85.0)
-days_to_target = int((target_weight3 - reg.intercept_) / reg.coef_[0])
+days_to_target = int((target_weight- reg.intercept_) / reg.coef_[0])
 
 target_date = df_filtered["Date"].min() + pd.to_timedelta(days_to_target, unit="D")
 st.write(f"Date estimée pour atteindre l'objectif de poids : {target_date.date()}")
@@ -77,9 +74,9 @@ height = st.number_input("Taille (cm)", value=175)
 sex = st.selectbox("Sexe", options=["Homme", "Femme"])
 
 if sex == "Homme":
-    bmr = 10 * target_weight3 + 6.25 * height - 5 * age + 5
+    bmr = 10 * target_weight + 6.25 * height - 5 * age + 5
 else:
-    bmr = 10 * target_weight3 + 6.25 * height - 5 * age - 161
+    bmr = 10 * target_weight + 6.25 * height - 5 * age - 161
 
 activity_levels = {
     "Sédentaire": 1.2,
@@ -91,7 +88,7 @@ activity_levels = {
 activity_level = st.selectbox("Niveau d'activité", options=list(activity_levels.keys()))
 
 current_weight = df_filtered["Poids (Kgs)"].iloc[-1]
-weight_difference = target_weight3 - current_weight
+weight_difference = target_weight - current_weight
 estimated_days_to_target = weight_difference / mean_change_rate
 
 if estimated_days_to_target != 0 and estimated_days_to_target > 1:
@@ -103,3 +100,4 @@ elif estimated_days_to_target <= 1:
     st.write("Le temps estimé pour atteindre l'objectif de poids est trop court pour calculer les calories nécessaires de manière fiable.")
 else:
     st.write("Impossible de calculer les calories nécessaires pour atteindre l'objectif de poids en raison d'une division par zéro.")
+
