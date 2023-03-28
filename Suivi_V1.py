@@ -97,4 +97,3 @@ days_to_target = 90
 calories_needed = bmr * activity_levels[activity_level]
 calories_needed_per_day = calories_needed + (weight_difference * 7700) / days_to_target
 st.markdown(f'<p style="color: red; font-weight: bold; font-style: italic;">Calories nécessaires à consommer par jour pour atteindre l\'objectif de poids en {days_to_target} jours : {calories_needed_per_day:.0f} kcal</p>', unsafe_allow_html=True)
-
