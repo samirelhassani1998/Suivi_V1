@@ -22,12 +22,8 @@ df['Date'] = pd.to_datetime(df['Date'], format='%d/%m/%Y')
 # Trier le DataFrame par ordre croissant en fonction de la colonne "Date"
 df = df.sort_values('Date')
 
-# Sélectionner la plage de dates
-start_date = st.date_input("Date de début", df["Date"].min().date())
-end_date = st.date_input("Date de fin", df["Date"].max().date())
-
-# Filtrer le DataFrame en fonction de la plage de dates
-df_filtered = df[(df["Date"] >= pd.to_datetime(start_date)) & (df["Date"] <= pd.to_datetime(end_date))]
+# Utiliser le DataFrame complet sans filtrer par plage de dates
+df_filtered = df.copy()
 
 # Mettre à jour l'index du DataFrame
 df_filtered = df_filtered.reset_index(drop=True)
