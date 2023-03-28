@@ -87,15 +87,6 @@ activity_levels = {
 }
 activity_level = st.selectbox("Niveau d'activité", options=list(activity_levels.keys()))
 
-current_weight = df_filtered["Poids (Kgs)"].iloc[-1]
-weight_difference = target_weight - current_weight
-estimated_days_to_target = weight_difference / mean_change_rate
-
-if estimated_days_to_target != 0 and estimated_days_to_target > 1:
-    calories_needed = bmr * activity_levels[activity_level]
-    calories_needed_per_day = calories_needed + (weight_difference * 7700) / estimated_days_to_target
-    st.write(f"Calories nécessaires à consommer par jour pour atteindre l'objectif de poids : {calories_needed_per_day:.0f} kcal")
-elif estimated_days_to_target <= 1:
-    st.write("Le temps estimé pour atteindre l'objectif de poids est trop court pour calculer les calories nécessaires de manière fiable.")
-else:
-    st.write("Impossible de calculer les calories nécessaires pour atteindre l'objectif de poids en raison d'une division par zéro.")
+# Calculer les calories nécessaires pour maintenir le poids objectif
+calories_needed = bmr * activity_levels[activity_level]
+st.write(f"Calories nécessaires à consommer par jour pour maintenir l'objectif de poids : {calories_needed:.0f} kcal")
