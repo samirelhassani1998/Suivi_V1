@@ -56,6 +56,13 @@ X = df_filtered[["Date_numeric"]]
 y = df_filtered["Poids (Kgs)"]
 reg = LinearRegression().fit(X, y)
 
+# Ajouter un graphique de régression linéaire
+predictions = reg.predict(X)
+fig3 = px.scatter(df_filtered, x="Date", y="Poids (Kgs)", labels={"Poids (Kgs)": "Poids (Kgs)", "Date": "Date"})
+fig3.add_traces(px.line(df_filtered, x="Date", y=predictions, labels={"y": "Régression linéaire"}).data[0])
+fig3.update_layout(title="Régression linéaire de l'évolution du poids")
+st.plotly_chart(fig3)
+
 days_to_target = int((target_weight- reg.intercept_) / reg.coef_[0])
 
 target_date = df_filtered["Date"].min() + pd.to_timedelta(days_to_target, unit="D")
