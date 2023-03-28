@@ -50,14 +50,6 @@ st.plotly_chart(fig)
 fig2 = px.histogram(df_filtered, x="Poids (Kgs)", nbins=30, title="Distribution des poids")
 st.plotly_chart(fig2)
 
-# Ajouter un graphique de régression linéaire
-predictions = reg.predict(X)
-fig3 = px.scatter(df_filtered, x="Date", y="Poids (Kgs)", labels={"Poids (Kgs)": "Poids (Kgs)", "Date": "Date"})
-fig3.add_traces(px.line(df_filtered, x="Date", y=predictions, labels={"y": "Régression linéaire"}).data[0])
-fig3.update_layout(title="Régression linéaire de l'évolution du poids")
-st.plotly_chart(fig3)
-
-
 # Prédiction de la date d'atteinte de l'objectif de poids
 df_filtered["Date_numeric"] = (df_filtered["Date"] - df_filtered["Date"].min()) / np.timedelta64(1, "D")
 X = df_filtered[["Date_numeric"]]
