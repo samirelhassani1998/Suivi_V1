@@ -106,7 +106,7 @@ calories_needed_per_day = calories_needed + (weight_difference * 7700) / days_to
 st.markdown(f'<p style="color: red; font-weight: bold; font-style: italic;">Calories nécessaires à consommer par jour pour atteindre l\'objectif de poids en {days_to_target} jours : {calories_needed_per_day:.0f} kcal</p>', unsafe_allow_html=True)
 
 #NEWS
-decomposition = seasonal_decompose(df_filtered['Poids (Kgs)'], freq=7, model='additive')
+decomposition = seasonal_decompose(df_filtered['Poids (Kgs)'], period=7, model='additive')
 fig = decomposition.plot()
 st.pyplot(fig)
 df_filtered["Residuals"] = df_filtered["Poids (Kgs)"] - predictions
@@ -122,9 +122,3 @@ fig5 = px.scatter(df_filtered, x="Date", y="Poids (Kgs)", labels={"Poids (Kgs)":
 fig5.add_traces(px.line(df_filtered, x="Date", y=sarima_predictions, labels={"y": "Prédictions SARIMA"}).data[0])
 fig5.update_layout(title="Prédictions avec le modèle SARIMA")
 st.plotly_chart(fig5)
-
-
-
-
-
-
