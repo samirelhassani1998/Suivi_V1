@@ -3,6 +3,9 @@ import numpy as np
 import plotly.express as px
 from sklearn.linear_model import LinearRegression
 import streamlit as st
+from statsmodels.tsa.seasonal import seasonal_decompose
+from pmdarima.arima import auto_arima
+
 
 st.title("Evolution du poids")
 
@@ -101,3 +104,27 @@ days_to_target = 90
 calories_needed = bmr * activity_levels[activity_level]
 calories_needed_per_day = calories_needed + (weight_difference * 7700) / days_to_target
 st.markdown(f'<p style="color: red; font-weight: bold; font-style: italic;">Calories nécessaires à consommer par jour pour atteindre l\'objectif de poids en {days_to_target} jours : {calories_needed_per_day:.0f} kcal</p>', unsafe_allow_html=True)
+
+#NEWS
+decomposition = seasonal_decompose(df_filtered['Poids (Kgs)'], freq=7, model='additive')
+fig = decomposition.plot()
+st.pyplot(fig)
+df_filtered["Residuals"] = df_filtered["Poids (Kgs)"] - predictions
+fig4 = px.scatter(df_filtered, x="Date", y="Residuals", labels={"Residuals": "Résidus", "Date": "Date"})
+fig4.update_layout(title="Analyse des résidus")
+st.plotly_chart(fig4)
+
+sarima_model = auto_arima(df_filtered["Poids (Kgs)"], seasonal=True, m=7, suppress_warnings=True, stepwise=True)
+st.write(f"Meilleur modèle SARIMA : {sarima_model.summary()}")
+sarima_predictions = sarima_model.predict_in_sample()
+df_filtered["SARIMA_Predictions"] = sarima_predictions
+fig5 = px.scatter(df_filtered, x="Date", y="Poids (Kgs)", labels={"Poids (Kgs)": "Poids (Kgs)", "Date": "Date"})
+fig5.add_traces(px.line(df_filtered, x="Date", y=sarima_predictions, labels={"y": "Prédictions SARIMA"}).data[0])
+fig5.update_layout(title="Prédictions avec le modèle SARIMA")
+st.plotly_chart(fig5)
+
+
+
+
+
+
