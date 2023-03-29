@@ -1,8 +1,9 @@
+streamlit
 pandas
 numpy
-matplotlib
-scikit-learn
 plotly
+scikit-learn
 statsmodels
 pmdarima
+pystan
 fbprophet
