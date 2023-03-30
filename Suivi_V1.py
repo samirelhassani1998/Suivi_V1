@@ -5,6 +5,8 @@ from sklearn.linear_model import LinearRegression
 import streamlit as st
 from statsmodels.tsa.seasonal import seasonal_decompose
 from pmdarima.arima import auto_arima
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import r2_score
 
 
 st.title("Evolution du poids")
@@ -99,3 +101,17 @@ fig5 = px.scatter(df_filtered, x="Date", y="Poids (Kgs)", labels={"Poids (Kgs)":
 fig5.add_traces(px.line(df_filtered, x="Date", y=sarima_predictions, labels={"y": "Prédictions SARIMA"}).data[0])
 fig5.update_layout(title="Prédictions avec le modèle SARIMA")
 st.plotly_chart(fig5)
+
+# Random Forest Regression
+rf_reg = RandomForestRegressor(n_estimators=100, random_state=42)
+rf_reg.fit(X, y)
+
+# Comparaison des modèles de régression
+lin_reg_r2 = r2_score(y, predictions)
+rf_reg_r2 = r2_score(y, rf_reg.predict(X))
+
+st.write(f"Score R2 pour la régression linéaire : {lin_reg_r2:.2f}")
+st.write(f"Score R2 pour la régression Random Forest : {rf_reg_r2:.2f}")
+
+# Importance des caractéristiques pour le modèle Random Forest
+st.write("Importance des caractéristiques pour le modèle Random Forest :", rf_reg.feature_importances_)
