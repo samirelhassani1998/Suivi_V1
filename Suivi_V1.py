@@ -44,7 +44,7 @@ else:
     st.write("Statistiques des poids :", poids_stats)
 
     # Créer un graphique interactif avec Plotly
-    fig = px.line(data_frame_filtered, x="date", y="poids", markers=True, labels={"poids": "Poids (Kgs)", "date": "
+fig = px.line(data_frame_filtered, x="date", y="poids", markers=True, labels={"poids": "Poids (Kgs)", "date": "Date"})
 # Afficher la courbe de la moyenne mobile et l'objectif de poids
     fig.add_scatter(x=data_frame_filtered["date"], y=data_frame_filtered["poids_rolling_mean"], mode="lines", name="Moyenne mobile")
     fig.update_layout(title="Evolution du poids")
