@@ -112,3 +112,28 @@ st.write(f"Score R2 pour la régression Random Forest : {rf_reg_r2:.2f}")
 
 # Importance des caractéristiques pour le modèle Random Forest
 st.write("Importance des caractéristiques pour le modèle Random Forest :", rf_reg.feature_importances_)
+
+# Diviser les données en ensembles d'entraînement et de test
+train_size = int(len(df_filtered) * 0.67)
+train, test = df_filtered.iloc[:train_size], df_filtered.iloc[train_size:]
+
+# Entraîner un modèle de régression
+X_train, y_train = train["Date_numeric"].values.reshape(-1, 1), train["Poids (Kgs)"].values
+X_test, y_test = test["Date_numeric"].values.reshape(-1, 1), test["Poids (Kgs)"].values
+reg = LinearRegression().fit(X_train, y_train)
+
+# Faites des prédictions sur l'ensemble de test
+y_pred = reg.predict(X_test)
+
+# Comparez les prédictions du modèle avec les vraies valeurs
+r2 = r2_score(y_test, y_pred)
+st.write(f"Score R2 pour la régression linéaire : {r2:.2f}")
+
+# Tracez le modèle de régression linéaire en superposant les données d'entraînement et de test
+X = df_filtered[["Date_numeric"]]
+predictions = reg.predict(X)
+fig6 = px.scatter(df_filtered, x="Date", y="Poids (Kgs)", labels={"Poids (Kgs)": "Poids (Kgs)", "Date": "Date"})
+fig6.add_traces(px.line(df_filtered, x="Date", y=predictions, labels={"y": "Régression linéaire"}).data[0])
+fig6.add_scatter(x=test["Date"], y=y_pred, mode="markers", name="Prédictions sur ensemble de test")
+fig6.update_layout(title="Régression linéaire avec prédictions sur ensemble de test")
+st.plotly_chart(fig6)
