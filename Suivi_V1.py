@@ -137,3 +137,9 @@ fig6.add_traces(px.line(df_filtered, x="Date", y=predictions, labels={"y": "Rég
 fig6.add_scatter(x=test["Date"], y=y_pred, mode="markers", name="Prédictions sur ensemble de test")
 fig6.update_layout(title="Régression linéaire avec prédictions sur ensemble de test")
 st.plotly_chart(fig6)
+
+# Calculer le coefficient de corrélation de Pearson
+correlation = df_filtered['Date_numeric'].corr(df_filtered['Poids (Kgs)'])
+
+# Afficher le coefficient de corrélation de Pearson
+st.write(f"Coefficient de corrélation de Pearson entre le temps et le poids : {correlation:.2f}")
