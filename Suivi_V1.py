@@ -143,3 +143,23 @@ correlation = df_filtered['Date_numeric'].corr(df_filtered['Poids (Kgs)'])
 
 # Afficher le coefficient de corrélation de Pearson
 st.write(f"Coefficient de corrélation de Pearson entre le temps et le poids : {correlation:.2f}")
+# Analyse de tendance saisonnière
+st.subheader("Analyse de tendance saisonnière")
+from statsmodels.tsa.seasonal import STL
+stl = STL(df_filtered['Poids (Kgs)'], period=7)
+res = stl.fit()
+fig7 = res.plot()
+st.pyplot(fig7)
+
+# Analyse de la tendance et de la saisonnalité
+df_filtered["Trend"] = res.trend
+df_filtered["Seasonal"] = res.seasonal
+
+# Visualisation de la tendance et de la saisonnalité
+fig8 = px.line(df_filtered, x="Date", y="Trend", labels={"Trend": "Tendance", "Date": "Date"})
+fig8.update_layout(title="Tendance de l'évolution du poids")
+st.plotly_chart(fig8)
+
+fig9 = px.line(df_filtered, x="Date", y="Seasonal", labels={"Seasonal": "Saisonnalité", "Date": "Date"})
+fig9.update_layout(title="Saisonnalité de l'évolution du poids")
+st.plotly_chart(fig9)
