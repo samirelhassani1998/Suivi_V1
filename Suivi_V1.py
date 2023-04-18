@@ -7,6 +7,7 @@ from statsmodels.tsa.seasonal import seasonal_decompose
 from pmdarima.arima import auto_arima
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import r2_score
+from sklearn.ensemble import IsolationForest
 
 
 st.title("Evolution du poids")
@@ -164,3 +165,19 @@ st.plotly_chart(fig8)
 fig9 = px.line(df_filtered, x="Date", y="Seasonal", labels={"Seasonal": "Saisonnalité", "Date": "Date"})
 fig9.update_layout(title="Saisonnalité de l'évolution du poids")
 st.plotly_chart(fig9)
+
+# Détection des anomalies avec Isolation Forest
+anomaly_detector = IsolationForest(contamination=0.05, random_state=42)
+anomalies = anomaly_detector.fit_predict(df_filtered[["Poids (Kgs)"]])
+
+df_filtered["Anomalies"] = anomalies
+anomaly_df = df_filtered[df_filtered["Anomalies"] == -1]
+
+# Ajouter des marqueurs pour les anomalies sur le graphique interactif
+fig.add_scatter(x=anomaly_df["Date"], y=anomaly_df["Poids (Kgs)"], mode="markers", marker=dict(size=10, color="red", symbol="x"), name="Anomalies")
+
+# ...
+
+# Afficher les anomalies
+st.write("Anomalies détectées dans les données de poids :")
+st.write(anomaly_df[["Date", "Poids (Kgs)"]])
