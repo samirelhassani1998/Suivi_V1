@@ -165,22 +165,3 @@ st.plotly_chart(fig8)
 fig9 = px.line(df_filtered, x="Date", y="Seasonal", labels={"Seasonal": "Saisonnalité", "Date": "Date"})
 fig9.update_layout(title="Saisonnalité de l'évolution du poids")
 st.plotly_chart(fig9)
-
-# Détection des anomalies avec Isolation Forest
-anomaly_detector = IsolationForest(contamination=0.05, random_state=42)
-anomalies = anomaly_detector.fit_predict(df_filtered[["Poids (Kgs)"]])
-
-df_filtered["Anomalies"] = anomalies
-anomaly_df = df_filtered[df_filtered["Anomalies"] == -1]
-
-if not anomaly_df.empty:
-    scatter_anomalies = px.scatter(anomaly_df, x="Date", y="Poids (Kgs)", labels={"Poids (Kgs)": "Poids (Kgs)", "Date": "Date"}, marker=dict(size=10, color="red", symbol="x"), name="Anomalies")
-    fig.add_trace(scatter_anomalies.data[0])
-    print(anomaly_df[["Date", "Poids (Kgs)"]].dtypes)
-
-
-# ...
-
-# Afficher les anomalies
-st.write("Anomalies détectées dans les données de poids :")
-st.write(anomaly_df[["Date", "Poids (Kgs)"]])
