@@ -192,22 +192,31 @@ def map_sex(sex):
     else:
         return 1
 
-# Ajout des variables d'entrée au DataFrame
-df_filtered["Age"] = age
-df_filtered["Height"] = height
-df_filtered["Sex"] = map_sex(sex)
-df_filtered["Activity_Level"] = activity_levels[activity_level]
+# Création de l'interface utilisateur avec Streamlit
+st.title("Analyse de sensibilité des variables pour la prédiction du poids")
 
-# Entraîner un modèle de régression avec les nouvelles variables
-X_with_features = df_filtered[["Date_numeric", "Age", "Height", "Sex", "Activity_Level"]]
-y_with_features = df_filtered["Poids (Kgs)"]
-reg_with_features = LinearRegression().fit(X_with_features, y_with_features)
+age = st.slider("Age", min_value=18, max_value=100, value=30)
+height = st.slider("Taille (cm)", min_value=130, max_value=220, value=170)
+sex = st.selectbox("Sexe", options=["Homme", "Femme"])
+activity_level = st.selectbox("Niveau d'activité", options=activity_levels)
 
-# Effectuer l'analyse de sensibilité avec permutation_importance
-result = permutation_importance(reg_with_features, X_with_features, y_with_features, n_repeats=10, random_state=42)
+if st.button("Analyser"):
+    # Ajout des variables d'entrée au DataFrame
+    df_filtered["Age"] = age
+    df_filtered["Height"] = height
+    df_filtered["Sex"] = map_sex(sex)
+    df_filtered["Activity_Level"] = activity_levels[activity_level]
 
-# Afficher l'importance des différentes variables
-st.write("Importance des différentes variables d'entrée :")
-for i in result.importances_mean.argsort()[::-1]:
-    if result.importances_mean[i] - 2 * result.importances_std[i] > 0:
-        st.write(f"{X_with_features.columns[i]}: {result.importances_mean[i]:.3f} +/- {result.importances_std[i]:.3f}")
+    # Entraîner un modèle de régression avec les nouvelles variables
+    X_with_features = df_filtered[["Date_numeric", "Age", "Height", "Sex", "Activity_Level"]]
+    y_with_features = df_filtered["Poids (Kgs)"]
+    reg_with_features = LinearRegression().fit(X_with_features, y_with_features)
+
+    # Effectuer l'analyse de sensibilité avec permutation_importance
+    result = permutation_importance(reg_with_features, X_with_features, y_with_features, n_repeats=10, random_state=42)
+
+    # Afficher l'importance des différentes variables
+    st.write("## Importance des différentes variables d'entrée :")
+    for i in result.importances_mean.argsort()[::-1]:
+        if result.importances_mean[i] - 2 * result.importances_std[i] > 0:
+            st.write(f"{X_with_features.columns[i]}: {result.importances_mean[i]:.3f} +/- {result.importances_std[i]:.3f}")
