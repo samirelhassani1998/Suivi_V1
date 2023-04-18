@@ -173,9 +173,11 @@ anomalies = anomaly_detector.fit_predict(df_filtered[["Poids (Kgs)"]])
 df_filtered["Anomalies"] = anomalies
 anomaly_df = df_filtered[df_filtered["Anomalies"] == -1]
 
-# Ajouter des marqueurs pour les anomalies sur le graphique interactif
-scatter_anomalies = px.scatter(anomaly_df, x="Date", y="Poids (Kgs)", labels={"Poids (Kgs)": "Poids (Kgs)", "Date": "Date"}, marker=dict(size=10, color="red", symbol="x"), name="Anomalies")
-fig.add_trace(scatter_anomalies.data[0])
+if not anomaly_df.empty:
+    scatter_anomalies = px.scatter(anomaly_df, x="Date", y="Poids (Kgs)", labels={"Poids (Kgs)": "Poids (Kgs)", "Date": "Date"}, marker=dict(size=10, color="red", symbol="x"), name="Anomalies")
+    fig.add_trace(scatter_anomalies.data[0])
+    print(anomaly_df[["Date", "Poids (Kgs)"]].dtypes)
+
 
 # ...
 
