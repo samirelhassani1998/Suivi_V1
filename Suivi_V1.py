@@ -174,7 +174,8 @@ df_filtered["Anomalies"] = anomalies
 anomaly_df = df_filtered[df_filtered["Anomalies"] == -1]
 
 # Ajouter des marqueurs pour les anomalies sur le graphique interactif
-fig.add_trace(px.scatter(anomaly_df, x="Date", y="Poids (Kgs)", labels={"Poids (Kgs)": "Poids (Kgs)", "Date": "Date"}, marker=dict(size=10, color="red", symbol="x"), name="Anomalies").data[0])
+scatter_anomalies = px.scatter(anomaly_df, x="Date", y="Poids (Kgs)", labels={"Poids (Kgs)": "Poids (Kgs)", "Date": "Date"}, marker=dict(size=10, color="red", symbol="x"), name="Anomalies")
+fig.add_trace(scatter_anomalies.data[0])
 
 # ...
 
