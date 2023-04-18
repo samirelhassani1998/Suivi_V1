@@ -8,6 +8,7 @@ from pmdarima.arima import auto_arima
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import r2_score
 from sklearn.ensemble import IsolationForest
+from sklearn.inspection import permutation_importance
 
 
 st.title("Evolution du poids")
@@ -183,3 +184,30 @@ st.plotly_chart(fig8)
 fig9 = px.line(df_filtered, x="Date", y="Seasonal", labels={"Seasonal": "Saisonnalité", "Date": "Date"})
 fig9.update_layout(title="Saisonnalité de l'évolution du poids")
 st.plotly_chart(fig9)
+
+# Ajout d'une fonction pour mapper le sexe en valeur numérique
+def map_sex(sex):
+    if sex == "Homme":
+        return 0
+    else:
+        return 1
+
+# Ajout des variables d'entrée au DataFrame
+df_filtered["Age"] = age
+df_filtered["Height"] = height
+df_filtered["Sex"] = map_sex(sex)
+df_filtered["Activity_Level"] = activity_levels[activity_level]
+
+# Entraîner un modèle de régression avec les nouvelles variables
+X_with_features = df_filtered[["Date_numeric", "Age", "Height", "Sex", "Activity_Level"]]
+y_with_features = df_filtered["Poids (Kgs)"]
+reg_with_features = LinearRegression().fit(X_with_features, y_with_features)
+
+# Effectuer l'analyse de sensibilité avec permutation_importance
+result = permutation_importance(reg_with_features, X_with_features, y_with_features, n_repeats=10, random_state=42)
+
+# Afficher l'importance des différentes variables
+st.write("Importance des différentes variables d'entrée :")
+for i in result.importances_mean.argsort()[::-1]:
+    if result.importances_mean[i] - 2 * result.importances_std[i] > 0:
+        st.write(f"{X_with_features.columns[i]}: {result.importances_mean[i]:.3f} +/- {result.importances_std[i]:.3f}")
