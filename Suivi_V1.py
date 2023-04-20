@@ -43,21 +43,7 @@ st.plotly_chart(fig)
 fig2 = px.histogram(df_filtered, x="Poids (Kgs)", nbins=30, title="Distribution des poids")
 st.plotly_chart(fig2)
 
-# Détection des anomalies avec Isolation Forest
-iso_forest = IsolationForest(contamination=0.05)
-anomalies = iso_forest.fit_predict(df_filtered[["Poids (Kgs)"]])
 
-# Ajouter la colonne des anomalies au DataFrame
-df_filtered["Anomalies"] = anomalies
-
-# Créer un graphique interactif avec les anomalies
-fig10 = px.scatter(df_filtered, x="Date", y="Poids (Kgs)", color="Anomalies", color_discrete_sequence=["blue", "red"], labels={"Poids (Kgs)": "Poids (Kgs)", "Date": "Date", "Anomalies": "Anomalies"})
-fig10.update_layout(title="Evolution du poids avec détection des anomalies")
-st.plotly_chart(fig10)
-
-# Afficher les points de données inhabituels détectés
-st.write("Points de données inhabituels détectés :")
-st.write(df_filtered[df_filtered["Anomalies"] == -1])
 
 
 # Prédiction de la date d'atteinte de l'objectif de poids
