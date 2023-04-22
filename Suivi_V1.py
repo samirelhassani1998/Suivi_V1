@@ -10,6 +10,7 @@ from sklearn.metrics import r2_score
 from sklearn.ensemble import IsolationForest
 from sklearn.inspection import permutation_importance
 
+
 st.title("Evolution du poids")
 # Charger le fichier CSV à partir du lien
 url = 'https://docs.google.com/spreadsheets/d/1qPhLKvm4BREErQrm0L38DcZFG4a-K0msSzARVIG_T_U/export?format=csv'
