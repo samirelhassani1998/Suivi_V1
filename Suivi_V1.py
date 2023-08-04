@@ -30,7 +30,7 @@ df_filtered = df_filtered.reset_index(drop=True)
 window_size = st.slider("Taille de la fenêtre pour la moyenne mobile (jours)", 1, 30, 7)
 df_filtered["Poids_rolling_mean"] = df_filtered["Poids (Kgs)"].rolling(window=window_size).mean()
 # Entrer l'objectif de poids
-target_weight = st.number_input("Objectif de poids (Kgs)", value=85.0)
+target_weight = st.number_input("Objectif de poids (Kgs)", value=90.0)
 poids_stats = df_filtered["Poids (Kgs)"].describe()
 st.write("Statistiques des poids :", poids_stats)
 # Créer un graphique interactif avec Plotly
