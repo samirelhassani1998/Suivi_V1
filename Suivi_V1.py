@@ -33,9 +33,9 @@ df_filtered["Poids_rolling_mean"] = df_filtered["Poids (Kgs)"].rolling(window=wi
 # Entrer l'objectif de poids
 target_weight = st.number_input("Objectif de poids 1 (Kgs)", value=90.0)
 # Entrer le deuxième objectif de poids
-target_weight_2 = st.number_input("Objectif de poids 2 (Kgs)", value=85.0)
+target_weight_2 = st.number_input("Objectif de poids 2 (Kgs)", value=87.5)
 # Entrer le troisième objectif de poids
-target_weight_3 = st.number_input("Objectif de poids 3 (Kgs)", value=80.0)
+target_weight_3 = st.number_input("Objectif de poids 3 (Kgs)", value=85.0)
 
 poids_stats = df_filtered["Poids (Kgs)"].describe()
 st.write("Statistiques des poids :", poids_stats)
