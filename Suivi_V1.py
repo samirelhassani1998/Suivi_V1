@@ -31,18 +31,27 @@ window_size = st.slider("Taille de la fenêtre pour la moyenne mobile (jours)", 
 df_filtered["Poids_rolling_mean"] = df_filtered["Poids (Kgs)"].rolling(window=window_size).mean()
 # Entrer l'objectif de poids
 target_weight = st.number_input("Objectif de poids (Kgs)", value=90.0)
+# Entrer le deuxième objectif de poids
+target_weight_2 = st.number_input("Objectif de poids 2 (Kgs)", value=85.0)
+
 poids_stats = df_filtered["Poids (Kgs)"].describe()
 st.write("Statistiques des poids :", poids_stats)
+
 # Créer un graphique interactif avec Plotly
 fig = px.line(df_filtered, x="Date", y="Poids (Kgs)", markers=True, labels={"Poids (Kgs)": "Poids (Kgs)", "Date": "Date"})
 fig.add_scatter(x=df_filtered["Date"], y=df_filtered["Poids_rolling_mean"], mode="lines", name="Moyenne mobile")
 fig.update_layout(title="Evolution du poids")
+
+# Ajouter les lignes d'objectif au graphique
 fig.add_hline(y=target_weight, line_dash="dash", annotation_text="Objectif", annotation_position="bottom right")
-fig.add_hline(y=85, line_dash="dash", line_color="red", annotation_text="Objectif 2", annotation_position="bottom right")
+fig.add_hline(y=target_weight_2, line_dash="dash", line_color="red", annotation_text="Objectif 2", annotation_position="bottom right")
+
 st.plotly_chart(fig)
+
 # Histogramme de la distribution des poids
 fig2 = px.histogram(df_filtered, x="Poids (Kgs)", nbins=30, title="Distribution des poids")
 st.plotly_chart(fig2)
+
 
 # Détection des anomalies avec Isolation Forest
 iso_forest = IsolationForest(contamination=0.05)
