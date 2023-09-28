@@ -38,6 +38,7 @@ fig = px.line(df_filtered, x="Date", y="Poids (Kgs)", markers=True, labels={"Poi
 fig.add_scatter(x=df_filtered["Date"], y=df_filtered["Poids_rolling_mean"], mode="lines", name="Moyenne mobile")
 fig.update_layout(title="Evolution du poids")
 fig.add_hline(y=target_weight, line_dash="dash", annotation_text="Objectif", annotation_position="bottom right")
+fig.add_hline(y=85, line_dash="dash", line_color="red", annotation_text="Objectif 2", annotation_position="bottom right")
 st.plotly_chart(fig)
 # Histogramme de la distribution des poids
 fig2 = px.histogram(df_filtered, x="Poids (Kgs)", nbins=30, title="Distribution des poids")
