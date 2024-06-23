@@ -5,7 +5,9 @@ import streamlit as st
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import IsolationForest
 from statsmodels.tsa.seasonal import STL
-from datetime import datetime, timedelta
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import r2_score, mean_squared_error
 
 # Titre de l'application Streamlit
 st.set_page_config(page_title="Suivi du poids", layout="wide")
@@ -144,7 +146,7 @@ with tab4:
     res = stl.fit()
     fig5 = res.plot()
     st.pyplot(fig5)
-    
+
     df_filtered["Trend"] = res.trend
     df_filtered["Seasonal"] = res.seasonal
 
@@ -159,7 +161,6 @@ with tab4:
 
     # Prédictions avec SARIMA
     st.subheader("Prédictions avec SARIMA")
-    from statsmodels.tsa.statespace.sarimax import SARIMAX
     sarima_model = SARIMAX(df_filtered["Poids (Kgs)"], order=(1, 1, 1), seasonal_order=(1, 1, 1, 7))
     sarima_results = sarima_model.fit(disp=False)
     sarima_predictions = sarima_results.predict(start=0, end=len(df_filtered)-1)
@@ -173,8 +174,6 @@ with tab4:
     # Comparaison des modèles de régression
     st.subheader("Comparaison des modèles de régression")
     from sklearn.ensemble import RandomForestRegressor
-    from sklearn.metrics import r2_score
-
     rf_reg = RandomForestRegressor(n_estimators=100, random_state=42)
     rf_reg.fit(X, y)
 
@@ -188,27 +187,20 @@ with tab4:
     st.write("Importance des caractéristiques pour le modèle Random Forest :")
     st.write(rf_reg.feature_importances_)
 
-    # Division des données en ensembles d'entraînement et de test
-    train_size = int(len(df_filtered) * 0.67)
-    train, test = df_filtered.iloc[:train_size], df_filtered.iloc[train_size:]
-
-    # Entraîner un modèle de régression
-    X_train, y_train = train["Date_numeric"].values.reshape(-1, 1), train["Poids (Kgs)"].values
-    X_test, y_test = test["Date_numeric"].values.reshape(-1, 1), test["Poids (Kgs)"].values
+    # Validation croisée pour évaluer la performance des modèles
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.33, random_state=42)
     reg = LinearRegression().fit(X_train, y_train)
-
-    # Faites des prédictions sur l'ensemble de test
     y_pred = reg.predict(X_test)
-
-    # Comparez les prédictions du modèle avec les vraies valeurs
     r2 = r2_score(y_test, y_pred)
     st.write(f"Score R2 pour la régression linéaire sur l'ensemble de test : {r2:.2f}")
+    mse = mean_squared_error(y_test, y_pred)
+    st.write(f"Erreur quadratique moyenne (MSE) pour la régression linéaire : {mse:.2f}")
 
     # Tracez le modèle de régression linéaire en superposant les données d'entraînement et de test
     predictions = reg.predict(X)
     fig9 = px.scatter(df_filtered, x="Date", y="Poids (Kgs)", labels={"Poids (Kgs)": "Poids (Kgs)", "Date": "Date"})
     fig9.add_traces(px.line(df_filtered, x="Date", y=predictions, labels={"y": "Régression linéaire"}).data[0])
-    fig9.add_scatter(x=test["Date"], y=y_pred, mode="markers", name="Prédictions sur ensemble de test")
+    fig9.add_scatter(x=df_filtered.iloc[train_size:]["Date"], y=y_pred, mode="markers", name="Prédictions sur ensemble de test")
     fig9.update_layout(title="Régression linéaire avec prédictions sur ensemble de test")
     st.plotly_chart(fig9)
 
