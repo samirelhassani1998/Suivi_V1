@@ -102,7 +102,7 @@ mean_change_rate = df_filtered["Poids_diff"].mean()
 st.write(f"Taux de changement moyen du poids : {mean_change_rate:.2f} Kgs par jour")
 
 # Calcul des calories nécessaires
-age = st.number_input("Âge (années)", value=24)
+age = st.number_input("Âge (années)", value=26)
 height = st.number_input("Taille (cm)", value=182)
 sex = st.selectbox("Sexe", options=["Homme", "Femme"])
 
