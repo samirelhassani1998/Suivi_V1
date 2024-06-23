@@ -7,6 +7,7 @@ from sklearn.ensemble import IsolationForest, RandomForestRegressor
 from sklearn.model_selection import train_test_split, cross_val_score
 from statsmodels.tsa.seasonal import STL
 from statsmodels.tsa.statespace.sarimax import SARIMAX
+from sklearn.cluster import KMeans
 
 # Titre de l'application Streamlit
 st.set_page_config(page_title="Suivi du poids", layout="wide")
@@ -168,11 +169,17 @@ with tab4:
     st.plotly_chart(fig9)
 
     # Clustering des données
-    kmeans = KMeans(n_clusters=3, random_state=42).fit(df_filtered[['Poids (Kgs)']])
-    df_filtered['Cluster'] = kmeans.labels_
+    if not df_filtered.empty:
+        try:
+            kmeans = KMeans(n_clusters=3, random_state=42).fit(df_filtered[['Poids (Kgs)']])
+            df_filtered['Cluster'] = kmeans.labels_
 
-    fig_cluster = px.scatter(df_filtered, x='Date', y='Poids (Kgs)', color='Cluster', title='Clustering des données de poids')
-    st.plotly_chart(fig_cluster)
+            fig_cluster = px.scatter(df_filtered, x='Date', y='Poids (Kgs)', color='Cluster', title='Clustering des données de poids')
+            st.plotly_chart(fig_cluster)
+        except ValueError as e:
+            st.error(f"Erreur lors du clustering : {e}")
+    else:
+        st.warning("Pas de données suffisantes pour le clustering.")
 
 with tab5:
     st.header("Personnalisation")
