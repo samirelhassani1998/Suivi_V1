@@ -90,8 +90,12 @@ with tab3:
     df_filtered["Date_numeric"] = (df_filtered["Date"] - df_filtered["Date"].min()) / np.timedelta64(1, "D")
     X = df_filtered[["Date_numeric"]]
     y = df_filtered["Poids (Kgs)"]
-    reg = LinearRegression().fit(X, y)
+    
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.33, random_state=42)
+    reg = LinearRegression().fit(X_train, y_train)
     predictions = reg.predict(X)
+    y_test_pred = reg.predict(X_test)
+
     fig4 = px.scatter(df_filtered, x="Date", y="Poids (Kgs)", labels={"Poids (Kgs)": "Poids (Kgs)", "Date": "Date"})
     fig4.add_traces(px.line(df_filtered, x="Date", y=predictions, labels={"y": "Régression linéaire"}).data[0])
     fig4.update_layout(title="Régression linéaire de l'évolution du poids")
@@ -175,10 +179,10 @@ with tab4:
     st.subheader("Comparaison des modèles de régression")
     from sklearn.ensemble import RandomForestRegressor
     rf_reg = RandomForestRegressor(n_estimators=100, random_state=42)
-    rf_reg.fit(X, y)
+    rf_reg.fit(X_train, y_train)
 
     lin_reg_r2 = r2_score(y, predictions)
-    rf_reg_r2 = r2_score(y, rf_reg.predict(X))
+    rf_reg_r2 = r2_score(y_test, rf_reg.predict(X_test))
 
     st.write(f"Score R2 pour la régression linéaire : {lin_reg_r2:.2f}")
     st.write(f"Score R2 pour la régression Random Forest : {rf_reg_r2:.2f}")
@@ -187,20 +191,10 @@ with tab4:
     st.write("Importance des caractéristiques pour le modèle Random Forest :")
     st.write(rf_reg.feature_importances_)
 
-    # Validation croisée pour évaluer la performance des modèles
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.33, random_state=42)
-    reg = LinearRegression().fit(X_train, y_train)
-    y_pred = reg.predict(X_test)
-    r2 = r2_score(y_test, y_pred)
-    st.write(f"Score R2 pour la régression linéaire sur l'ensemble de test : {r2:.2f}")
-    mse = mean_squared_error(y_test, y_pred)
-    st.write(f"Erreur quadratique moyenne (MSE) pour la régression linéaire : {mse:.2f}")
-
     # Tracez le modèle de régression linéaire en superposant les données d'entraînement et de test
-    predictions = reg.predict(X)
     fig9 = px.scatter(df_filtered, x="Date", y="Poids (Kgs)", labels={"Poids (Kgs)": "Poids (Kgs)", "Date": "Date"})
     fig9.add_traces(px.line(df_filtered, x="Date", y=predictions, labels={"y": "Régression linéaire"}).data[0])
-    fig9.add_scatter(x=df_filtered.iloc[train_size:]["Date"], y=y_pred, mode="markers", name="Prédictions sur ensemble de test")
+    fig9.add_scatter(x=df_filtered.iloc[X_test.index]["Date"], y=y_test_pred, mode="markers", name="Prédictions sur ensemble de test")
     fig9.update_layout(title="Régression linéaire avec prédictions sur ensemble de test")
     st.plotly_chart(fig9)
 
