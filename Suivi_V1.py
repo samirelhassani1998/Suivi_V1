@@ -7,9 +7,20 @@ from sklearn.ensemble import IsolationForest, RandomForestRegressor
 from sklearn.model_selection import train_test_split, cross_val_score
 from statsmodels.tsa.seasonal import STL
 from statsmodels.tsa.statespace.sarimax import SARIMAX
-import shap
-from fbprophet import Prophet
-from sklearn.cluster import KMeans
+
+# Importer `shap` si disponible
+try:
+    import shap
+except ImportError:
+    shap = None
+    st.warning("Le module `shap` n'est pas disponible. Certaines fonctionnalités seront désactivées.")
+
+# Importer `Prophet` si disponible
+try:
+    from prophet import Prophet
+except ImportError:
+    st.warning("Le module `prophet` n'est pas disponible. Les prévisions avec Prophet seront désactivées.")
+    Prophet = None
 
 # Titre de l'application Streamlit
 st.set_page_config(page_title="Suivi du poids", layout="wide")
@@ -73,6 +84,13 @@ with tab2:
     fig.add_hline(y=target_weight, line_dash="dash", annotation_text="Objectif 1", annotation_position="bottom right")
     fig.add_hline(y=target_weight_2, line_dash="dash", line_color="red", annotation_text="Objectif 2", annotation_position="bottom right")
     fig.add_hline(y=target_weight_3, line_dash="dash", line_color="green", annotation_text="Objectif 3", annotation_position="bottom right")
+    
+    # Appliquer le thème sélectionné
+    if theme == "Dark":
+        fig.update_layout(template="plotly_dark")
+    elif theme == "Light":
+        fig.update_layout(template="plotly_white")
+    
     st.plotly_chart(fig)
 
     # Histogramme de la distribution des poids
@@ -119,13 +137,14 @@ with tab3:
     st.write(f"Score MSE moyen pour la régression linéaire : {-lin_scores.mean():.2f}")
 
     # Prédictions avec Prophet
-    df_prophet = df_filtered.rename(columns={'Date': 'ds', 'Poids (Kgs)': 'y'})
-    prophet_model = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=False)
-    prophet_model.fit(df_prophet)
-    future = prophet_model.make_future_dataframe(periods=180)
-    forecast = prophet_model.predict(future)
-    fig_prophet = prophet_model.plot(forecast)
-    st.write(fig_prophet)
+    if Prophet is not None:
+        df_prophet = df_filtered.rename(columns={'Date': 'ds', 'Poids (Kgs)': 'y'})
+        prophet_model = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=False)
+        prophet_model.fit(df_prophet)
+        future = prophet_model.make_future_dataframe(periods=180)
+        forecast = prophet_model.predict(future)
+        fig_prophet = prophet_model.plot(forecast)
+        st.write(fig_prophet)
 
 with tab4:
     st.header("Analyse des Données")
@@ -172,11 +191,12 @@ with tab4:
     fig9.update_layout(title="Régression linéaire avec prédictions sur ensemble de test")
     st.plotly_chart(fig9)
 
-    # Analyse de sensibilité avec SHAP
-    explainer = shap.Explainer(rf_reg, X)
-    shap_values = explainer(X)
-    fig_shap = shap.summary_plot(shap_values, X)
-    st.pyplot(fig_shap)
+    if shap is not None:
+        # Analyse de sensibilité avec SHAP
+        explainer = shap.Explainer(rf_reg, X)
+        shap_values = explainer(X)
+        fig_shap = shap.summary_plot(shap_values, X)
+        st.pyplot(fig_shap)
 
     # Clustering des données
     kmeans = KMeans(n_clusters=3, random_state=42).fit(df_filtered[['Poids (Kgs)']])
