@@ -3,7 +3,7 @@ import numpy as np
 import plotly.express as px
 import streamlit as st
 from sklearn.linear_model import LinearRegression
-from sklearn.ensemble import IsolationForest
+from sklearn.ensemble import IsolationForest, RandomForestRegressor
 from statsmodels.tsa.seasonal import STL
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from sklearn.model_selection import train_test_split
@@ -177,7 +177,6 @@ with tab4:
 
     # Comparaison des modèles de régression
     st.subheader("Comparaison des modèles de régression")
-    from sklearn.ensemble import RandomForestRegressor
     rf_reg = RandomForestRegressor(n_estimators=100, random_state=42)
     rf_reg.fit(X_train, y_train)
 
