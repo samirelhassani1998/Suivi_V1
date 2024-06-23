@@ -121,4 +121,92 @@ with tab3:
 
     st.subheader("Validation des modèles")
     lin_scores = cross_val_score(reg, X, y, scoring='neg_mean_squared_error', cv=5)
-    st.write(f"Score MSE moyen pour la régression
+    st.write(f"Score MSE moyen pour la régression linéaire : {-lin_scores.mean():.2f}")
+
+with tab4:
+    st.header("Analyse des Données")
+    st.subheader("Analyse de tendance saisonnière")
+    stl = STL(df_filtered['Poids (Kgs)'], period=7)
+    res = stl.fit()
+    fig5 = res.plot()
+    st.pyplot(fig5)
+
+    df_filtered["Trend"] = res.trend
+    df_filtered["Seasonal"] = res.seasonal
+
+    fig6 = px.line(df_filtered, x="Date", y="Trend")
+    fig6.update_layout(title="Tendance de l'évolution du poids")
+    st.plotly_chart(fig6)
+
+    fig7 = px.line(df_filtered, x="Date", y="Seasonal")
+    fig7.update_layout(title="Saisonnalité de l'évolution du poids")
+    st.plotly_chart(fig7)
+
+    st.subheader("Prédictions avec SARIMA")
+    sarima_model = SARIMAX(df_filtered["Poids (Kgs)"], order=(1, 1, 1), seasonal_order=(1, 1, 1, 7))
+    sarima_results = sarima_model.fit(disp=False)
+    df_filtered["SARIMA_Predictions"] = sarima_results.predict(start=0, end=len(df_filtered) - 1)
+
+    fig8 = px.scatter(df_filtered, x="Date", y="Poids (Kgs)")
+    fig8.add_trace(px.line(df_filtered, x="Date", y=df_filtered["SARIMA_Predictions"], labels={"y": "Prédictions SARIMA"}).data[0])
+    fig8.update_layout(title="Prédictions avec le modèle SARIMA")
+    st.plotly_chart(fig8)
+
+    st.subheader("Comparaison des modèles de régression")
+    rf_reg = RandomForestRegressor(n_estimators=100, random_state=42)
+    rf_reg.fit(X_train, y_train)
+    rf_scores = cross_val_score(rf_reg, X, y, scoring='neg_mean_squared_error', cv=5)
+    st.write(f"Score MSE moyen pour le modèle Random Forest : {-rf_scores.mean():.2f}")
+
+    # Importance des caractéristiques pour le modèle Random Forest
+    st.write("Importance des caractéristiques pour le modèle Random Forest :")
+    st.write(rf_reg.feature_importances_)
+
+    fig9 = px.scatter(df_filtered, x="Date", y="Poids (Kgs)")
+    fig9.add_trace(px.line(df_filtered, x="Date", y=predictions, labels={"y": "Régression linéaire"}).data[0])
+    fig9.add_scatter(x=df_filtered.iloc[X_test.index]["Date"], y=y_test_pred, mode="markers", name="Prédictions sur ensemble de test")
+    fig9.update_layout(title="Régression linéaire avec prédictions sur ensemble de test")
+    st.plotly_chart(fig9)
+
+    # Clustering des données
+    if not df_filtered.empty:
+        try:
+            kmeans = KMeans(n_clusters=3, random_state=42).fit(df_filtered[['Poids (Kgs)']])
+            df_filtered['Cluster'] = kmeans.labels_
+
+            fig_cluster = px.scatter(df_filtered, x='Date', y='Poids (Kgs)', color='Cluster', title='Clustering des données de poids')
+            st.plotly_chart(fig_cluster)
+        except ValueError as e:
+            st.error(f"Erreur lors du clustering : {e}")
+    else:
+        st.warning("Pas de données suffisantes pour le clustering.")
+
+with tab5:
+    st.header("Personnalisation")
+    st.write("Sélectionnez un thème pour les graphiques.")
+    if theme == "Dark":
+        fig.update_layout(template="plotly_dark")
+    elif theme == "Light":
+        fig.update_layout(template="plotly_white")
+
+    if df_filtered['Poids (Kgs)'].iloc[-1] < target_weight:
+        st.success("Félicitations ! Vous avez atteint votre objectif de poids !")
+    elif df_filtered['Poids (Kgs)'].iloc[-1] > target_weight_3:
+        st.warning("Attention, votre poids est au-dessus de l'objectif 3.")
+
+    fig_objectifs = px.bar(
+        x=["Poids actuel", "Objectif 1", "Objectif 2", "Objectif 3"],
+        y=[df_filtered['Poids (Kgs)'].iloc[-1], target_weight, target_weight_2, target_weight_3],
+        title="Progression vers les objectifs de poids",
+        color=["Poids actuel", "Objectif 1", "Objectif 2", "Objectif 3"]
+    )
+    st.plotly_chart(fig_objectifs)
+
+with tab6:
+    st.header("Téléchargement")
+    uploaded_file = st.file_uploader("Télécharger un fichier CSV", type=["csv"])
+    if uploaded_file:
+        df_user = pd.read_csv(uploaded_file)
+        st.write("Aperçu des données téléchargées :")
+        st.write(df_user.head())
+        # Intégrer df_user dans l'analyse si nécessaire
