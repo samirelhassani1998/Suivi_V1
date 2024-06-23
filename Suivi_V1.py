@@ -8,20 +8,6 @@ from sklearn.model_selection import train_test_split, cross_val_score
 from statsmodels.tsa.seasonal import STL
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 
-# Importer `shap` si disponible
-try:
-    import shap
-except ImportError:
-    shap = None
-    st.warning("Le module `shap` n'est pas disponible. Certaines fonctionnalités seront désactivées.")
-
-# Importer `Prophet` si disponible
-try:
-    from prophet import Prophet
-except ImportError:
-    st.warning("Le module `prophet` n'est pas disponible. Les prévisions avec Prophet seront désactivées.")
-    Prophet = None
-
 # Titre de l'application Streamlit
 st.set_page_config(page_title="Suivi du poids", layout="wide")
 st.title("Suivi de l'évolution du poids")
@@ -136,16 +122,6 @@ with tab3:
     lin_scores = cross_val_score(reg, X, y, scoring='neg_mean_squared_error', cv=5)
     st.write(f"Score MSE moyen pour la régression linéaire : {-lin_scores.mean():.2f}")
 
-    # Prédictions avec Prophet
-    if Prophet is not None:
-        df_prophet = df_filtered.rename(columns={'Date': 'ds', 'Poids (Kgs)': 'y'})
-        prophet_model = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=False)
-        prophet_model.fit(df_prophet)
-        future = prophet_model.make_future_dataframe(periods=180)
-        forecast = prophet_model.predict(future)
-        fig_prophet = prophet_model.plot(forecast)
-        st.write(fig_prophet)
-
 with tab4:
     st.header("Analyse des Données")
     st.subheader("Analyse de tendance saisonnière")
@@ -190,13 +166,6 @@ with tab4:
     fig9.add_scatter(x=df_filtered.iloc[X_test.index]["Date"], y=y_test_pred, mode="markers", name="Prédictions sur ensemble de test")
     fig9.update_layout(title="Régression linéaire avec prédictions sur ensemble de test")
     st.plotly_chart(fig9)
-
-    if shap is not None:
-        # Analyse de sensibilité avec SHAP
-        explainer = shap.Explainer(rf_reg, X)
-        shap_values = explainer(X)
-        fig_shap = shap.summary_plot(shap_values, X)
-        st.pyplot(fig_shap)
 
     # Clustering des données
     kmeans = KMeans(n_clusters=3, random_state=42).fit(df_filtered[['Poids (Kgs)']])
