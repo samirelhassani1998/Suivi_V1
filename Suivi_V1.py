@@ -14,18 +14,23 @@ st.set_page_config(page_title="Suivi du poids", layout="wide")
 st.title("Suivi de l'évolution du poids")
 
 # Fonction pour charger et traiter les données
-@st.cache_data
-def load_data(url):
-    df = pd.read_csv(url, decimal=",")
+def load_data(file_path):
+    df = pd.read_csv(file_path, decimal=",")
     df['Poids (Kgs)'] = pd.to_numeric(df['Poids (Kgs)'], errors='coerce')
     df = df.dropna()
-    df['Date'] = pd.to_datetime(df['Date'], format='%d/%m/%Y')
+    df['Date'] = pd.to_datetime(df['Date'], format='%d/%m/%Y', errors='coerce')
     df = df.sort_values('Date')
     return df
 
-# URL du fichier CSV
-url = 'https://docs.google.com/spreadsheets/d/1qPhLKvm4BREErQrm0L38DcZFG4a-K0msSzARVIG_T_U/export?format=csv'
-df = load_data(url)
+# Charger les données depuis le fichier téléchargé
+file_path = '/mnt/data/Suivi_V1 - Feuille 1.csv'
+df = load_data(file_path)
+
+# Vérification des dates non valides
+invalid_dates = df[df['Date'].isna()]
+if not invalid_dates.empty:
+    st.warning("Certaines dates n'ont pas pu être converties correctement. Veuillez vérifier le format des dates dans le fichier CSV.")
+    st.write(invalid_dates)
 
 # Interface utilisateur pour les paramètres
 st.sidebar.header("Paramètres de la moyenne mobile")
@@ -208,3 +213,4 @@ with tab6:
         st.write("Aperçu des données téléchargées :")
         st.write(df_user.head())
         # Intégrer df_user dans l'analyse si nécessaire
+
