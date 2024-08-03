@@ -22,195 +22,196 @@ def load_data(file_path):
     df = df.sort_values('Date')
     return df
 
-# Charger les données depuis le fichier téléchargé
-file_path = '/mnt/data/Suivi_V1 - Feuille 1.csv'
-df = load_data(file_path)
+# Interface utilisateur pour le téléchargement de fichiers
+uploaded_file = st.file_uploader("Téléchargez un fichier CSV", type="csv")
+if uploaded_file is not None:
+    df = load_data(uploaded_file)
+    # Vérification des dates non valides
+    invalid_dates = df[df['Date'].isna()]
+    if not invalid_dates.empty:
+        st.warning("Certaines dates n'ont pas pu être converties correctement. Veuillez vérifier le format des dates dans le fichier CSV.")
+        st.write(invalid_dates)
+    
+    # Interface utilisateur pour les paramètres
+    st.sidebar.header("Paramètres de la moyenne mobile")
+    window_size = st.sidebar.slider("Taille de la fenêtre pour la moyenne mobile (jours)", 1, 30, 7)
+    df["Poids_rolling_mean"] = df["Poids (Kgs)"].rolling(window=window_size).mean()
 
-# Vérification des dates non valides
-invalid_dates = df[df['Date'].isna()]
-if not invalid_dates.empty:
-    st.warning("Certaines dates n'ont pas pu être converties correctement. Veuillez vérifier le format des dates dans le fichier CSV.")
-    st.write(invalid_dates)
+    st.sidebar.header("Objectifs de poids")
+    target_weight = st.sidebar.number_input("Objectif de poids 1 (Kgs)", value=90.0)
+    target_weight_2 = st.sidebar.number_input("Objectif de poids 2 (Kgs)", value=87.5)
+    target_weight_3 = st.sidebar.number_input("Objectif de poids 3 (Kgs)", value=85.0)
 
-# Interface utilisateur pour les paramètres
-st.sidebar.header("Paramètres de la moyenne mobile")
-window_size = st.sidebar.slider("Taille de la fenêtre pour la moyenne mobile (jours)", 1, 30, 7)
-df["Poids_rolling_mean"] = df["Poids (Kgs)"].rolling(window=window_size).mean()
+    # Suppression du filtrage de la plage de dates
+    df_filtered = df  # Afficher toutes les dates
 
-st.sidebar.header("Objectifs de poids")
-target_weight = st.sidebar.number_input("Objectif de poids 1 (Kgs)", value=90.0)
-target_weight_2 = st.sidebar.number_input("Objectif de poids 2 (Kgs)", value=87.5)
-target_weight_3 = st.sidebar.number_input("Objectif de poids 3 (Kgs)", value=85.0)
+    # Interface utilisateur pour le thème
+    st.sidebar.header("Thème")
+    theme = st.sidebar.selectbox("Choisir un thème", ["Default", "Dark", "Light"])
 
-# Suppression du filtrage de la plage de dates
-df_filtered = df  # Afficher toutes les dates
+    # Diviser l'application en onglets
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Résumé", "Graphiques", "Prévisions", "Analyse des Données", "Personnalisation", "Téléchargement"])
 
-# Interface utilisateur pour le thème
-st.sidebar.header("Thème")
-theme = st.sidebar.selectbox("Choisir un thème", ["Default", "Dark", "Light"])
+    with tab1:
+        st.header("Résumé")
+        st.write("Voici un résumé de vos progrès vers les objectifs de poids.")
+        if df_filtered.empty:
+            st.warning("Aucune donnée disponible après filtrage.")
+        else:
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Poids actuel", f"{df_filtered['Poids (Kgs)'].iloc[-1]:.2f} Kgs")
+            col2.metric("Objectif de poids", f"{target_weight} Kgs")
+            col3.metric("Progrès vers l'objectif", f"{100 * (df_filtered['Poids (Kgs)'].iloc[-1] / target_weight):.2f} %")
+            st.write("Statistiques des poids :")
+            st.write(df_filtered["Poids (Kgs)"].describe())
 
-# Diviser l'application en onglets
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Résumé", "Graphiques", "Prévisions", "Analyse des Données", "Personnalisation", "Téléchargement"])
+    with tab2:
+        st.header("Graphiques")
+        # Graphique de l'évolution du poids avec la moyenne mobile
+        fig = px.line(df_filtered, x="Date", y="Poids (Kgs)", markers=True)
+        fig.add_scatter(x=df_filtered["Date"], y=df_filtered["Poids_rolling_mean"], mode="lines", name="Moyenne mobile")
+        fig.update_layout(title="Evolution du poids")
+        fig.add_hline(y=target_weight, line_dash="dash", annotation_text="Objectif 1", annotation_position="bottom right")
+        fig.add_hline(y=target_weight_2, line_dash="dash", line_color="red", annotation_text="Objectif 2", annotation_position="bottom right")
+        fig.add_hline(y=target_weight_3, line_dash="dash", line_color="green", annotation_text="Objectif 3", annotation_position="bottom right")
 
-with tab1:
-    st.header("Résumé")
-    st.write("Voici un résumé de vos progrès vers les objectifs de poids.")
-    if df_filtered.empty:
-        st.warning("Aucune donnée disponible après filtrage.")
-    else:
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Poids actuel", f"{df_filtered['Poids (Kgs)'].iloc[-1]:.2f} Kgs")
-        col2.metric("Objectif de poids", f"{target_weight} Kgs")
-        col3.metric("Progrès vers l'objectif", f"{100 * (df_filtered['Poids (Kgs)'].iloc[-1] / target_weight):.2f} %")
-        st.write("Statistiques des poids :")
-        st.write(df_filtered["Poids (Kgs)"].describe())
+        # Appliquer le thème sélectionné
+        if theme == "Dark":
+            fig.update_layout(template="plotly_dark")
+        elif theme == "Light":
+            fig.update_layout(template="plotly_white")
 
-with tab2:
-    st.header("Graphiques")
-    # Graphique de l'évolution du poids avec la moyenne mobile
-    fig = px.line(df_filtered, x="Date", y="Poids (Kgs)", markers=True)
-    fig.add_scatter(x=df_filtered["Date"], y=df_filtered["Poids_rolling_mean"], mode="lines", name="Moyenne mobile")
-    fig.update_layout(title="Evolution du poids")
-    fig.add_hline(y=target_weight, line_dash="dash", annotation_text="Objectif 1", annotation_position="bottom right")
-    fig.add_hline(y=target_weight_2, line_dash="dash", line_color="red", annotation_text="Objectif 2", annotation_position="bottom right")
-    fig.add_hline(y=target_weight_3, line_dash="dash", line_color="green", annotation_text="Objectif 3", annotation_position="bottom right")
+        st.plotly_chart(fig)
 
-    # Appliquer le thème sélectionné
-    if theme == "Dark":
-        fig.update_layout(template="plotly_dark")
-    elif theme == "Light":
-        fig.update_layout(template="plotly_white")
+        # Histogramme de la distribution des poids
+        fig2 = px.histogram(df_filtered, x="Poids (Kgs)", nbins=30, title="Distribution des poids")
+        st.plotly_chart(fig2)
 
-    st.plotly_chart(fig)
+        # Graphique des anomalies détectées
+        iso_forest = IsolationForest(contamination=0.05, random_state=42)
+        df_filtered['Anomalies'] = iso_forest.fit_predict(df_filtered[['Poids (Kgs)']])
+        fig3 = px.scatter(df_filtered, x="Date", y="Poids (Kgs)", color="Anomalies", color_discrete_sequence=["blue", "red"])
+        fig3.update_layout(title="Evolution du poids avec détection des anomalies")
+        st.plotly_chart(fig3)
+        st.write("Points de données inhabituels détectés :")
+        st.write(df_filtered[df_filtered["Anomalies"] == -1])
 
-    # Histogramme de la distribution des poids
-    fig2 = px.histogram(df_filtered, x="Poids (Kgs)", nbins=30, title="Distribution des poids")
-    st.plotly_chart(fig2)
+    with tab3:
+        st.header("Prévisions")
+        # Prédiction de la date d'atteinte de l'objectif de poids avec régression linéaire
+        df_filtered["Date_numeric"] = (df_filtered["Date"] - df_filtered["Date"].min()) / np.timedelta64(1, "D")
+        X = df_filtered[["Date_numeric"]]
+        y = df_filtered["Poids (Kgs)"]
 
-    # Graphique des anomalies détectées
-    iso_forest = IsolationForest(contamination=0.05, random_state=42)
-    df_filtered['Anomalies'] = iso_forest.fit_predict(df_filtered[['Poids (Kgs)']])
-    fig3 = px.scatter(df_filtered, x="Date", y="Poids (Kgs)", color="Anomalies", color_discrete_sequence=["blue", "red"])
-    fig3.update_layout(title="Evolution du poids avec détection des anomalies")
-    st.plotly_chart(fig3)
-    st.write("Points de données inhabituels détectés :")
-    st.write(df_filtered[df_filtered["Anomalies"] == -1])
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.33, random_state=42)
+        reg = LinearRegression().fit(X_train, y_train)
+        predictions = reg.predict(X)
+        y_test_pred = reg.predict(X_test)
 
-with tab3:
-    st.header("Prévisions")
-    # Prédiction de la date d'atteinte de l'objectif de poids avec régression linéaire
-    df_filtered["Date_numeric"] = (df_filtered["Date"] - df_filtered["Date"].min()) / np.timedelta64(1, "D")
-    X = df_filtered[["Date_numeric"]]
-    y = df_filtered["Poids (Kgs)"]
+        fig4 = px.scatter(df_filtered, x="Date", y="Poids (Kgs)")
+        fig4.add_trace(px.line(df_filtered, x="Date", y=predictions, labels={"y": "Prévisions"}).data[0])
+        fig4.update_layout(title="Régression linéaire de l'évolution du poids")
+        st.plotly_chart(fig4)
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.33, random_state=42)
-    reg = LinearRegression().fit(X_train, y_train)
-    predictions = reg.predict(X)
-    y_test_pred = reg.predict(X_test)
+        days_to_target = int((target_weight - reg.intercept_) / reg.coef_[0])
+        target_date = df_filtered["Date"].min() + pd.to_timedelta(days_to_target, unit="D")
+        st.write(f"Date estimée pour atteindre l'objectif de poids : {target_date.date()}")
 
-    fig4 = px.scatter(df_filtered, x="Date", y="Poids (Kgs)")
-    fig4.add_trace(px.line(df_filtered, x="Date", y=predictions, labels={"y": "Prévisions"}).data[0])
-    fig4.update_layout(title="Régression linéaire de l'évolution du poids")
-    st.plotly_chart(fig4)
+        # Calculer le taux de changement moyen du poids
+        df_filtered["Poids_diff"] = df_filtered["Poids (Kgs)"].diff()
+        mean_change_rate = df_filtered["Poids_diff"].mean()
+        st.write(f"Taux de changement moyen du poids : {mean_change_rate:.2f} Kgs par jour")
 
-    days_to_target = int((target_weight - reg.intercept_) / reg.coef_[0])
-    target_date = df_filtered["Date"].min() + pd.to_timedelta(days_to_target, unit="D")
-    st.write(f"Date estimée pour atteindre l'objectif de poids : {target_date.date()}")
+        st.subheader("Validation des modèles")
+        lin_scores = cross_val_score(reg, X, y, scoring='neg_mean_squared_error', cv=5)
+        st.write(f"Score MSE moyen pour la régression linéaire : {-lin_scores.mean():.2f}")
 
-    # Calculer le taux de changement moyen du poids
-    df_filtered["Poids_diff"] = df_filtered["Poids (Kgs)"].diff()
-    mean_change_rate = df_filtered["Poids_diff"].mean()
-    st.write(f"Taux de changement moyen du poids : {mean_change_rate:.2f} Kgs par jour")
+    with tab4:
+        st.header("Analyse des Données")
+        st.subheader("Analyse de tendance saisonnière")
+        stl = STL(df_filtered['Poids (Kgs)'], period=7)
+        res = stl.fit()
+        fig5 = res.plot()
+        st.pyplot(fig5)
 
-    st.subheader("Validation des modèles")
-    lin_scores = cross_val_score(reg, X, y, scoring='neg_mean_squared_error', cv=5)
-    st.write(f"Score MSE moyen pour la régression linéaire : {-lin_scores.mean():.2f}")
+        df_filtered["Trend"] = res.trend
+        df_filtered["Seasonal"] = res.seasonal
 
-with tab4:
-    st.header("Analyse des Données")
-    st.subheader("Analyse de tendance saisonnière")
-    stl = STL(df_filtered['Poids (Kgs)'], period=7)
-    res = stl.fit()
-    fig5 = res.plot()
-    st.pyplot(fig5)
+        fig6 = px.line(df_filtered, x="Date", y="Trend")
+        fig6.update_layout(title="Tendance de l'évolution du poids")
+        st.plotly_chart(fig6)
 
-    df_filtered["Trend"] = res.trend
-    df_filtered["Seasonal"] = res.seasonal
+        fig7 = px.line(df_filtered, x="Date", y="Seasonal")
+        fig7.update_layout(title="Saisonnalité de l'évolution du poids")
+        st.plotly_chart(fig7)
 
-    fig6 = px.line(df_filtered, x="Date", y="Trend")
-    fig6.update_layout(title="Tendance de l'évolution du poids")
-    st.plotly_chart(fig6)
+        st.subheader("Prédictions avec SARIMA")
+        sarima_model = SARIMAX(df_filtered["Poids (Kgs)"], order=(1, 1, 1), seasonal_order=(1, 1, 1, 7))
+        sarima_results = sarima_model.fit(disp=False)
+        df_filtered["SARIMA_Predictions"] = sarima_results.predict(start=0, end=len(df_filtered) - 1)
 
-    fig7 = px.line(df_filtered, x="Date", y="Seasonal")
-    fig7.update_layout(title="Saisonnalité de l'évolution du poids")
-    st.plotly_chart(fig7)
+        fig8 = px.scatter(df_filtered, x="Date", y="Poids (Kgs)")
+        fig8.add_trace(px.line(df_filtered, x="Date", y=df_filtered["SARIMA_Predictions"], labels={"y": "Prédictions SARIMA"}).data[0])
+        fig8.update_layout(title="Prédictions avec le modèle SARIMA")
+        st.plotly_chart(fig8)
 
-    st.subheader("Prédictions avec SARIMA")
-    sarima_model = SARIMAX(df_filtered["Poids (Kgs)"], order=(1, 1, 1), seasonal_order=(1, 1, 1, 7))
-    sarima_results = sarima_model.fit(disp=False)
-    df_filtered["SARIMA_Predictions"] = sarima_results.predict(start=0, end=len(df_filtered) - 1)
+        st.subheader("Comparaison des modèles de régression")
+        rf_reg = RandomForestRegressor(n_estimators=100, random_state=42)
+        rf_reg.fit(X_train, y_train)
+        rf_scores = cross_val_score(rf_reg, X, y, scoring='neg_mean_squared_error', cv=5)
+        st.write(f"Score MSE moyen pour le modèle Random Forest : {-rf_scores.mean():.2f}")
 
-    fig8 = px.scatter(df_filtered, x="Date", y="Poids (Kgs)")
-    fig8.add_trace(px.line(df_filtered, x="Date", y=df_filtered["SARIMA_Predictions"], labels={"y": "Prédictions SARIMA"}).data[0])
-    fig8.update_layout(title="Prédictions avec le modèle SARIMA")
-    st.plotly_chart(fig8)
+        # Importance des caractéristiques pour le modèle Random Forest
+        st.write("Importance des caractéristiques pour le modèle Random Forest :")
+        st.write(rf_reg.feature_importances_)
 
-    st.subheader("Comparaison des modèles de régression")
-    rf_reg = RandomForestRegressor(n_estimators=100, random_state=42)
-    rf_reg.fit(X_train, y_train)
-    rf_scores = cross_val_score(rf_reg, X, y, scoring='neg_mean_squared_error', cv=5)
-    st.write(f"Score MSE moyen pour le modèle Random Forest : {-rf_scores.mean():.2f}")
+        fig9 = px.scatter(df_filtered, x="Date", y="Poids (Kgs)")
+        fig9.add_trace(px.line(df_filtered, x="Date", y=predictions, labels={"y": "Régression linéaire"}).data[0])
+        fig9.add_scatter(x=df_filtered.iloc[X_test.index]["Date"], y=y_test_pred, mode="markers", name="Prédictions sur ensemble de test")
+        fig9.update_layout(title="Régression linéaire avec prédictions sur ensemble de test")
+        st.plotly_chart(fig9)
 
-    # Importance des caractéristiques pour le modèle Random Forest
-    st.write("Importance des caractéristiques pour le modèle Random Forest :")
-    st.write(rf_reg.feature_importances_)
+        # Clustering des données
+        if not df_filtered.empty:
+            try:
+                kmeans = KMeans(n_clusters=3, random_state=42).fit(df_filtered[['Poids (Kgs)']])
+                df_filtered['Cluster'] = kmeans.labels_
 
-    fig9 = px.scatter(df_filtered, x="Date", y="Poids (Kgs)")
-    fig9.add_trace(px.line(df_filtered, x="Date", y=predictions, labels={"y": "Régression linéaire"}).data[0])
-    fig9.add_scatter(x=df_filtered.iloc[X_test.index]["Date"], y=y_test_pred, mode="markers", name="Prédictions sur ensemble de test")
-    fig9.update_layout(title="Régression linéaire avec prédictions sur ensemble de test")
-    st.plotly_chart(fig9)
+                fig_cluster = px.scatter(df_filtered, x='Date', y='Poids (Kgs)', color='Cluster', title='Clustering des données de poids')
+                st.plotly_chart(fig_cluster)
+            except ValueError as e:
+                st.error(f"Erreur lors du clustering : {e}")
+        else:
+            st.warning("Pas de données suffisantes pour le clustering.")
 
-    # Clustering des données
-    if not df_filtered.empty:
-        try:
-            kmeans = KMeans(n_clusters=3, random_state=42).fit(df_filtered[['Poids (Kgs)']])
-            df_filtered['Cluster'] = kmeans.labels_
+    with tab5:
+        st.header("Personnalisation")
+        st.write("Sélectionnez un thème pour les graphiques.")
+        if theme == "Dark":
+            fig.update_layout(template="plotly_dark")
+        elif theme == "Light":
+            fig.update_layout(template="plotly_white")
 
-            fig_cluster = px.scatter(df_filtered, x='Date', y='Poids (Kgs)', color='Cluster', title='Clustering des données de poids')
-            st.plotly_chart(fig_cluster)
-        except ValueError as e:
-            st.error(f"Erreur lors du clustering : {e}")
-    else:
-        st.warning("Pas de données suffisantes pour le clustering.")
+        if df_filtered['Poids (Kgs)'].iloc[-1] < target_weight:
+            st.success("Félicitations ! Vous avez atteint votre objectif de poids !")
+        elif df_filtered['Poids (Kgs)'].iloc[-1] > target_weight_3:
+            st.warning("Attention, votre poids est au-dessus de l'objectif 3.")
 
-with tab5:
-    st.header("Personnalisation")
-    st.write("Sélectionnez un thème pour les graphiques.")
-    if theme == "Dark":
-        fig.update_layout(template="plotly_dark")
-    elif theme == "Light":
-        fig.update_layout(template="plotly_white")
+        fig_objectifs = px.bar(
+            x=["Poids actuel", "Objectif 1", "Objectif 2", "Objectif 3"],
+            y=[df_filtered['Poids (Kgs)'].iloc[-1], target_weight, target_weight_2, target_weight_3],
+            title="Progression vers les objectifs de poids",
+            color=["Poids actuel", "Objectif 1", "Objectif 2", "Objectif 3"]
+        )
+        st.plotly_chart(fig_objectifs)
 
-    if df_filtered['Poids (Kgs)'].iloc[-1] < target_weight:
-        st.success("Félicitations ! Vous avez atteint votre objectif de poids !")
-    elif df_filtered['Poids (Kgs)'].iloc[-1] > target_weight_3:
-        st.warning("Attention, votre poids est au-dessus de l'objectif 3.")
-
-    fig_objectifs = px.bar(
-        x=["Poids actuel", "Objectif 1", "Objectif 2", "Objectif 3"],
-        y=[df_filtered['Poids (Kgs)'].iloc[-1], target_weight, target_weight_2, target_weight_3],
-        title="Progression vers les objectifs de poids",
-        color=["Poids actuel", "Objectif 1", "Objectif 2", "Objectif 3"]
-    )
-    st.plotly_chart(fig_objectifs)
-
-with tab6:
-    st.header("Téléchargement")
-    uploaded_file = st.file_uploader("Télécharger un fichier CSV", type=["csv"])
-    if uploaded_file:
-        df_user = pd.read_csv(uploaded_file)
-        st.write("Aperçu des données téléchargées :")
-        st.write(df_user.head())
-        # Intégrer df_user dans l'analyse si nécessaire
-
+    with tab6:
+        st.header("Téléchargement")
+        uploaded_file = st.file_uploader("Télécharger un fichier CSV", type=["csv"])
+        if uploaded_file:
+            df_user = pd.read_csv(uploaded_file)
+            st.write("Aperçu des données téléchargées :")
+            st.write(df_user.head())
+            # Intégrer df_user dans l'analyse si nécessaire
+else:
+    st.warning("Veuillez télécharger un fichier CSV pour commencer l'analyse.")
