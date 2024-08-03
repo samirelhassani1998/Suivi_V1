@@ -8,51 +8,24 @@ from sklearn.model_selection import train_test_split, cross_val_score
 from statsmodels.tsa.seasonal import STL
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from sklearn.cluster import KMeans
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
 
 # Titre de l'application Streamlit
 st.set_page_config(page_title="Suivi du poids", layout="wide")
 st.title("Suivi de l'évolution du poids")
 
-# Fonction pour charger et traiter les données depuis Google Sheets
-def load_data_from_google_sheet(sheet_url):
-    # Define the scope
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-
-    # Add credentials to the account
-    creds = ServiceAccountCredentials.from_json_keyfile_name('path_to_your_json_file.json', scope)
-
-    # Authorize the clientsheet 
-    client = gspread.authorize(creds)
-
-    # Get the instance of the Spreadsheet
-    sheet = client.open_by_url(sheet_url)
-
-    # Get the first sheet of the Spreadsheet
-    sheet_instance = sheet.get_worksheet(0)
-
-    # Get all the records of the data
-    records_data = sheet_instance.get_all_records()
-
-    # Convert the json to dataframe
-    df = pd.DataFrame.from_dict(records_data)
-
+# Fonction pour charger et traiter les données
+@st.cache_data
+def load_data(url):
+    df = pd.read_csv(url, decimal=",")
     df['Poids (Kgs)'] = pd.to_numeric(df['Poids (Kgs)'], errors='coerce')
     df = df.dropna()
-    df['Date'] = pd.to_datetime(df['Date'], format='%d/%m/%Y', errors='coerce')
+    df['Date'] = pd.to_datetime(df['Date'], format='%d/%m/%Y')
     df = df.sort_values('Date')
     return df
 
-# Charger les données depuis Google Sheets
-sheet_url = "https://docs.google.com/spreadsheets/d/1qPhLKvm4BREErQrm0L38DcZFG4a-K0msSzARVIG_T_U/edit#gid=0"
-df = load_data_from_google_sheet(sheet_url)
-
-# Vérification des dates non valides
-invalid_dates = df[df['Date'].isna()]
-if not invalid_dates.empty:
-    st.warning("Certaines dates n'ont pas pu être converties correctement. Veuillez vérifier le format des dates dans le fichier CSV.")
-    st.write(invalid_dates)
+# URL du fichier CSV
+url = 'https://docs.google.com/spreadsheets/d/1qPhLKvm4BREErQrm0L38DcZFG4a-K0msSzARVIG_T_U/export?format=csv'
+df = load_data(url)
 
 # Interface utilisateur pour les paramètres
 st.sidebar.header("Paramètres de la moyenne mobile")
@@ -64,8 +37,10 @@ target_weight = st.sidebar.number_input("Objectif de poids 1 (Kgs)", value=90.0)
 target_weight_2 = st.sidebar.number_input("Objectif de poids 2 (Kgs)", value=87.5)
 target_weight_3 = st.sidebar.number_input("Objectif de poids 3 (Kgs)", value=85.0)
 
-# Suppression du filtrage de la plage de dates
-df_filtered = df  # Afficher toutes les dates
+# Interface utilisateur pour la plage de dates
+st.sidebar.header("Plage de dates")
+date_range = st.sidebar.slider("Plage de dates", min_value=df['Date'].min().date(), max_value=df['Date'].max().date(), value=(df['Date'].min().date(), df['Date'].max().date()))
+df_filtered = df[(df['Date'] >= pd.Timestamp(date_range[0])) & (df['Date'] <= pd.Timestamp(date_range[1]))]
 
 # Interface utilisateur pour le thème
 st.sidebar.header("Thème")
@@ -229,4 +204,9 @@ with tab5:
 
 with tab6:
     st.header("Téléchargement")
-    st.write("Les fonctionnalités de téléchargement peuvent être implémentées ici si nécessaire.")
+    uploaded_file = st.file_uploader("Télécharger un fichier CSV", type=["csv"])
+    if uploaded_file:
+        df_user = pd.read_csv(uploaded_file)
+        st.write("Aperçu des données téléchargées :")
+        st.write(df_user.head())
+        # Intégrer df_user dans l'analyse si nécessaire
