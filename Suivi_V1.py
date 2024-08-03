@@ -37,10 +37,8 @@ target_weight = st.sidebar.number_input("Objectif de poids 1 (Kgs)", value=90.0)
 target_weight_2 = st.sidebar.number_input("Objectif de poids 2 (Kgs)", value=87.5)
 target_weight_3 = st.sidebar.number_input("Objectif de poids 3 (Kgs)", value=85.0)
 
-# Interface utilisateur pour la plage de dates
-st.sidebar.header("Plage de dates")
-date_range = st.sidebar.slider("Plage de dates", min_value=df['Date'].min().date(), max_value=df['Date'].max().date(), value=(df['Date'].min().date(), df['Date'].max().date()))
-df_filtered = df[(df['Date'] >= pd.Timestamp(date_range[0])) & (df['Date'] <= pd.Timestamp(date_range[1]))]
+# Suppression du filtrage de la plage de dates
+df_filtered = df  # Afficher toutes les dates
 
 # Interface utilisateur pour le thème
 st.sidebar.header("Thème")
