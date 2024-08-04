@@ -20,12 +20,16 @@ def load_data(url):
     df['Poids (Kgs)'] = pd.to_numeric(df['Poids (Kgs)'], errors='coerce')
     df = df.dropna()
     df['Date'] = pd.to_datetime(df['Date'], format='%d/%m/%Y')
-    df = df.sort_values('Date')
+    df = df.sort_values('Date', ascending=True)  # Assurez-vous que le tri est correct
     return df
 
 # URL du fichier CSV
 url = 'https://docs.google.com/spreadsheets/d/1qPhLKvm4BREErQrm0L38DcZFG4a-K0msSzARVIG_T_U/export?format=csv'
 df = load_data(url)
+
+# Vérification des données chargées
+st.write("Aperçu des données chargées :")
+st.write(df.tail())  # Afficher les dernières lignes pour vérifier que toutes les données sont là
 
 # Interface utilisateur pour les paramètres
 st.sidebar.header("Paramètres de la moyenne mobile")
