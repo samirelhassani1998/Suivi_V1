@@ -65,7 +65,7 @@ with tab1:
 
 with tab2:
     st.header("Graphiques")
-    # Graphique de l'évolution du poids avec la moyenne mobile
+    # Graphique de l'évolution du poids avec la moyenne globale
     fig = px.line(df, x="Date", y="Poids (Kgs)", markers=True)
 
     # Calcul de la moyenne globale des poids
@@ -73,7 +73,12 @@ with tab2:
 
     # Ajout de la moyenne globale au graphique
     fig.add_hline(y=mean_weight, line_dash="dot", annotation_text="Moyenne Globale", annotation_position="bottom right")
-    
+
+    # Calcul de la moyenne des 7 dernières valeurs
+    if len(df) >= 7:
+        last_7_mean = df["Poids (Kgs)"].iloc[-7:].mean()
+        fig.add_hline(y=last_7_mean, line_dash="dash", line_color="purple", annotation_text="Moyenne des 7 derniers jours", annotation_position="bottom right")
+
     fig.update_layout(title="Evolution du poids")
     fig.add_hline(y=target_weight, line_dash="dash", annotation_text="Objectif 1", annotation_position="bottom right")
     fig.add_hline(y=target_weight_2, line_dash="dash", line_color="red", annotation_text="Objectif 2", annotation_position="bottom right")
