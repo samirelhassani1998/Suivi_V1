@@ -18,9 +18,11 @@ st.title("Suivi de l'évolution du poids")
 def load_data(url):
     df = pd.read_csv(url, decimal=",")
     df['Poids (Kgs)'] = pd.to_numeric(df['Poids (Kgs)'], errors='coerce')
-    df = df.dropna()
     df['Date'] = pd.to_datetime(df['Date'], format='%d/%m/%Y')
-    df = df.sort_values('Date', ascending=True)  # Assurez-vous que le tri est correct
+    df = df.dropna()
+    df = df.sort_values('Date', ascending=True)
+    st.write("Vérification des données après traitement :")
+    st.write(df.tail(10))  # Afficher les 10 dernières lignes pour confirmer
     return df
 
 # URL du fichier CSV
@@ -28,7 +30,7 @@ url = 'https://docs.google.com/spreadsheets/d/1qPhLKvm4BREErQrm0L38DcZFG4a-K0msS
 df = load_data(url)
 
 # Vérification des données chargées
-st.write("Aperçu des données chargées :")
+st.write(f"Nombre total de lignes chargées : {df.shape[0]}")
 st.write(df.tail())  # Afficher les dernières lignes pour vérifier que toutes les données sont là
 
 # Interface utilisateur pour les paramètres
@@ -208,4 +210,3 @@ with tab6:
         df_user = pd.read_csv(uploaded_file)
         st.write("Aperçu des données téléchargées :")
         st.write(df_user.head())
-        # Intégrer df_user dans l'analyse si nécessaire
