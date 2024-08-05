@@ -74,10 +74,11 @@ with tab2:
     # Ajout de la moyenne globale au graphique
     fig.add_hline(y=mean_weight, line_dash="dot", annotation_text="Moyenne Globale", annotation_position="bottom right")
 
-    # Calcul de la moyenne des 7 dernières valeurs
-    if len(df) >= 7:
-        last_7_mean = df["Poids (Kgs)"].iloc[-7:].mean()
-        fig.add_hline(y=last_7_mean, line_dash="dash", line_color="purple", annotation_text="Moyenne des 7 derniers jours", annotation_position="bottom right")
+    # Calcul de la moyenne mobile des 7 derniers jours
+    df["Last_7_rolling_mean"] = df["Poids (Kgs)"].rolling(window=7, min_periods=1).mean()
+
+    # Ajout de la courbe de la moyenne mobile des 7 derniers jours au graphique
+    fig.add_scatter(x=df["Date"], y=df["Last_7_rolling_mean"], mode="lines", name="Moyenne mobile 7 jours")
 
     fig.update_layout(title="Evolution du poids")
     fig.add_hline(y=target_weight, line_dash="dash", annotation_text="Objectif 1", annotation_position="bottom right")
