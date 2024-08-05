@@ -39,9 +39,9 @@ window_size = st.sidebar.slider("Taille de la fenêtre pour la moyenne mobile (j
 df["Poids_rolling_mean"] = df["Poids (Kgs)"].rolling(window=window_size).mean()
 
 st.sidebar.header("Objectifs de poids")
-target_weight = st.sidebar.number_input("Objectif de poids 1 (Kgs)", value=95.0)
-target_weight_2 = st.sidebar.number_input("Objectif de poids 2 (Kgs)", value=90.0)
-target_weight_3 = st.sidebar.number_input("Objectif de poids 3 (Kgs)", value=85.0)
+target_weight = st.sidebar.number_input("Objectif de poids 1 (Kgs)", value=90.0)
+target_weight_2 = st.sidebar.number_input("Objectif de poids 2 (Kgs)", value=85.0)
+target_weight_3 = st.sidebar.number_input("Objectif de poids 3 (Kgs)", value=80.0)
 
 # Interface utilisateur pour le thème
 st.sidebar.header("Thème")
@@ -123,9 +123,17 @@ with tab3:
     fig4.update_layout(title="Régression linéaire de l'évolution du poids")
     st.plotly_chart(fig4)
 
-    days_to_target = int((target_weight - reg.intercept_) / reg.coef_[0])
-    target_date = df["Date"].min() + pd.to_timedelta(days_to_target, unit="D")
-    st.write(f"Date estimée pour atteindre l'objectif de poids : {target_date.date()}")
+    # Calculer correctement la date d'atteinte de l'objectif de poids
+    try:
+        days_to_target = int((target_weight - reg.intercept_) / reg.coef_[0])
+        if days_to_target < 0:
+            st.warning("La date d'atteinte de l'objectif de poids est passée.")
+            target_date = df["Date"].max()  # Si la date est passée, utilisez la date actuelle
+        else:
+            target_date = df["Date"].min() + pd.to_timedelta(days_to_target, unit="D")
+        st.write(f"Date estimée pour atteindre l'objectif de poids : {target_date.date()}")
+    except Exception as e:
+        st.error(f"Erreur dans le calcul de la date estimée : {e}")
 
     # Calculer le taux de changement moyen du poids
     df["Poids_diff"] = df["Poids (Kgs)"].diff()
