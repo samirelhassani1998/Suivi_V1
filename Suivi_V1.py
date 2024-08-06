@@ -14,7 +14,7 @@ st.set_page_config(page_title="Suivi du poids", layout="wide")
 st.title("Suivi de l'évolution du poids")
 
 # Fonction pour charger et traiter les données
-@st.cache_data
+@st.cache_data(ttl=300)  # Expiration de cache toutes les 5 minutes
 def load_data(url):
     df = pd.read_csv(url, decimal=",")
     df['Poids (Kgs)'] = pd.to_numeric(df['Poids (Kgs)'], errors='coerce')
@@ -29,6 +29,11 @@ def load_data(url):
 url = 'https://docs.google.com/spreadsheets/d/1qPhLKvm4BREErQrm0L38DcZFG4a-K0msSzARVIG_T_U/export?format=csv'
 df = load_data(url)
 
+# Ajouter un bouton pour recharger les données
+if st.button("Recharger les données"):
+    load_data.clear()  # Efface le cache
+    df = load_data(url)  # Recharge les données
+
 # Vérification des données chargées
 st.write(f"Nombre total de lignes chargées : {df.shape[0]}")
 st.write(df.tail())  # Afficher les dernières lignes pour vérifier que toutes les données sont là
@@ -39,9 +44,9 @@ window_size = st.sidebar.slider("Taille de la fenêtre pour la moyenne mobile (j
 df["Poids_rolling_mean"] = df["Poids (Kgs)"].rolling(window=window_size).mean()
 
 st.sidebar.header("Objectifs de poids")
-target_weight = st.sidebar.number_input("Objectif de poids 1 (Kgs)", value=90.0)
-target_weight_2 = st.sidebar.number_input("Objectif de poids 2 (Kgs)", value=85.0)
-target_weight_3 = st.sidebar.number_input("Objectif de poids 3 (Kgs)", value=80.0)
+target_weight = st.sidebar.number_input("Objectif de poids 1 (Kgs)", value=95.0)
+target_weight_2 = st.sidebar.number_input("Objectif de poids 2 (Kgs)", value=90.0)
+target_weight_3 = st.sidebar.number_input("Objectif de poids 3 (Kgs)", value=85.0)
 
 # Interface utilisateur pour le thème
 st.sidebar.header("Thème")
