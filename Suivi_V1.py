@@ -13,7 +13,6 @@ from sklearn.cluster import KMeans
 st.set_page_config(page_title="Suivi du poids", layout="wide")
 st.title("Suivi de l'évolution du poids")
 
-
 # Fonction pour charger et traiter les données
 @st.cache_data
 def load_data(url):
