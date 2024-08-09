@@ -45,8 +45,8 @@ df["Poids_rolling_mean"] = df["Poids (Kgs)"].rolling(window=window_size).mean()
 
 st.sidebar.header("Objectifs de poids")
 target_weight = st.sidebar.number_input("Objectif de poids 1 (Kgs)", value=95.0)
-target_weight_2 = st.sidebar.number_input("Objectif de poids 2 (Kgs)", value=87.5)
-target_weight_3 = st.sidebar.number_input("Objectif de poids 3 (Kgs)", value=80.0)
+target_weight_2 = st.sidebar.number_input("Objectif de poids 2 (Kgs)", value=90.0)
+target_weight_3 = st.sidebar.number_input("Objectif de poids 3 (Kgs)", value=85.0)
 
 # Interface utilisateur pour le thème
 st.sidebar.header("Thème")
