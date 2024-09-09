@@ -63,7 +63,7 @@ with tab1:
     else:
         col1, col2, col3 = st.columns(3)
         col1.metric("Poids actuel", f"{df['Poids (Kgs)'].iloc[-1]:.2f} Kgs")
-        col2.metric("Objectif de poids", f"{target_weight_2} Kgs")
+        col2.metric("Objectif de poids", f"{target_weight_3} Kgs")
         col3.metric("Progrès vers l'objectif", f"{100 * (df['Poids (Kgs)'].iloc[-1] / target_weight_2):.2f} %")
         st.write("Statistiques des poids :")
         st.write(df["Poids (Kgs)"].describe())
