@@ -190,7 +190,12 @@ with tab4:
 
     fig9 = px.scatter(df, x="Date", y="Poids (Kgs)")
     fig9.add_trace(px.line(df, x="Date", y=predictions, labels={"y": "Régression linéaire"}).data[0])
-    fig9.add_scatter(x=df.iloc[X_test.index]["Date"], y=y_test_pred, mode="markers", name="Prédictions sur ensemble de test")
+    fig9.add_scatter(
+        x=df.loc[X_test.index]["Date"],  # Correction ici : utilisation de .loc au lieu de .iloc
+        y=y_test_pred,
+        mode="markers",
+        name="Prédictions sur ensemble de test"
+    )
     fig9.update_layout(title="Régression linéaire avec prédictions sur ensemble de test")
     st.plotly_chart(fig9)
 
