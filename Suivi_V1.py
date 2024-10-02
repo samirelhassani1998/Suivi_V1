@@ -17,9 +17,23 @@ st.title("Suivi de l'évolution du poids")
 @st.cache_data(ttl=300)  # Expiration de cache toutes les 5 minutes
 def load_data(url):
     df = pd.read_csv(url, decimal=",")
+    
+    # Nettoyage de la colonne 'Poids (Kgs)'
+    df['Poids (Kgs)'] = df['Poids (Kgs)'].astype(str).str.replace(',', '.').str.strip()
     df['Poids (Kgs)'] = pd.to_numeric(df['Poids (Kgs)'], errors='coerce')
-    df['Date'] = pd.to_datetime(df['Date'], format='%d/%m/%Y')
-    df = df.dropna()
+    
+    # Conversion de la colonne 'Date'
+    df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
+    
+    # Identifier les lignes avec des valeurs manquantes
+    missing_data = df[df['Poids (Kgs)'].isna() | df['Date'].isna()]
+    if not missing_data.empty:
+        st.write("Lignes avec des valeurs manquantes après conversion :")
+        st.write(missing_data)
+    
+    # Supprimer uniquement les lignes où 'Poids (Kgs)' ou 'Date' est manquant
+    df = df.dropna(subset=['Poids (Kgs)', 'Date'])
+    
     df = df.sort_values('Date', ascending=True)
     st.write("Vérification des données après traitement :")
     st.write(df.tail(10))  # Afficher les 10 dernières lignes pour confirmer
@@ -191,7 +205,7 @@ with tab4:
     fig9 = px.scatter(df, x="Date", y="Poids (Kgs)")
     fig9.add_trace(px.line(df, x="Date", y=predictions, labels={"y": "Régression linéaire"}).data[0])
     fig9.add_scatter(
-        x=df.loc[X_test.index]["Date"],  # Correction ici : utilisation de .loc au lieu de .iloc
+        x=df.loc[X_test.index]["Date"],  # Utilisation de .loc au lieu de .iloc
         y=y_test_pred,
         mode="markers",
         name="Prédictions sur ensemble de test"
