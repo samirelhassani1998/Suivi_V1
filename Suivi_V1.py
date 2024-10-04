@@ -9,12 +9,13 @@ from statsmodels.tsa.seasonal import STL
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from sklearn.cluster import KMeans
 
-# Titre de l'application Streamlit
-st.set_page_config(page_title="Suivi du poids", layout="wide")
-st.title("Suivi de l'évolution du poids")
+# Configuration de l'application Streamlit
+st.set_page_config(page_title="Suivi du Poids - Tableau de Bord Interactif", layout="wide")
+st.title("Suivi de l'Évolution du Poids")
+st.markdown("Cette application vous aide à suivre votre progression de poids, prédire des tendances et atteindre vos objectifs de façon efficace.")
 
 # Fonction pour charger et traiter les données
-@st.cache_data(ttl=300)  # Expiration de cache toutes les 5 minutes
+@st.cache_data(ttl=300)  # Expiration du cache toutes les 5 minutes
 def load_data(url):
     df = pd.read_csv(url, decimal=",")
 
@@ -40,9 +41,9 @@ if st.button("Recharger les données"):
     load_data.clear()  # Efface le cache
     df = load_data(url)  # Recharge les données
 
-# Vérification des données chargées
-st.write(f"Nombre total de lignes chargées : {df.shape[0]}")
-st.write(df.tail())  # Afficher les dernières lignes pour vérifier que toutes les données sont là
+# Affichage des données chargées
+st.write(f"**Nombre total de lignes chargées :** {df.shape[0]}")
+st.write(df.tail())  # Afficher les dernières lignes pour vérifier que toutes les données sont présentes
 
 # Interface utilisateur améliorée
 st.sidebar.header("Paramètres")
@@ -66,7 +67,7 @@ if len(date_range) == 2:
 
 # Objectifs de poids
 st.sidebar.header("Objectifs de poids")
-target_weight = st.sidebar.number_input("Objectif de poids 1 (Kgs)", value=95.0)
+target_weight_1 = st.sidebar.number_input("Objectif de poids 1 (Kgs)", value=95.0)
 target_weight_2 = st.sidebar.number_input("Objectif de poids 2 (Kgs)", value=90.0)
 target_weight_3 = st.sidebar.number_input("Objectif de poids 3 (Kgs)", value=85.0)
 
@@ -79,7 +80,7 @@ def apply_theme(fig):
     return fig
 
 # Diviser l'application en onglets
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Résumé", "Graphiques", "Prévisions", "Analyse des Données", "Personnalisation", "Téléchargement"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["Résumé", "Graphiques", "Prévisions", "Analyse des Données", "Téléchargement"])
 
 with tab1:
     st.header("Résumé")
@@ -105,25 +106,13 @@ with tab1:
 
 with tab2:
     st.header("Graphiques")
-    # Graphique de l'évolution du poids avec la moyenne globale
-    fig = px.line(df, x="Date", y="Poids (Kgs)", markers=True)
-
-    # Calcul de la moyenne globale des poids
-    mean_weight = df["Poids (Kgs)"].mean()
-
-    # Ajout de la moyenne globale au graphique
-    fig.add_hline(y=mean_weight, line_dash="dot", annotation_text="Moyenne Globale", annotation_position="bottom right")
-
-    # Calcul de la moyenne mobile
+    # Graphique de l'évolution du poids avec la moyenne mobile
     df["Poids_rolling_mean"] = df["Poids (Kgs)"].rolling(window=window_size, min_periods=1).mean()
-
-    # Ajout de la courbe de la moyenne mobile au graphique
-    fig.add_scatter(x=df["Date"], y=df["Poids_rolling_mean"], mode="lines", name=f"Moyenne mobile {window_size} jours")
-
+    fig = px.line(df, x="Date", y=["Poids (Kgs)", "Poids_rolling_mean"], markers=True, labels={"value": "Poids (Kgs)", "variable": "Type"})
     fig.update_layout(title="Évolution du poids")
 
     # Ajout des lignes des objectifs de poids
-    fig.add_hline(y=target_weight, line_dash="dash", annotation_text="Objectif 1", annotation_position="bottom right")
+    fig.add_hline(y=target_weight_1, line_dash="dash", annotation_text="Objectif 1", annotation_position="bottom right")
     fig.add_hline(y=target_weight_2, line_dash="dash", line_color="red", annotation_text="Objectif 2", annotation_position="bottom right")
     fig.add_hline(y=target_weight_3, line_dash="dash", line_color="green", annotation_text="Objectif 3", annotation_position="bottom right")
 
@@ -139,8 +128,7 @@ with tab2:
     # Graphique des anomalies détectées
     iso_forest = IsolationForest(contamination=0.05, random_state=42)
     df['Anomalies'] = iso_forest.fit_predict(df[['Poids (Kgs)']])
-    fig3 = px.scatter(df, x="Date", y="Poids (Kgs)", color="Anomalies", color_discrete_sequence=["blue", "red"])
-    fig3.update_layout(title="Évolution du poids avec détection des anomalies")
+    fig3 = px.scatter(df, x="Date", y="Poids (Kgs)", color="Anomalies", color_discrete_sequence=["blue", "red"], title="Évolution du poids avec détection des anomalies")
     fig3 = apply_theme(fig3)
     st.plotly_chart(fig3)
     st.write("Points de données inhabituels détectés :")
@@ -162,27 +150,17 @@ with tab3:
     reg = LinearRegression().fit(X, y)
     predictions = reg.predict(X)
 
-    fig4 = px.scatter(df, x="Date", y="Poids (Kgs)")
-    fig4.add_trace(px.line(df, x="Date", y=predictions, labels={"y": "Prévisions"}).data[0])
-    fig4.update_layout(title="Régression linéaire de l'évolution du poids")
+    fig4 = px.line(df, x="Date", y=["Poids (Kgs)", predictions], labels={"y": "Poids (Kgs)"}, title="Régression linéaire de l'évolution du poids")
     fig4 = apply_theme(fig4)
     st.plotly_chart(fig4)
 
     # Calculer correctement la date d'atteinte de l'objectif de poids
-    try:
-        if reg.coef_[0] == 0:
-            st.error("Impossible de prédire la date d'atteinte de l'objectif car le coefficient de régression est nul.")
-        else:
-            days_to_target = (target_weight - reg.intercept_) / reg.coef_[0]
-            target_date = df["Date"].min() + pd.to_timedelta(days_to_target, unit="D")
-            st.write(f"Date estimée pour atteindre l'objectif de poids : {target_date.date()}")
-    except Exception as e:
-        st.error(f"Erreur dans le calcul de la date estimée : {e}")
-
-    # Calculer le taux de changement moyen du poids
-    df["Poids_diff"] = df["Poids (Kgs)"].diff()
-    mean_change_rate = df["Poids_diff"].mean()
-    st.write(f"Taux de changement moyen du poids : {mean_change_rate:.2f} Kgs par jour")
+    if reg.coef_[0] != 0:
+        days_to_target = (target_weight_3 - reg.intercept_) / reg.coef_[0]
+        target_date = df["Date"].min() + pd.to_timedelta(days_to_target, unit="D")
+        st.write(f"Date estimée pour atteindre l'objectif de poids : {target_date.date()}")
+    else:
+        st.error("Impossible de prédire la date d'atteinte de l'objectif car le coefficient de régression est nul.")
 
 with tab4:
     st.header("Analyse des Données")
@@ -192,76 +170,18 @@ with tab4:
     fig5 = res.plot()
     st.pyplot(fig5)
 
-    df["Trend"] = res.trend
-    df["Seasonal"] = res.seasonal
+    st.subheader("Clustering des données")
+    try:
+        kmeans = KMeans(n_clusters=3, random_state=42).fit(df[['Poids (Kgs)']])
+        df['Cluster'] = kmeans.labels_
 
-    fig6 = px.line(df, x="Date", y="Trend", title="Tendance de l'évolution du poids")
-    fig6 = apply_theme(fig6)
-    st.plotly_chart(fig6)
-
-    fig7 = px.line(df, x="Date", y="Seasonal", title="Saisonnalité de l'évolution du poids")
-    fig7 = apply_theme(fig7)
-    st.plotly_chart(fig7)
-
-    st.subheader("Prédictions avec SARIMA")
-    sarima_model = SARIMAX(df["Poids (Kgs)"], order=(1, 1, 1), seasonal_order=(1, 1, 1, 7))
-    sarima_results = sarima_model.fit(disp=False)
-    df["SARIMA_Predictions"] = sarima_results.predict(start=0, end=len(df) - 1)
-
-    fig8 = px.scatter(df, x="Date", y="Poids (Kgs)")
-    fig8.add_trace(px.line(df, x="Date", y=df["SARIMA_Predictions"], labels={"y": "Prédictions SARIMA"}).data[0])
-    fig8.update_layout(title="Prédictions avec le modèle SARIMA")
-    fig8 = apply_theme(fig8)
-    st.plotly_chart(fig8)
-
-    st.subheader("Comparaison des modèles de régression")
-    rf_reg = RandomForestRegressor(n_estimators=100, random_state=42)
-    rf_scores = cross_val_score(rf_reg, X, y, scoring='neg_mean_squared_error', cv=tscv)
-    st.write(f"Score MSE moyen pour le modèle Random Forest : {-rf_scores.mean():.2f}")
-
-    # Entraînement du modèle Random Forest sur l'ensemble des données
-    rf_reg.fit(X, y)
-    rf_predictions = rf_reg.predict(X)
-
-    fig9 = px.scatter(df, x="Date", y="Poids (Kgs)", title="Comparaison des modèles")
-    fig9.add_trace(px.line(df, x="Date", y=predictions, labels={"y": "Régression linéaire"}).data[0])
-    fig9.add_trace(px.line(df, x="Date", y=rf_predictions, labels={"y": "Random Forest"}).data[0])
-    fig9 = apply_theme(fig9)
-    st.plotly_chart(fig9)
-
-    # Clustering des données
-    if not df.empty:
-        try:
-            kmeans = KMeans(n_clusters=3, random_state=42).fit(df[['Poids (Kgs)']])
-            df['Cluster'] = kmeans.labels_
-
-            fig_cluster = px.scatter(df, x='Date', y='Poids (Kgs)', color='Cluster', title='Clustering des données de poids')
-            fig_cluster = apply_theme(fig_cluster)
-            st.plotly_chart(fig_cluster)
-        except ValueError as e:
-            st.error(f"Erreur lors du clustering : {e}")
-    else:
-        st.warning("Pas de données suffisantes pour le clustering.")
+        fig_cluster = px.scatter(df, x='Date', y='Poids (Kgs)', color='Cluster', title='Clustering des données de poids')
+        fig_cluster = apply_theme(fig_cluster)
+        st.plotly_chart(fig_cluster)
+    except ValueError as e:
+        st.error(f"Erreur lors du clustering : {e}")
 
 with tab5:
-    st.header("Personnalisation")
-    st.write("Sélectionnez un thème pour les graphiques dans la barre latérale.")
-
-    if current_weight < target_weight:
-        st.success("Félicitations ! Vous avez atteint votre objectif de poids !")
-    elif current_weight > target_weight_3:
-        st.warning("Attention, votre poids est au-dessus de l'objectif 3.")
-
-    fig_objectifs = px.bar(
-        x=["Poids actuel", "Objectif 1", "Objectif 2", "Objectif 3"],
-        y=[current_weight, target_weight, target_weight_2, target_weight_3],
-        title="Progression vers les objectifs de poids",
-        color=["Poids actuel", "Objectif 1", "Objectif 2", "Objectif 3"]
-    )
-    fig_objectifs = apply_theme(fig_objectifs)
-    st.plotly_chart(fig_objectifs)
-
-with tab6:
     st.header("Téléchargement de vos données")
     uploaded_file = st.file_uploader("Téléchargez un fichier CSV avec vos données de poids", type=["csv"])
     if uploaded_file:
