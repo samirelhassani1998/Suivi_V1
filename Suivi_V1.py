@@ -8,6 +8,8 @@ from sklearn.model_selection import train_test_split, cross_val_score, TimeSerie
 from statsmodels.tsa.seasonal import STL
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from sklearn.cluster import KMeans
+import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
 
 # Configuration de l'application Streamlit
 st.set_page_config(page_title="Suivi du Poids - Tableau de Bord Interactif", layout="wide")
@@ -180,6 +182,26 @@ with tab4:
         st.plotly_chart(fig_cluster)
     except ValueError as e:
         st.error(f"Erreur lors du clustering : {e}")
+
+    # Analyse de la corrélation
+    st.subheader("Analyse de Corrélation")
+    correlation = df.corr()
+    st.write("Matrice de corrélation :")
+    st.write(correlation)
+    fig_corr = px.imshow(correlation, title="Matrice de Corrélation des Variables")
+    fig_corr = apply_theme(fig_corr)
+    st.plotly_chart(fig_corr)
+
+    # PCA (Analyse en Composantes Principales)
+    st.subheader("Analyse en Composantes Principales (PCA)")
+    pca = PCA(n_components=2)
+    df_numeric = df[['Poids (Kgs)']].dropna()
+    pca_result = pca.fit_transform(df_numeric)
+    df_pca = pd.DataFrame(pca_result, columns=['PCA1', 'PCA2'])
+    df_pca['Date'] = df['Date'].iloc[:len(df_pca)]
+    fig_pca = px.scatter(df_pca, x='PCA1', y='PCA2', title='Projection des Données par PCA')
+    fig_pca = apply_theme(fig_pca)
+    st.plotly_chart(fig_pca)
 
 with tab5:
     st.header("Téléchargement de vos données")
