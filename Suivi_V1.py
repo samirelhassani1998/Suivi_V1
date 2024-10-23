@@ -71,6 +71,7 @@ st.sidebar.header("Objectifs de poids")
 target_weight = st.sidebar.number_input("Objectif de poids 1 (Kgs)", value=95.0)
 target_weight_2 = st.sidebar.number_input("Objectif de poids 2 (Kgs)", value=90.0)
 target_weight_3 = st.sidebar.number_input("Objectif de poids 3 (Kgs)", value=85.0)
+target_weight_4 = st.sidebar.number_input("Objectif de poids 4 (Kgs)", value=80.0)  # Ajout de l'objectif 4
 
 # Ajout de la taille pour le calcul de l'IMC
 st.sidebar.header("Informations personnelles")
@@ -98,7 +99,7 @@ with tab1:
         initial_weight = df['Poids (Kgs)'].iloc[0]
         current_weight = df['Poids (Kgs)'].iloc[-1]
         weight_lost = initial_weight - current_weight
-        total_weight_to_lose = initial_weight - target_weight_3
+        total_weight_to_lose = initial_weight - target_weight_4  # Mise à jour pour inclure l'objectif 4
         progress_percent = (weight_lost / total_weight_to_lose) * 100 if total_weight_to_lose != 0 else 0
 
         # Calcul de l'IMC actuel
@@ -107,7 +108,7 @@ with tab1:
 
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Poids actuel", f"{current_weight:.2f} Kgs")
-        col2.metric("Objectif de poids", f"{target_weight_3} Kgs")
+        col2.metric("Objectif de poids", f"{target_weight_4} Kgs")  # Mise à jour pour afficher l'objectif 4
         col3.metric("Progrès vers l'objectif", f"{progress_percent:.2f} %")
         col4.metric("IMC actuel", f"{current_bmi:.2f}")
 
@@ -148,6 +149,7 @@ with tab2:
     fig.add_hline(y=target_weight, line_dash="dash", annotation_text="Objectif 1", annotation_position="bottom right")
     fig.add_hline(y=target_weight_2, line_dash="dash", line_color="red", annotation_text="Objectif 2", annotation_position="bottom right")
     fig.add_hline(y=target_weight_3, line_dash="dash", line_color="green", annotation_text="Objectif 3", annotation_position="bottom right")
+    fig.add_hline(y=target_weight_4, line_dash="dash", line_color="purple", annotation_text="Objectif 4", annotation_position="bottom right")  # Ajout de l'objectif 4
 
     # Appliquer le thème
     fig = apply_theme(fig)
@@ -200,7 +202,7 @@ with tab3:
         if reg.coef_[0] == 0:
             st.error("Impossible de prédire la date d'atteinte de l'objectif car le coefficient de régression est nul.")
         else:
-            days_to_target = (target_weight_3 - reg.intercept_) / reg.coef_[0]
+            days_to_target = (target_weight_4 - reg.intercept_) / reg.coef_[0]  # Mise à jour pour l'objectif 4
             target_date = df["Date"].min() + pd.to_timedelta(days_to_target, unit="D")
             st.write(f"Date estimée pour atteindre l'objectif de poids : {target_date.date()}")
     except Exception as e:
@@ -209,7 +211,7 @@ with tab3:
     # Prédictions futures
     st.subheader("Prédictions futures")
     future_days = st.slider("Nombre de jours à prédire", 1, 365, 30)
-    future_dates = pd.date_range(start=df["Date"].max(), periods=future_days)
+    future_dates = pd.date_range(start=df["Date"].max() + pd.Timedelta(days=1), periods=future_days)
     future_dates_numeric = (future_dates - df["Date"].min()) / np.timedelta64(1, "D")
     future_predictions = reg.predict(future_dates_numeric.values.reshape(-1, 1))
 
@@ -253,7 +255,7 @@ with tab4:
     df["SARIMA_Predictions"] = sarima_results.predict(start=0, end=len(df) - 1, dynamic=False)
 
     fig8 = px.scatter(df, x="Date", y="Poids (Kgs)", title="Prédictions avec le modèle SARIMA")
-    fig8.add_trace(go.Scatter(x=df["Date"], y=df["SARIMA_Predictions"], mode='lines', name='Prédictions SARIMA'))
+    fig8.add_trace(go.Scatter(x=df["Date"], y=df["SARIMA_Predictions"], mode='lines', name='Prévisions SARIMA'))
     fig8 = apply_theme(fig8)
     st.plotly_chart(fig8)
 
@@ -295,13 +297,15 @@ with tab6:
     st.header("Personnalisation")
     st.write("Sélectionnez un thème pour les graphiques dans la barre latérale.")
 
-    if current_weight <= target_weight_3:
+    if current_weight <= target_weight_4:
         st.balloons()
         st.success("Félicitations ! Vous avez atteint votre objectif de poids le plus ambitieux !")
+    elif current_weight <= target_weight_3:
+        st.success("Bravo ! Vous avez atteint le troisième objectif de poids.")
     elif current_weight <= target_weight_2:
-        st.success("Bravo ! Vous avez atteint le deuxième objectif de poids.")
+        st.info("Bien joué ! Vous avez atteint le deuxième objectif de poids.")
     elif current_weight <= target_weight:
-        st.info("Bien joué ! Vous avez atteint le premier objectif de poids.")
+        st.info("Bon travail ! Vous avez atteint le premier objectif de poids.")
     else:
         st.warning("Continuez vos efforts pour atteindre vos objectifs de poids.")
 
@@ -310,15 +314,17 @@ with tab6:
         "Poids actuel": current_weight,
         "Objectif 1": target_weight,
         "Objectif 2": target_weight_2,
-        "Objectif 3": target_weight_3
+        "Objectif 3": target_weight_3,
+        "Objectif 4": target_weight_4  # Ajout de l'objectif 4
     }
     fig_objectifs = go.Figure(go.Indicator(
         mode="gauge+number+delta",
         value=current_weight,
-        delta={'reference': target_weight_3},
+        delta={'reference': target_weight_4},  # Mise à jour pour l'objectif 4
         gauge={
-            'axis': {'range': [target_weight_3 - 20, initial_weight + 10]},
+            'axis': {'range': [target_weight_4 - 10, initial_weight + 10]},  # Ajustement de la plage
             'steps': [
+                {'range': [target_weight_4, target_weight_3], 'color': "darkgreen"},
                 {'range': [target_weight_3, target_weight_2], 'color': "lightgreen"},
                 {'range': [target_weight_2, target_weight], 'color': "yellow"},
                 {'range': [target_weight, initial_weight], 'color': "orange"}
