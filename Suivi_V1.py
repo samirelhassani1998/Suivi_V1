@@ -10,6 +10,7 @@ from statsmodels.tsa.statespace.sarimax import SARIMAX
 from sklearn.cluster import KMeans
 from sklearn.metrics import mean_squared_error, r2_score
 import plotly.graph_objects as go
+from scipy import stats
 
 # Titre de l'application Streamlit
 st.set_page_config(page_title="Suivi du poids", layout="wide")
@@ -50,7 +51,7 @@ st.write(df.tail())  # Afficher les dernières lignes pour vérifier que toutes 
 st.sidebar.header("Paramètres")
 
 # Thème
-theme = st.sidebar.selectbox("Choisir un thème", ["Default", "Dark", "Light"])
+theme = st.sidebar.selectbox("Choisir un thème", ["Default", "Dark", "Light", "Solar", "Seaborn"])
 
 # Taille de la moyenne mobile
 window_size = st.sidebar.slider("Taille de la moyenne mobile (jours)", 1, 30, 7)
@@ -83,10 +84,14 @@ def apply_theme(fig):
         fig.update_layout(template="plotly_dark")
     elif theme == "Light":
         fig.update_layout(template="plotly_white")
+    elif theme == "Solar":
+        fig.update_layout(template="plotly_solar")
+    elif theme == "Seaborn":
+        fig.update_layout(template="seaborn")
     return fig
 
 # Diviser l'application en onglets
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["Résumé", "Graphiques", "Prévisions", "Analyse des Données", "Comparaison des Modèles", "Personnalisation", "Téléchargement"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["Résumé", "Graphiques", "Prévisions", "Analyse des Données", "Comparaison des Modèles", "Personnalisation", "Téléchargement", "Perte de Poids Hebdomadaire"])
 
 with tab1:
     st.header("Résumé")
@@ -166,15 +171,22 @@ with tab2:
     fig_bmi = apply_theme(fig_bmi)
     st.plotly_chart(fig_bmi)
 
-    # Graphique des anomalies détectées
-    iso_forest = IsolationForest(contamination=0.05, random_state=42)
-    df['Anomalies'] = iso_forest.fit_predict(df[['Poids (Kgs)']])
-    fig3 = px.scatter(df, x="Date", y="Poids (Kgs)", color="Anomalies", color_discrete_sequence=["blue", "red"])
-    fig3.update_layout(title="Évolution du poids avec détection des anomalies")
-    fig3 = apply_theme(fig3)
-    st.plotly_chart(fig3)
-    st.write("Points de données inhabituels détectés :")
-    st.write(df[df["Anomalies"] == -1])
+    # Histogramme de l'IMC
+    fig_bmi_hist = px.histogram(df, x="IMC", nbins=30, title="Distribution de l'IMC")
+    fig_bmi_hist = apply_theme(fig_bmi_hist)
+    st.plotly_chart(fig_bmi_hist)
+
+    # Graphique des anomalies détectées avec Z-score
+    df['Z_score'] = np.abs(stats.zscore(df['Poids (Kgs)']))
+    df['Anomalies_Z'] = df['Z_score'] > 2  # Seuil de 2 pour le Z-score
+
+    fig_anomaly = px.scatter(df, x="Date", y="Poids (Kgs)", color="Anomalies_Z", color_discrete_map={False: 'blue', True: 'red'})
+    fig_anomaly.update_layout(title="Détection des anomalies avec Z-score")
+    fig_anomaly = apply_theme(fig_anomaly)
+    st.plotly_chart(fig_anomaly)
+
+    st.write("Points de données inhabituels détectés avec Z-score :")
+    st.write(df[df["Anomalies_Z"]])
 
 with tab3:
     st.header("Prévisions")
@@ -192,19 +204,39 @@ with tab3:
     reg = LinearRegression().fit(X, y)
     predictions = reg.predict(X)
 
-    fig4 = px.scatter(df, x="Date", y="Poids (Kgs)", title="Régression linéaire de l'évolution du poids")
-    fig4.add_trace(go.Scatter(x=df["Date"], y=predictions, mode='lines', name='Prévisions'))
+    # Calcul des intervalles de confiance
+    from sklearn.linear_model import LinearRegression
+    from sklearn.utils import resample
+
+    n_bootstraps = 1000
+    boot_preds = np.zeros((n_bootstraps, len(X)))
+    for i in range(n_bootstraps):
+        X_boot, y_boot = resample(X, y)
+        reg_boot = LinearRegression().fit(X_boot, y_boot)
+        boot_preds[i] = reg_boot.predict(X)
+
+    pred_lower = np.percentile(boot_preds, 2.5, axis=0)
+    pred_upper = np.percentile(boot_preds, 97.5, axis=0)
+
+    fig4 = px.scatter(df, x="Date", y="Poids (Kgs)", title="Régression linéaire de l'évolution du poids avec intervalles de confiance")
+    fig4.add_trace(go.Scatter(x=df["Date"], y=predictions, mode='lines', name='Prévisions', line=dict(color='blue')))
+    fig4.add_trace(go.Scatter(x=df["Date"], y=pred_lower, fill=None, mode='lines', line_color='lightblue', name='Intervalle inférieur'))
+    fig4.add_trace(go.Scatter(x=df["Date"], y=pred_upper, fill='tonexty', mode='lines', line_color='lightblue', name='Intervalle supérieur'))
+
     fig4 = apply_theme(fig4)
     st.plotly_chart(fig4)
 
     # Calculer correctement la date d'atteinte de l'objectif de poids
     try:
-        if reg.coef_[0] == 0:
-            st.error("Impossible de prédire la date d'atteinte de l'objectif car le coefficient de régression est nul.")
+        if reg.coef_[0] >= 0:
+            st.error("Impossible de prédire la date d'atteinte de l'objectif car le modèle n'indique pas une perte de poids.")
         else:
             days_to_target = (target_weight_4 - reg.intercept_) / reg.coef_[0]  # Mise à jour pour l'objectif 4
             target_date = df["Date"].min() + pd.to_timedelta(days_to_target, unit="D")
-            st.write(f"Date estimée pour atteindre l'objectif de poids : {target_date.date()}")
+            if target_date < df["Date"].max():
+                st.warning("L'objectif de poids a déjà été atteint selon les prévisions.")
+            else:
+                st.write(f"Date estimée pour atteindre l'objectif de poids : {target_date.date()}")
     except Exception as e:
         st.error(f"Erreur dans le calcul de la date estimée : {e}")
 
@@ -376,3 +408,18 @@ with tab7:
     if st.button("Réinitialiser les données"):
         df = pd.DataFrame(columns=['Date', 'Poids (Kgs)'])
         st.success("Les données ont été réinitialisées.")
+
+with tab8:
+    st.header("Perte de Poids Hebdomadaire")
+    # Calcul de la perte de poids hebdomadaire
+    df_weekly = df.set_index('Date').resample('W').mean().reset_index()
+    df_weekly['Perte_Poids'] = df_weekly['Poids (Kgs)'].diff() * -1  # Multiplier par -1 pour obtenir la perte
+    df_weekly = df_weekly.dropna()
+
+    st.write("Perte de poids moyenne par semaine :")
+    st.write(df_weekly[['Date', 'Perte_Poids']])
+
+    # Graphique de la perte de poids hebdomadaire
+    fig_weekly = px.bar(df_weekly, x='Date', y='Perte_Poids', title='Perte de poids hebdomadaire')
+    fig_weekly = apply_theme(fig_weekly)
+    st.plotly_chart(fig_weekly)
