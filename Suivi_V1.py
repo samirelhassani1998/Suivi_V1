@@ -76,7 +76,7 @@ target_weight_4 = st.sidebar.number_input("Objectif de poids 4 (Kgs)", value=80.
 
 # Ajout de la taille pour le calcul de l'IMC
 st.sidebar.header("Informations personnelles")
-height_cm = st.sidebar.number_input("Votre taille (cm)", value=170)
+height_cm = st.sidebar.number_input("Votre taille (cm)", value=182)
 
 # Fonction pour appliquer le thème
 def apply_theme(fig):
