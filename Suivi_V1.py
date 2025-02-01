@@ -1,8 +1,12 @@
+import streamlit as st
+
+# IMPORTANT : appeler st.set_page_config en premier !
+st.set_page_config(page_title="Suivi du Poids Amélioré", layout="wide")
+
 import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-import streamlit as st
 
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor
@@ -41,9 +45,8 @@ st.markdown(
 )
 
 #############
-# PARAMÈTRES
+# TITRE ET DESCRIPTION
 #############
-st.set_page_config(page_title="Suivi du Poids Amélioré", layout="wide")
 st.title("Suivi de l'Évolution du Poids")
 st.markdown(
     """
@@ -204,15 +207,17 @@ with tabs[1]:
     if df.empty:
         st.warning("Pas de données à afficher.")
     else:
-        # Évolution du poids avec moyenne mobile
+        # Calcul de la moyenne mobile
         if ma_type == "Simple":
             df["Poids_MA"] = df["Poids (Kgs)"].rolling(window=window_size, min_periods=1).mean()
         else:
             df["Poids_MA"] = df["Poids (Kgs)"].ewm(span=window_size, adjust=False).mean()
 
-        fig = px.line(df, x="Date", y="Poids (Kgs)", markers=True,
-                      title="Évolution du Poids dans le Temps",
-                      labels={"Poids (Kgs)": "Poids (en Kgs)"})
+        fig = px.line(
+            df, x="Date", y="Poids (Kgs)", markers=True,
+            title="Évolution du Poids dans le Temps",
+            labels={"Poids (Kgs)": "Poids (en Kgs)"}
+        )
         # Ligne moyenne globale
         mean_weight = df["Poids (Kgs)"].mean()
         fig.add_hline(y=mean_weight, line_dash="dot",
@@ -241,8 +246,10 @@ with tabs[1]:
 
         # Évolution et distribution de l'IMC
         df["IMC"] = df["Poids (Kgs)"] / (height_m ** 2)
-        fig_bmi = px.line(df, x="Date", y="IMC", markers=True,
-                          title="Évolution de l'IMC", labels={"IMC": "Indice de Masse Corporelle"})
+        fig_bmi = px.line(
+            df, x="Date", y="IMC", markers=True,
+            title="Évolution de l'IMC", labels={"IMC": "Indice de Masse Corporelle"}
+        )
         fig_bmi = apply_theme(fig_bmi, theme)
         st.plotly_chart(fig_bmi, use_container_width=True)
 
@@ -298,9 +305,11 @@ with tabs[2]:
         pred_lower = np.percentile(boot_preds, 2.5, axis=0)
         pred_upper = np.percentile(boot_preds, 97.5, axis=0)
 
-        fig_reg = px.scatter(df, x="Date", y="Poids (Kgs)",
-                             title="Régression Linéaire avec IC",
-                             labels={"Poids (Kgs)": "Poids (en Kgs)"})
+        fig_reg = px.scatter(
+            df, x="Date", y="Poids (Kgs)",
+            title="Régression Linéaire avec IC",
+            labels={"Poids (Kgs)": "Poids (en Kgs)"}
+        )
         fig_reg.add_trace(go.Scatter(x=df["Date"], y=predictions,
                                      mode='lines', name='Prévisions', line=dict(color='blue')))
         fig_reg.add_trace(go.Scatter(x=df["Date"], y=pred_lower,
@@ -553,8 +562,11 @@ with tabs[8]:
         df_weekly = df_weekly.dropna()
         st.write("Perte de poids par semaine :")
         st.dataframe(df_weekly[['Date', 'Poids (Kgs)', 'Perte_Poids']])
-        fig_weekly = px.bar(df_weekly, x='Date', y='Perte_Poids', title='Perte de Poids Hebdomadaire',
-                            labels={"Perte_Poids": "Perte (Kgs)"})
+        fig_weekly = px.bar(
+            df_weekly, x='Date', y='Perte_Poids',
+            title='Perte de Poids Hebdomadaire',
+            labels={"Perte_Poids": "Perte (Kgs)"}
+        )
         fig_weekly = apply_theme(fig_weekly, theme)
         st.plotly_chart(fig_weekly, use_container_width=True)
 
