@@ -1,600 +1,563 @@
 import streamlit as st
-
-# IMPORTANT : appeler st.set_page_config en premier !
-st.set_page_config(page_title="Suivi du Poids Amélioré", layout="wide")
-
 import pandas as pd
 import numpy as np
-import plotly.express as px
 import plotly.graph_objects as go
 
-from sklearn.linear_model import LinearRegression
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import train_test_split, cross_val_score, TimeSeriesSplit
-from sklearn.cluster import KMeans
-from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
-from sklearn.utils import resample
-from scipy import stats
+# Configurer la page Streamlit
+st.set_page_config(page_title="Suivi de Poids Intelligent", page_icon="⚖️", layout="wide")
 
-from statsmodels.tsa.seasonal import STL
-from statsmodels.tsa.statespace.sarimax import SARIMAX
+# Titre de l'application
+st.title("⚖️ Tableau de bord de Suivi du Poids")
 
-# --- Injection de CSS personnalisé pour améliorer l'apparence globale ---
-st.markdown(
-    """
-    <style>
-    /* Style global */
-    .reportview-container {
-        font-family: 'Segoe UI', sans-serif;
-    }
-    .sidebar .sidebar-content {
-        background-image: linear-gradient(#2e7bcf, #2e7bcf);
-        color: white;
-    }
-    .stButton>button {
-        background-color: #2e7bcf;
-        color: white;
-        border: none;
-    }
-    .stMetric {
-        font-size: 1.5rem;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+# Bouton d'information (ouvre un modal)
+if st.button("ℹ️ À propos de l'application"):
+    with st.modal("À propos de l'application"):
+        st.write("""Cette application de suivi du poids offre des analyses avancées pour vous aider 
+        à comprendre votre progression:
+- **Indicateurs dynamiques**: variations de poids sur 7 et 30 jours, perte totale, IMC, etc.
+- **Visualisations interactives**: courbe de poids avec tendance lissée, annotations (événements, plateaux), heatmap hebdomadaire.
+- **Analyses avancées**: détection automatique des **plateaux** (stagnations >10 jours), segmentation des **phases** de perte/reprise de poids avec vitesse par segment.
+- **Prédictions IA**: projection de poids future avec intervalle de confiance.
+- **Interface améliorée**: indicateurs visuels, jauges de progression vers l'objectif, notifications dynamiques (plateau détecté, objectif atteint, etc.).""")
 
-#############
-# TITRE ET DESCRIPTION
-#############
-st.title("Suivi de l'Évolution du Poids")
-st.markdown(
-    """
-    Suivez votre poids, calculez votre IMC, visualisez des tendances, réalisez des prévisions et détectez des anomalies.
-    Utilisez les onglets pour naviguer entre les fonctionnalités.
-    """
-)
-
-#############
-# FONCTIONS
-#############
-@st.cache_data(ttl=300)
-def load_data(url: str) -> pd.DataFrame:
-    """
-    Charge et nettoie le jeu de données depuis un fichier CSV.
-    """
-    df = pd.read_csv(url, decimal=",")
-    df['Poids (Kgs)'] = (
-        df['Poids (Kgs)']
-        .astype(str)
-        .str.replace(',', '.')
-        .str.strip()
-    )
-    df['Poids (Kgs)'] = pd.to_numeric(df['Poids (Kgs)'], errors='coerce')
-    df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
-    df = df.dropna(subset=['Poids (Kgs)', 'Date']).sort_values('Date', ascending=True)
-    return df
-
-def apply_theme(fig: go.Figure, theme_name: str) -> go.Figure:
-    """
-    Applique un thème Plotly à une figure et ajuste la mise en page.
-    """
-    theme_templates = {
-        "Dark": "plotly_dark",
-        "Light": "plotly_white",
-        "Solar": "plotly_solar",
-        "Seaborn": "seaborn",
-    }
-    if theme_name in theme_templates:
-        fig.update_layout(template=theme_templates[theme_name])
-    # Améliorations supplémentaires : marges et titres
-    fig.update_layout(
-        title=dict(font=dict(size=22)),
-        margin=dict(l=20, r=20, t=50, b=20),
-        hovermode="x unified"
-    )
-    return fig
-
-@st.cache_data
-def convert_df_to_csv(df: pd.DataFrame) -> bytes:
-    """
-    Convertit un DataFrame en CSV encodé en UTF-8.
-    """
-    return df.to_csv(index=False).encode('utf-8')
-
-#############
-# CHARGEMENT DES DONNÉES
-#############
-url = 'https://docs.google.com/spreadsheets/d/1qPhLKvm4BREErQrm0L38DcZFG4a-K0msSzARVIG_T_U/export?format=csv'
-df = load_data(url)
-
-# Bouton pour recharger les données
-if st.button("Recharger les données"):
-    load_data.clear()
-    df = load_data(url)
-
-st.write(f"**Nombre total de lignes chargées :** {df.shape[0]}")
-st.write("Aperçu des dernières lignes :", df.tail())
-
-#############
-# SIDEBAR AVANCÉE
-#############
-st.sidebar.header("Paramètres Généraux")
-
-# Thème et type de moyenne mobile dans des expanders
-with st.sidebar.expander("Personnalisation du Thème"):
-    theme = st.selectbox("Choisir un thème", ["Default", "Dark", "Light", "Solar", "Seaborn"])
-
-with st.sidebar.expander("Paramètres de la Moyenne Mobile"):
-    ma_type = st.selectbox("Type de moyenne mobile", ["Simple", "Exponentielle"])
-    window_size = st.slider("Taille de la moyenne mobile (jours)", 1, 30, 7)
-
-# Filtre de dates
-with st.sidebar.expander("Filtre de Dates"):
-    if not df.empty:
-        date_min, date_max = df['Date'].min(), df['Date'].max()
-        date_range = st.date_input("Sélectionnez une plage de dates", [date_min, date_max])
-        if len(date_range) == 2:
-            start_date, end_date = date_range
-            df = df[(df['Date'] >= pd.to_datetime(start_date)) & (df['Date'] <= pd.to_datetime(end_date))]
-
-# Objectifs de poids et informations personnelles
-with st.sidebar.expander("Objectifs et Infos Personnelles"):
-    target_weight = st.number_input("Objectif 1 (Kgs)", value=95.0)
-    target_weight_2 = st.number_input("Objectif 2 (Kgs)", value=90.0)
-    target_weight_3 = st.number_input("Objectif 3 (Kgs)", value=85.0)
-    target_weight_4 = st.number_input("Objectif 4 (Kgs)", value=80.0)
-    st.markdown("---")
-    height_cm = st.number_input("Votre taille (cm)", value=182)
+# Paramètres utilisateur
+with st.expander("⚙️ Paramètres utilisateur"):
+    # Entrée de la taille pour le calcul de l'IMC
+    height_cm = st.number_input("Taille (cm)", min_value=50, max_value=250, value=170)
     height_m = height_cm / 100.0
+    # Entrée du poids cible (objectif)
+    target_weight = st.number_input("Objectif de poids (kg)", min_value=1.0, max_value=500.0, value=70.0)
 
-# Paramètres anomalies et calories/activité
-with st.sidebar.expander("Paramètres d'Anomalies & Activité"):
-    z_score_threshold = st.slider("Seuil Z-score", 1.0, 5.0, 2.0, step=0.5)
-    st.markdown("**Santé et Activité**")
-    calories = st.number_input("Calories consommées aujourd'hui", min_value=0, value=2000)
-    calories_brul = st.number_input("Calories brûlées (approximatif)", min_value=0, value=500)
-    st.write("Bilan calorique estimé :", calories - calories_brul, "kcal")
-
-#############
-# CRÉATION DES ONGLETS
-#############
-tabs = st.tabs([
-    "Résumé", "Graphiques", "Prévisions", "Analyse des Données",
-    "Comparaison des Modèles", "Corrélation", "Personnalisation",
-    "Téléchargement", "Perte de Poids Hebdo", "Conseils"
-])
-
-#################################
-# 1. Onglet: RÉSUMÉ
-#################################
-with tabs[0]:
-    st.header("Résumé")
-    if df.empty:
-        st.warning("Aucune donnée disponible.")
+# Chargement des données de poids
+# L'utilisateur peut fournir un fichier CSV avec des colonnes "Date" et "Poids"
+data_file = st.file_uploader("📄 Importer des données (CSV avec Date et Poids)", type=["csv"])
+if data_file:
+    df = pd.read_csv(data_file)
+    # S'assurer que les colonnes sont bien nommées
+    if 'Date' in df.columns and 'Poids' in df.columns:
+        # Convertir la colonne Date en type datetime
+        df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+        df.dropna(subset=['Date'], inplace=True)
+        df.sort_values('Date', inplace=True)
+        df.reset_index(drop=True, inplace=True)
     else:
-        initial_weight = df['Poids (Kgs)'].iloc[0]
-        current_weight = df['Poids (Kgs)'].iloc[-1]
-        weight_lost = initial_weight - current_weight
-        total_weight_to_lose = initial_weight - target_weight_4 if initial_weight > target_weight_4 else 1
-        progress_percent = (weight_lost / total_weight_to_lose) * 100
-        current_bmi = current_weight / (height_m ** 2)
+        st.error("Le fichier CSV doit contenir des colonnes 'Date' et 'Poids'. Chargement des données par défaut...")
+        data_file = None
 
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Poids Actuel", f"{current_weight:.2f} Kgs")
-        col2.metric("Objectif Final", f"{target_weight_4:.2f} Kgs")
-        col3.metric("Progrès (%)", f"{progress_percent:.2f} %")
-        col4.metric("IMC Actuel", f"{current_bmi:.2f}")
+# Si pas de fichier fourni, on génère des données d'exemple (autonome)
+if not data_file:
+    # Générer une série de poids simulée (exemple) sur ~6 mois
+    dates = pd.date_range(end=pd.Timestamp.now().normalize(), periods=180)
+    # Simulation d'un scénario avec phases: perte rapide initiale, plateau, perte lente, reprise, etc.
+    weight_values = []
+    w = 100.0  # poids initial fictif
+    np.random.seed(1)
+    for i, date in enumerate(dates):
+        if i < 60:       # 60 jours de perte rapide
+            trend = -0.1  # -100 g/jour
+        elif i < 80:     # 20 jours de plateau
+            trend = 0.0
+        elif i < 130:    # 50 jours de perte lente
+            trend = -0.05
+        elif i < 150:    # 20 jours de reprise de poids
+            trend = 0.1
+        else:            # 30 jours de reprise de la perte
+            trend = -0.1
+        # Ajouter une fluctuation aléatoire autour de la tendance
+        w += trend + np.random.normal(scale=0.1)
+        weight_values.append(w)
+    df = pd.DataFrame({"Date": dates, "Poids": weight_values})
+    # Définir le poids initial et cible fictifs pour correspondre aux données simulées
+    if 'Poids' in df.columns:
+        # Poids initial = premier poids, ajuster objectif si pas défini
+        start_weight = df['Poids'].iloc[0]
+        if target_weight == 70.0:  # si valeur par défaut non modifiée
+            target_weight = round(start_weight - 15.0, 1)  # objectif = 15kg de moins, par ex.
+    st.info("Aucune donnée fournie, utilisation d'un jeu de données simulé pour démonstration.")
 
-        with st.expander("Afficher les Statistiques Descriptives"):
-            st.dataframe(df["Poids (Kgs)"].describe())
+# S'assurer que les données sont présentes
+if df.empty:
+    st.error("Pas de données de poids disponibles.")
+    st.stop()
 
-        st.subheader("Interprétation de l'IMC")
-        if current_bmi < 18.5:
-            st.info("**Sous-poids** (IMC < 18.5). [OMS](https://www.who.int/news-room/fact-sheets/detail/obesity-and-overweight)")
-        elif 18.5 <= current_bmi < 25:
-            st.success("**Poids Normal** (18.5 ≤ IMC < 25). [OMS](https://www.who.int/news-room/fact-sheets/detail/obesity-and-overweight)")
-        elif 25 <= current_bmi < 30:
-            st.warning("**Surpoids** (25 ≤ IMC < 30). [OMS](https://www.who.int/news-room/fact-sheets/detail/obesity-and-overweight)")
+# Calculer des statistiques globales
+df.sort_values('Date', inplace=True)
+df.reset_index(drop=True, inplace=True)
+dates = df['Date']
+weights = df['Poids']
+
+current_weight = weights.iloc[-1]
+initial_weight = weights.iloc[0]
+# Calcul de l'IMC actuel
+bmi = None
+if height_m > 0:
+    bmi = current_weight / (height_m**2)
+# Variations sur 7 et 30 jours
+delta_7 = None
+delta_30 = None
+if len(weights) >= 2:
+    # Variation sur 7 jours (si données disponibles)
+    date_7 = dates.iloc[-1] - pd.Timedelta(days=7)
+    past_7 = df[df['Date'] <= date_7]
+    if not past_7.empty:
+        weight_7 = past_7.iloc[-1]['Poids']
+        delta_7 = current_weight - weight_7
+    # Variation sur 30 jours
+    date_30 = dates.iloc[-1] - pd.Timedelta(days=30)
+    past_30 = df[df['Date'] <= date_30]
+    if not past_30.empty:
+        weight_30 = past_30.iloc[-1]['Poids']
+        delta_30 = current_weight - weight_30
+# Perte totale depuis le début
+total_change = current_weight - initial_weight  # négatif si perte de poids
+
+# Préparer les indicateurs pour affichage
+col1, col2, col3, col4 = st.columns(4)
+# Poids actuel
+col1.metric("Poids actuel", f"{current_weight:.1f} kg")
+# IMC actuel
+if bmi:
+    col2.metric("IMC", f"{bmi:.1f}", help="Indice de Masse Corporelle actuel")
+else:
+    col2.metric("IMC", "N/A")
+# Variation 7 derniers jours
+if delta_7 is not None:
+    delta_str = f"{delta_7:+.1f} kg"
+    col3.metric("Sur 7 jours", f"{delta_7:.1f} kg", delta=delta_str, delta_color="inverse")
+else:
+    col3.metric("Sur 7 jours", "N/A")
+# Variation 30 derniers jours
+if delta_30 is not None:
+    delta_str = f"{delta_30:+.1f} kg"
+    col4.metric("Sur 30 jours", f"{delta_30:.1f} kg", delta=delta_str, delta_color="inverse")
+else:
+    col4.metric("Sur 30 jours", "N/A")
+
+col5, col6, col7, col8 = st.columns(4)
+# Perte de poids totale depuis le début
+if total_change < 0:
+    col5.metric("Perte totale", f"{-total_change:.1f} kg")  # afficher en positif la perte
+else:
+    col5.metric("Gain total", f"{total_change:.1f} kg")
+# Progression vers l'objectif
+if target_weight:
+    if initial_weight == target_weight:
+        progress_pct = 100
+    elif initial_weight > target_weight:
+        # objectif de perte de poids
+        total_to_lose = initial_weight - target_weight
+        already_lost = initial_weight - current_weight
+        progress_pct = min(max(already_lost / total_to_lose * 100, 0), 100)
+    else:
+        # objectif de prise de poids
+        total_to_gain = target_weight - initial_weight
+        already_gained = current_weight - initial_weight
+        progress_pct = min(max(already_gained / total_to_gain * 100, 0), 100)
+    remaining = abs(current_weight - target_weight)
+    col6.metric("Objectif atteint", f"{progress_pct:.0f}%", f"Reste {remaining:.1f} kg", delta_color="off")
+else:
+    col6.metric("Objectif", "N/A")
+# Vitesse de tendance sur 30 jours (kg/semaine)
+if delta_30 is not None:
+    # pente glissante (approximation sur 30 derniers jours)
+    weekly_rate = (delta_30 / 30.0) * 7.0
+    col7.metric("Tendance 30j", f"{weekly_rate:+.2f} kg/sem", delta_color="inverse")
+else:
+    col7.metric("Tendance 30j", "N/A")
+
+# Afficher une jauge de progression vers l'objectif
+if target_weight:
+    progress_value = progress_pct if 'progress_pct' in locals() else 0
+    gauge_fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=progress_value,
+        number={'suffix': "%"},
+        gauge={
+            'axis': {'range': [0, 100]},
+            'bar': {'color': "#4caf50"},  # barre de progression en vert
+            'steps': [
+                {'range': [0, progress_value], 'color': "#4caf50"},
+            ],
+            'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.8, 'value': 100}
+        },
+        title={'text': "Progression objectif"}
+    ))
+    gauge_fig.update_layout(height=220, width=220, margin=dict(t=40, b=30, l=20, r=20))
+    col8.plotly_chart(gauge_fig, use_container_width=True)
+
+# Séparer l'interface en onglets
+tab1, tab2, tab3, tab4 = st.tabs(["🏠 Vue d'ensemble", "📈 Évolution", "🔍 Analyse", "🔮 Prévisions"])
+
+# **Tab 1: Vue d'ensemble (Dashboard)**
+with tab1:
+    st.subheader("Résumé")
+    st.write(f"**Poids actuel** : {current_weight:.1f} kg")
+    if bmi:
+        st.write(f"**IMC actuel** : {bmi:.1f}")
+    if delta_7 is not None:
+        st.write(f"**Variation sur 7 jours** : {delta_7:+.1f} kg")
+    if delta_30 is not None:
+        st.write(f"**Variation sur 30 jours** : {delta_30:+.1f} kg")
+    if total_change < 0:
+        st.write(f"**Perte totale depuis le début** : {-total_change:.1f} kg")
+    else:
+        st.write(f"**Gain total depuis le début** : {total_change:.1f} kg")
+    if target_weight:
+        st.write(f"**Objectif** : {target_weight:.1f} kg &nbsp; (atteint à {progress_pct:.0f}%, reste {remaining:.1f} kg)")
+    if delta_30 is not None:
+        weekly_rate = (delta_30 / 30.0) * 7.0
+        trend_text = "perte" if weekly_rate < 0 else "prise"
+        st.write(f"**Tendance 30 jours** : {weekly_rate:+.2f} kg/semaine ({trend_text} de poids)")
+    st.write("")
+
+    # Afficher un message de félicitations si l'objectif est atteint
+    if target_weight and ((initial_weight > target_weight and current_weight <= target_weight) or (initial_weight < target_weight and current_weight >= target_weight)):
+        st.success("🎉 Félicitations, vous avez atteint votre **objectif de poids**!")
+        st.balloons()
+    # Afficher un message si un palier (milestone) intermédiaire est franchi
+    # Définir des paliers tous les 5 kg entre départ et objectif
+    milestones = []
+    if target_weight:
+        if initial_weight > target_weight:
+            # perte: paliers de perte de 5kg
+            step = 5.0
+            weight_val = initial_weight - step
+            while weight_val > target_weight:
+                milestones.append(weight_val)
+                weight_val -= step
         else:
-            st.error("**Obésité** (IMC ≥ 30). [OMS](https://www.who.int/news-room/fact-sheets/detail/obesity-and-overweight)")
+            # gain: paliers de gain de 5kg
+            step = 5.0
+            weight_val = initial_weight + step
+            while weight_val < target_weight:
+                milestones.append(weight_val)
+                weight_val += step
+    # Vérifier si un palier vient d'être atteint (le dernier poids a franchi un palier)
+    for m in milestones:
+        # perte: franchi si poids actuel <= palier < poids précédent
+        # gain: franchi si poids actuel >= palier > poids précédent
+        if len(weights) >= 2:
+            prev_w = weights.iloc[-2]
+            if initial_weight > target_weight and current_weight <= m < prev_w:
+                st.success(f"🏅 Palier de **{m} kg** atteint ! Bravo, continuez comme ça!")
+                st.balloons()
+            if initial_weight < target_weight and current_weight >= m > prev_w:
+                st.success(f"🏅 Palier de **{m} kg** atteint ! Bravo, continuez vos efforts!")
+                st.balloons()
 
-#################################
-# 2. Onglet: GRAPHIQUES
-#################################
-with tabs[1]:
-    st.header("Graphiques")
-    if df.empty:
-        st.warning("Pas de données à afficher.")
-    else:
-        # Calcul de la moyenne mobile
-        if ma_type == "Simple":
-            df["Poids_MA"] = df["Poids (Kgs)"].rolling(window=window_size, min_periods=1).mean()
+# **Tab 2: Évolution (courbes de poids)**
+with tab2:
+    st.subheader("Évolution du poids dans le temps")
+    # Courbe de poids réelle et tendance lissée
+    fig = go.Figure()
+    # Trace poids réel
+    fig.add_trace(go.Scatter(x=dates, y=weights, mode='lines+markers', name='Poids mesuré',
+                             marker=dict(size=4, color='#1f77b4'), line=dict(color='#1f77b4', width=2),
+                             hovertemplate='%{x|%d %b %Y}: %{y:.1f} kg'))
+    # Calcul de la tendance lissée (moyenne mobile sur 7 jours)
+    window = 7
+    smooth_weights = weights.rolling(window, center=False).mean()
+    fig.add_trace(go.Scatter(x=dates, y=smooth_weights, mode='lines', name='Tendance lissée (7j)',
+                             line=dict(color='#ff7f0e', width=3, dash='dash'),
+                             hovertemplate='%{x|%d %b %Y}: %{y:.1f} kg (tendance)'))
+
+    # Détection des plateaux pour annotation visuelle
+    plateau_intervals = []
+    vals = weights.values
+    n = len(vals)
+    i = 0
+    while i < n - 10:
+        # Fenêtre glissante de 10 jours
+        if vals[i:i+11].max() - vals[i:i+11].min() < 0.5:
+            j = i + 10
+            # Étendre le plateau tant que la variation reste faible
+            while j < n and vals[i:j+1].max() - vals[i:j+1].min() < 0.5:
+                j += 1
+            plateau_intervals.append((i, j-1))
+            i = j
         else:
-            df["Poids_MA"] = df["Poids (Kgs)"].ewm(span=window_size, adjust=False).mean()
+            i += 1
+    # Fusionner plateaux proches (séparés par <3 jours)
+    merged_plateaus = []
+    for (a, b) in plateau_intervals:
+        if merged_plateaus and a <= merged_plateaus[-1][1] + 3:
+            prev_a, prev_b = merged_plateaus[-1]
+            merged_plateaus[-1] = (prev_a, b)
+        else:
+            merged_plateaus.append((a, b))
+    plateau_intervals = merged_plateaus
+    # Ajouter des zones ombrées pour indiquer les plateaux
+    for (start_idx, end_idx) in plateau_intervals:
+        start_date = dates.iloc[start_idx]
+        end_date = dates.iloc[end_idx]
+        fig.add_vrect(x0=start_date, x1=end_date, fillcolor="orange", opacity=0.2, line_width=0,
+                      annotation_text="Plateau", annotation_position="top left",
+                      annotation=dict(font_size=10, font_color="orange"))
+    # Détection des milestones (paliers intermédiaires) atteints pour annotations
+    events = []
+    # Milestones calculés plus haut
+    for m in milestones:
+        # trouver la première date où on passe sous (ou au-dessus) du palier
+        if initial_weight > target_weight:
+            crossed = df[df['Poids'] <= m]
+        else:
+            crossed = df[df['Poids'] >= m]
+        if not crossed.empty:
+            date_reached = crossed.iloc[0]['Date']
+            events.append((date_reached, f"Palier {m} kg"))
+    # Ajouter des annotations pour les events
+    for (event_date, text) in events:
+        event_weight = float(df[df['Date'] == event_date]['Poids'])
+        fig.add_trace(go.Scatter(x=[event_date], y=[event_weight], mode="markers+text", name=text,
+                                 marker=dict(symbol="star-diamond", size=12, color="#FFD700"),
+                                 text=[text], textposition="top center",
+                                 hovertemplate='%{text} le %{x|%d %b %Y}'))
 
-        fig = px.line(
-            df, x="Date", y="Poids (Kgs)", markers=True,
-            title="Évolution du Poids dans le Temps",
-            labels={"Poids (Kgs)": "Poids (en Kgs)"}
-        )
-        # Ligne moyenne globale
-        mean_weight = df["Poids (Kgs)"].mean()
-        fig.add_hline(y=mean_weight, line_dash="dot",
-                      annotation_text="Moyenne Globale", annotation_position="bottom right")
-        # Courbe de moyenne mobile
-        fig.add_scatter(x=df["Date"], y=df["Poids_MA"], mode="lines",
-                        name=f"Moyenne Mobile ({ma_type}) {window_size} jours")
-        # Lignes d'objectifs
-        fig.add_hline(y=target_weight, line_dash="dash",
-                      annotation_text="Objectif 1", annotation_position="bottom right")
-        fig.add_hline(y=target_weight_2, line_dash="dash", line_color="red",
-                      annotation_text="Objectif 2", annotation_position="bottom right")
-        fig.add_hline(y=target_weight_3, line_dash="dash", line_color="green",
-                      annotation_text="Objectif 3", annotation_position="bottom right")
-        fig.add_hline(y=target_weight_4, line_dash="dash", line_color="purple",
-                      annotation_text="Objectif 4", annotation_position="bottom right")
-
-        fig = apply_theme(fig, theme)
-        st.plotly_chart(fig, use_container_width=True)
-
-        # Histogramme de distribution du poids
-        fig_hist = px.histogram(df, x="Poids (Kgs)", nbins=30,
-                                title="Distribution des Poids")
-        fig_hist = apply_theme(fig_hist, theme)
-        st.plotly_chart(fig_hist, use_container_width=True)
-
-        # Évolution et distribution de l'IMC
-        df["IMC"] = df["Poids (Kgs)"] / (height_m ** 2)
-        fig_bmi = px.line(
-            df, x="Date", y="IMC", markers=True,
-            title="Évolution de l'IMC", labels={"IMC": "Indice de Masse Corporelle"}
-        )
-        fig_bmi = apply_theme(fig_bmi, theme)
-        st.plotly_chart(fig_bmi, use_container_width=True)
-
-        fig_bmi_hist = px.histogram(df, x="IMC", nbins=30,
-                                    title="Distribution de l'IMC")
-        fig_bmi_hist = apply_theme(fig_bmi_hist, theme)
-        st.plotly_chart(fig_bmi_hist, use_container_width=True)
-
-        # Détection d'anomalies avec Z-score
-        df['Z_score'] = np.abs(stats.zscore(df['Poids (Kgs)']))
-        df['Anomalies_Z'] = df['Z_score'] > z_score_threshold
-
-        fig_anomaly = px.scatter(
-            df, x="Date", y="Poids (Kgs)",
-            color="Anomalies_Z",
-            color_discrete_map={False: 'blue', True: 'red'},
-            title=f"Détection des Anomalies (Z-score > {z_score_threshold})"
-        )
-        fig_anomaly = apply_theme(fig_anomaly, theme)
-        st.plotly_chart(fig_anomaly, use_container_width=True)
-
-        st.write("Points de données considérés comme anomalies :")
-        st.dataframe(df[df["Anomalies_Z"]])
-
-#################################
-# 3. Onglet: PRÉVISIONS
-#################################
-with tabs[2]:
-    st.header("Prévisions")
-    if df.empty or len(df) < 2:
-        st.warning("Données insuffisantes pour faire des prévisions.")
-    else:
-        # Conversion de la date en variable numérique pour la régression
-        df["Date_numeric"] = (df["Date"] - df["Date"].min()) / np.timedelta64(1, "D")
-        X = df[["Date_numeric"]]
-        y = df["Poids (Kgs)"]
-
-        # Validation croisée temporelle et régression linéaire
-        tscv = TimeSeriesSplit(n_splits=5)
-        lin_scores = cross_val_score(LinearRegression(), X, y, scoring='neg_mean_squared_error', cv=tscv)
-        st.write(f"MSE moyen (Régression Linéaire) : **{-lin_scores.mean():.2f}**")
-
-        reg = LinearRegression().fit(X, y)
-        predictions = reg.predict(X)
-
-        # Intervalles de confiance par bootstrap
-        n_bootstraps = 500
-        boot_preds = np.zeros((n_bootstraps, len(X)))
-        for i in range(n_bootstraps):
-            X_boot, y_boot = resample(X, y)
-            reg_boot = LinearRegression().fit(X_boot, y_boot)
-            boot_preds[i] = reg_boot.predict(X)
-        pred_lower = np.percentile(boot_preds, 2.5, axis=0)
-        pred_upper = np.percentile(boot_preds, 97.5, axis=0)
-
-        fig_reg = px.scatter(
-            df, x="Date", y="Poids (Kgs)",
-            title="Régression Linéaire avec IC",
-            labels={"Poids (Kgs)": "Poids (en Kgs)"}
-        )
-        fig_reg.add_trace(go.Scatter(x=df["Date"], y=predictions,
-                                     mode='lines', name='Prévisions', line=dict(color='blue')))
-        fig_reg.add_trace(go.Scatter(x=df["Date"], y=pred_lower,
-                                     mode='lines', line_color='lightblue', name='IC Inférieur'))
-        fig_reg.add_trace(go.Scatter(x=df["Date"], y=pred_upper,
-                                     mode='lines', line_color='lightblue', fill='tonexty', name='IC Supérieur'))
-        fig_reg = apply_theme(fig_reg, theme)
-        st.plotly_chart(fig_reg, use_container_width=True)
-
-        # Estimation de la date d'atteinte de l'objectif final
-        try:
-            if reg.coef_[0] >= 0:
-                st.error("Le modèle n’indique pas une perte de poids. Impossible d’estimer la date d’atteinte de l’objectif.")
-            else:
-                days_to_target = (target_weight_4 - reg.intercept_) / reg.coef_[0]
-                target_date = df["Date"].min() + pd.to_timedelta(days_to_target, unit="D")
-                if target_date < df["Date"].max():
-                    st.warning("L'objectif a déjà été atteint selon les prévisions.")
-                else:
-                    st.write(f"**Date estimée** pour atteindre {target_weight_4} Kgs : {target_date.date()}")
-        except Exception as e:
-            st.error(f"Erreur dans le calcul de la date estimée : {e}")
-
-        # Prévisions futures
-        st.subheader("Prédictions Futures")
-        future_days = st.slider("Nombre de jours à prédire", 1, 365, 30)
-        future_dates = pd.date_range(start=df["Date"].max() + pd.Timedelta(days=1), periods=future_days)
-        future_numeric = (future_dates - df["Date"].min()) / np.timedelta64(1, "D")
-        future_predictions = reg.predict(future_numeric.values.reshape(-1, 1))
-        future_df = pd.DataFrame({"Date": future_dates, "Prévisions": future_predictions})
-        fig_future = px.line(future_df, x="Date", y="Prévisions", title="Prévisions Futures")
-        fig_future = apply_theme(fig_future, theme)
-        st.plotly_chart(fig_future, use_container_width=True)
-
-        # Taux de changement moyen
-        df["Poids_diff"] = df["Poids (Kgs)"].diff()
-        mean_change_rate = df["Poids_diff"].mean()
-        st.write(f"Taux de changement moyen du poids : **{mean_change_rate:.2f} Kgs/jour**")
-
-#################################
-# 4. Onglet: ANALYSE DES DONNÉES
-#################################
-with tabs[3]:
-    st.header("Analyse des Données")
-    if df.empty:
-        st.warning("Aucune donnée pour l’analyse.")
-    else:
-        st.subheader("Analyse STL (Tendance et Saisonnalité)")
-        stl = STL(df.set_index('Date')['Poids (Kgs)'], period=7)
-        res = stl.fit()
-        df["Trend"] = res.trend.values
-        df["Seasonal"] = res.seasonal.values
-        df["Resid"] = res.resid.values
-
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            fig_trend = px.line(df, x="Date", y="Trend", title="Tendance")
-            fig_trend = apply_theme(fig_trend, theme)
-            st.plotly_chart(fig_trend, use_container_width=True)
-        with col2:
-            fig_seasonal = px.line(df, x="Date", y="Seasonal", title="Saisonnalité")
-            fig_seasonal = apply_theme(fig_seasonal, theme)
-            st.plotly_chart(fig_seasonal, use_container_width=True)
-        with col3:
-            fig_resid = px.line(df, x="Date", y="Resid", title="Résidus")
-            fig_resid = apply_theme(fig_resid, theme)
-            st.plotly_chart(fig_resid, use_container_width=True)
-
-        st.subheader("Prédictions SARIMA")
-        sarima_model = SARIMAX(df["Poids (Kgs)"], order=(1,1,1), seasonal_order=(1,1,1,7))
-        sarima_results = sarima_model.fit(disp=False)
-        df["SARIMA_Predictions"] = sarima_results.predict(start=0, end=len(df)-1, dynamic=False)
-        fig_sarima = px.scatter(df, x="Date", y="Poids (Kgs)", title="SARIMA")
-        fig_sarima.add_trace(go.Scatter(x=df["Date"], y=df["SARIMA_Predictions"],
-                                        mode='lines', name='Prévisions SARIMA'))
-        fig_sarima = apply_theme(fig_sarima, theme)
-        st.plotly_chart(fig_sarima, use_container_width=True)
-
-#################################
-# 5. Onglet: COMPARAISON DES MODÈLES
-#################################
-with tabs[4]:
-    st.header("Comparaison des Modèles")
-    if df.empty or len(df) < 2:
-        st.warning("Pas assez de données pour comparer les modèles.")
-    else:
-        X = df[["Date_numeric"]]
-        y = df["Poids (Kgs)"]
-        tscv = TimeSeriesSplit(n_splits=5)
-        models = {
-            "Régression Linéaire": LinearRegression(),
-            "Random Forest": RandomForestRegressor(n_estimators=100, random_state=42)
-        }
-        model_scores = {}
-        for name, model in models.items():
-            scores = cross_val_score(model, X, y, scoring='neg_mean_squared_error', cv=tscv)
-            model_scores[name] = -scores.mean()
-        scores_df = pd.DataFrame.from_dict(model_scores, orient='index', columns=['MSE'])
-        st.write("**Comparaison des MSE moyens :**")
-        st.dataframe(scores_df)
-
-        for name, model in models.items():
-            model.fit(X, y)
-            df[name + "_Predictions"] = model.predict(X)
-
-        fig_compare = px.scatter(df, x="Date", y="Poids (Kgs)", title="Comparaison des Modèles")
-        for name in models.keys():
-            fig_compare.add_trace(go.Scatter(x=df["Date"], y=df[name + "_Predictions"],
-                                             mode='lines', name=name))
-        fig_compare = apply_theme(fig_compare, theme)
-        st.plotly_chart(fig_compare, use_container_width=True)
-
-        st.subheader("Métriques de Performance")
-        for name in models.keys():
-            mse = mean_squared_error(y, df[name + "_Predictions"])
-            mae = mean_absolute_error(y, df[name + "_Predictions"])
-            r2 = r2_score(y, df[name + "_Predictions"])
-            st.write(f"**{name}:** MSE = {mse:.2f}, MAE = {mae:.2f}, R² = {r2:.2f}")
-
-#################################
-# 6. Onglet: ANALYSE DE CORRÉLATION
-#################################
-with tabs[5]:
-    st.header("Analyse de Corrélation")
-    st.markdown(
-    """
-    Analysez la relation entre votre poids et d'autres variables (ex. calories, IMC).
-    """
+    # Configurer les sélecteurs de période et le slider
+    fig.update_layout(
+        xaxis=dict(
+            title="Date",
+            rangeselector=dict(
+                buttons=list([
+                    dict(count=7, label="7j", step="day", stepmode="backward"),
+                    dict(count=1, label="1m", step="month", stepmode="backward"),
+                    dict(count=3, label="3m", step="month", stepmode="backward"),
+                    dict(step="all", label="Tout")
+                ])
+            ),
+            rangeslider=dict(visible=True),
+            type="date"
+        ),
+        yaxis=dict(title="Poids (kg)"),
+        legend=dict(orientation="h", y=-0.2),
+        margin=dict(t=10, b=0)
     )
-    if "Calories" not in df.columns:
-        df["Calories"] = np.nan
+    st.plotly_chart(fig, use_container_width=True)
 
-    if not df.empty:
-        last_date = df["Date"].max()
-        st.write(f"Dernier enregistrement le : {last_date.date()}")
-        user_cal = st.number_input(f"Calories consommées pour le {last_date.date()}",
-                                   min_value=0, value=2000)
-        if st.button("Mettre à jour les calories"):
-            df.loc[df["Date"] == last_date, "Calories"] = user_cal
-            st.success(f"Calories du {last_date.date()} mises à jour !")
-
-        corr_cols = st.multiselect("Variables à corréler avec le Poids (Kgs) :", 
-                                   ["Calories", "IMC"], default=["Calories"])
-        if corr_cols:
-            for col in corr_cols:
-                valid_df = df.dropna(subset=[col, "Poids (Kgs)"])
-                if len(valid_df) > 1:
-                    correlation = valid_df["Poids (Kgs)"].corr(valid_df[col])
-                    st.write(f"**Corrélation (Poids vs {col})** : {correlation:.2f}")
-                    fig_corr = px.scatter(valid_df, x=col, y="Poids (Kgs)",
-                                          trendline="ols",
-                                          title=f"Poids vs {col}")
-                    fig_corr = apply_theme(fig_corr, theme)
-                    st.plotly_chart(fig_corr, use_container_width=True)
-                else:
-                    st.warning(f"Pas assez de données pour {col}.")
-
-#################################
-# 7. Onglet: PERSONNALISATION
-#################################
-with tabs[6]:
-    st.header("Personnalisation et Indicateurs")
-    if df.empty:
-        st.warning("Aucune donnée disponible.")
-    else:
-        current_weight = df['Poids (Kgs)'].iloc[-1]
-        initial_weight = df['Poids (Kgs)'].iloc[0]
-
-        if current_weight <= target_weight_4:
-            st.balloons()
-            st.success("Félicitations ! Objectif ultime atteint.")
-        elif current_weight <= target_weight_3:
-            st.success("Bravo ! Vous avez atteint l'objectif 3.")
-        elif current_weight <= target_weight_2:
-            st.info("Bien joué ! Objectif 2 atteint.")
-        elif current_weight <= target_weight:
-            st.info("Bon travail ! Objectif 1 atteint.")
-        else:
-            st.warning("Continuez vos efforts pour atteindre vos objectifs.")
-
-        # Indicateur de progression avec gauge
-        fig_gauge = go.Figure(go.Indicator(
-            mode="gauge+number+delta",
-            value=current_weight,
-            delta={'reference': target_weight_4},
-            gauge={
-                'axis': {'range': [target_weight_4 - 10, initial_weight + 10]},
-                'steps': [
-                    {'range': [target_weight_4, target_weight_3], 'color': "darkgreen"},
-                    {'range': [target_weight_3, target_weight_2], 'color': "lightgreen"},
-                    {'range': [target_weight_2, target_weight], 'color': "yellow"},
-                    {'range': [target_weight, initial_weight], 'color': "orange"}
-                ],
-                'threshold': {
-                    'line': {'color': "red", 'width': 4},
-                    'thickness': 0.75,
-                    'value': current_weight
-                }
-            }
+    # Heatmap calendaire hebdomadaire
+    st.subheader("Heatmap hebdomadaire des variations quotidiennes")
+    # Préparer une matrice [Jour de semaine x Semaine] avec la variation de poids jour par jour
+    df_diff = df.copy()
+    df_diff['Diff'] = df_diff['Poids'].diff()
+    df_diff.dropna(inplace=True)
+    if not df_diff.empty:
+        # Calculer semaine ISO et jour de semaine
+        df_diff['Week'] = df_diff['Date'].dt.isocalendar().week
+        df_diff['Weekday'] = df_diff['Date'].dt.weekday  # Lundi=0, Dimanche=6
+        # Pour distinguer les années, combiner année et numéro de semaine
+        df_diff['YearWeek'] = df_diff['Date'].dt.strftime('%Y-%W')
+        # Tableau croisé: lignes = jour de semaine, colonnes = semaine
+        pivot = df_diff.pivot(index='Weekday', columns='YearWeek', values='Diff')
+        # Ordonner les jours de semaine de Lundi(0) à Dimanche(6)
+        pivot = pivot.reindex(index=range(0, 7))
+        # Libellés pour jours et semaines
+        days_labels = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
+        week_labels = pivot.columns  # YearWeek labels
+        # Créer la heatmap
+        heatmap = go.Figure(data=go.Heatmap(
+            z=pivot.values,
+            x=week_labels,
+            y=days_labels,
+            colorscale="RdYlGn_r",
+            zmid=0,
+            colorbar=dict(title="Variation (kg)")
         ))
-        fig_gauge.update_layout(title="Progression vers l'Objectif Final")
-        fig_gauge = apply_theme(fig_gauge, theme)
-        st.plotly_chart(fig_gauge, use_container_width=True)
-
-#################################
-# 8. Onglet: TÉLÉCHARGEMENT & GESTION
-#################################
-with tabs[7]:
-    st.header("Téléchargement et Gestion des Données")
-    uploaded_file = st.file_uploader("Téléchargez un fichier CSV", type=["csv"])
-    if uploaded_file:
-        df_user = pd.read_csv(uploaded_file)
-        st.write("Aperçu :", df_user.head())
-        if st.button("Fusionner avec les données existantes"):
-            df_user['Poids (Kgs)'] = (
-                df_user['Poids (Kgs)']
-                .astype(str)
-                .str.replace(',', '.')
-                .str.strip()
-            )
-            df_user['Poids (Kgs)'] = pd.to_numeric(df_user['Poids (Kgs)'], errors='coerce')
-            df_user['Date'] = pd.to_datetime(df_user['Date'], dayfirst=True, errors='coerce')
-            df_user = df_user.dropna(subset=['Poids (Kgs)', 'Date']).sort_values('Date', ascending=True)
-            df = pd.concat([df, df_user]).drop_duplicates(subset=['Date']).sort_values('Date')
-            st.success("Fusion réussie. Données mises à jour.")
-
-    st.subheader("Télécharger vos données en CSV")
-    csv_data = convert_df_to_csv(df)
-    st.download_button(
-        label="Télécharger",
-        data=csv_data,
-        file_name='donnees_poids.csv',
-        mime='text/csv'
-    )
-
-    if st.button("Réinitialiser les données"):
-        df = pd.DataFrame(columns=['Date', 'Poids (Kgs)'])
-        st.success("Données réinitialisées. Rechargez ou importez un nouveau fichier.")
-
-#################################
-# 9. Onglet: PERTE DE POIDS HEBDO
-#################################
-with tabs[8]:
-    st.header("Perte de Poids Hebdomadaire")
-    if df.empty:
-        st.warning("Aucune donnée pour calculer la perte hebdomadaire.")
+        heatmap.update_layout(height=300, margin=dict(t=30, b=0))
+        st.plotly_chart(heatmap, use_container_width=True)
     else:
-        df_weekly = df.set_index('Date').resample('W').mean().reset_index()
-        df_weekly['Perte_Poids'] = -df_weekly['Poids (Kgs)'].diff()
-        df_weekly = df_weekly.dropna()
-        st.write("Perte de poids par semaine :")
-        st.dataframe(df_weekly[['Date', 'Poids (Kgs)', 'Perte_Poids']])
-        fig_weekly = px.bar(
-            df_weekly, x='Date', y='Perte_Poids',
-            title='Perte de Poids Hebdomadaire',
-            labels={"Perte_Poids": "Perte (Kgs)"}
-        )
-        fig_weekly = apply_theme(fig_weekly, theme)
-        st.plotly_chart(fig_weekly, use_container_width=True)
+        st.write("Pas assez de données pour générer la heatmap des variations quotidiennes.")
 
-#################################
-# 10. Onglet: CONSEILS
-#################################
-with tabs[9]:
-    st.header("Conseils et Recommandations")
-    st.markdown(
-    """
-    **Recommandations générales :**  
-    - Adoptez une alimentation équilibrée (plus de détails sur [le guide OMS](https://www.who.int/publications/m/item/healthy-diet-factsheet)).  
-    - Pratiquez une activité physique régulière (cf. [recommandations OMS](https://www.who.int/news-room/fact-sheets/detail/physical-activity)).  
-    - Surveillez régulièrement votre poids et votre IMC ([Calculateur d'IMC OMS](https://www.who.int/tools/body-mass-index-bmi)).  
-    - En cas de doute, consultez un professionnel de santé.
-    """
-    )
+# **Tab 3: Analyse avancée**
+with tab3:
+    st.subheader("Analyse avancée des tendances")
+    # Détection automatique des plateaux (stagnations)
+    plateau_periods = []
+    for (start_idx, end_idx) in plateau_intervals:
+        start_date = dates.iloc[start_idx].strftime("%d %b %Y")
+        end_date = dates.iloc[end_idx].strftime("%d %b %Y")
+        duration = end_idx - start_idx + 1
+        plateau_periods.append((start_date, end_date, duration))
+    if plateau_periods:
+        plateau_texts = [f"{sd} au {ed} ({dur} jours)" for sd, ed, dur in plateau_periods]
+        st.info(f"**Plateaux détectés** (≈stagnation sur ≥10 jours) : " + ", ".join(plateau_texts))
+        # Si le dernier plateau inclut la date actuelle
+        last_plateau = plateau_periods[-1]
+        last_plateau_end = pd.to_datetime(last_plateau[1], format="%d %b %Y")
+        if dates.iloc[-1].strftime("%d %b %Y") == last_plateau[1]:
+            st.warning(f"⚠️ Vous êtes actuellement en **plateau** depuis {last_plateau[-1]} jours.")
+    else:
+        st.write("Aucun plateau prolongé détecté récemment.")
+    # Segmentation des phases de poids avec KMeans
+    # Construire les segments en combinant les plateaux et changements de tendance
+    segments = []
+    seg_start = 0
+    i = 0
+    sign_flips = []
+    # Re-calculer les flips de tendance (hors plateaux) sur la base du signe des différences
+    weight_diff = weights.diff().fillna(0.0).values
+    current_sign = 0
+    while i < len(weight_diff):
+        # Passer les périodes de plateau (on les traitera comme segments à part)
+        in_plateau = False
+        for (ps, pe) in plateau_intervals:
+            if i == ps:
+                # Ajouter segment précédent (non-plateau) si existant
+                if seg_start < ps:
+                    segments.append((seg_start, ps-1))
+                # Ajouter le segment plateau
+                segments.append((ps, pe))
+                i = pe + 1
+                seg_start = i
+                in_plateau = True
+                break
+        if in_plateau:
+            continue
+        # Détection de changement de signe hors plateau
+        s = 0
+        if abs(weight_diff[i]) < 0.01:
+            s = 0
+        else:
+            s = 1 if weight_diff[i] > 0 else -1
+        if current_sign == 0:
+            current_sign = s if s != 0 else current_sign
+        elif s != 0 and s != current_sign:
+            # changement de tendance à i-1 (fin du segment précédent)
+            segments.append((seg_start, i-1))
+            seg_start = i
+            current_sign = s
+            sign_flips.append(i-1)
+        i += 1
+    # Ajouter le dernier segment non-plateau restant
+    if seg_start < len(weights):
+        segments.append((seg_start, len(weights)-1))
 
-#############
-# SOURCES & RÉFÉRENCES
-#############
-st.markdown("---")
-st.markdown("**Sources et Références :**")
-st.markdown("- [Streamlit Documentation](https://docs.streamlit.io/)")
-st.markdown("- [Plotly Express Documentation](https://plotly.com/python/plotly-express/)")
-st.markdown("- [Plotly Graph Objects](https://plotly.com/python/)")
-st.markdown("- [Scikit-learn Model Evaluation](https://scikit-learn.org/stable/modules/model_evaluation.html)")
-st.markdown("- [Statsmodels SARIMAX](https://www.statsmodels.org/stable/generated/statsmodels.tsa.statespace.sarimax.SARIMAX.html)")
-st.markdown("- [Pandas Documentation](https://pandas.pydata.org/docs/)")
-st.markdown("- [SciPy Stats](https://docs.scipy.org/doc/scipy/reference/stats.html)")
-st.markdown("- [OMS - Obésité et Surpoids](https://www.who.int/news-room/fact-sheets/detail/obesity-and-overweight)")
+    # Enlever d'éventuels segments de longueur nulle ou négative
+    segments = [seg for seg in segments if seg[0] <= seg[1]]
+    # Calculer métriques par segment
+    seg_data = []
+    for (a, b) in segments:
+        start_date = dates.iloc[a].strftime("%d %b %Y")
+        end_date = dates.iloc[b].strftime("%d %b %Y")
+        duration = b - a + 1
+        change = weights.iloc[b] - weights.iloc[a]
+        # kg par semaine
+        rate_per_week = (change / duration) * 7.0
+        seg_data.append({
+            "Début": start_date,
+            "Fin": end_date,
+            "Durée (jours)": duration,
+            "Variation (kg)": f"{change:+.1f}",
+            "Vitesse (kg/sem)": f"{rate_per_week:+.2f}",
+        })
+    # Clustering KMeans des segments selon la vitesse (slope moyenne)
+    from sklearn.cluster import KMeans
+    # Préparer les features (slope par jour)
+    slopes = np.array([ (weights.iloc[b] - weights.iloc[a]) / (b - a + 1) if b > a else 0.0 for (a, b) in segments ])
+    n_clusters = min(3, len(slopes)) if len(slopes) > 1 else 1
+    if n_clusters >= 1:
+        kmeans = KMeans(n_clusters=n_clusters, n_init=10, random_state=0)
+        labels = kmeans.fit_predict(slopes.reshape(-1, 1))
+    else:
+        labels = [0] * len(slopes)
+    # Définir les étiquettes lisibles pour chaque cluster
+    cluster_names = {}
+    if n_clusters == 1:
+        cluster_names[0] = "Stable"
+    elif n_clusters == 2:
+        # Dans le cas de 2 clusters, on différencie généralement perte vs gain ou perte vs plateau
+        center0, center1 = kmeans.cluster_centers_.flatten()
+        for idx, center in enumerate([center0, center1]):
+            if center > 0.02:
+                cluster_names[idx] = "Reprise de poids"
+            elif center < -0.02:
+                cluster_names[idx] = "Perte de poids"
+            else:
+                cluster_names[idx] = "Stagnation"
+    else:  # 3 clusters
+        centers = kmeans.cluster_centers_.flatten()
+        # Trier les clusters par valeur de slope
+        order = np.argsort(centers)
+        # plus négatif -> perte rapide, milieu -> plateau ou faible variation, plus positif -> reprise
+        for idx, center in enumerate(centers):
+            # Trouver son rang dans l'ordre trié
+            rank = np.where(order == idx)[0][0]
+            if rank == 0:
+                cluster_names[idx] = "Perte rapide"
+            elif rank == 1:
+                cluster_names[idx] = "Stagnation" if -0.02 <= center <= 0.02 else "Perte modérée"
+            elif rank == 2:
+                cluster_names[idx] = "Reprise de poids"
+
+    # Ajouter la classification au tableau des segments
+    for i, seg in enumerate(seg_data):
+        label = labels[i] if len(labels) > i else 0
+        phase_name = cluster_names.get(label, "")
+        seg_data[i]["Phase"] = phase_name
+
+    # Afficher le tableau des segments détectés
+    st.write("**Phases détectées dans la période:**")
+    seg_df = pd.DataFrame(seg_data)
+    st.dataframe(seg_df, use_container_width=True)
+
+    # Messages dynamiques en fonction de la phase actuelle
+    if seg_data:
+        last_phase = seg_data.iloc[-1] if isinstance(seg_data, pd.DataFrame) else seg_data[-1]
+        last_label = labels[-1] if isinstance(labels, np.ndarray) else labels[-1]
+        last_phase_name = cluster_names.get(last_label, "")
+        if "Plateau" in last_phase_name or last_phase_name == "Stagnation":
+            st.warning("⚠️ Votre poids est actuellement en **plateau**. Patience, persévérez !")
+        elif "Reprise" in last_phase_name:
+            st.warning("⚠️ Attention, tendance à la **reprise de poids** sur la période récente.")
+        elif "Perte rapide" in last_phase_name:
+            st.info("🏃 Perte de poids rapide en cours. Continuez vos efforts, bravo!")
+        elif "Perte" in last_phase_name:
+            st.success("📉 Vous êtes en phase de **perte de poids**. Bonne progression récente!")
+        else:
+            st.info(f"Phase actuelle: {last_phase_name}")
+
+# **Tab 4: Prévisions IA (Prophet)**
+with tab4:
+    st.subheader("Prévision de poids future")
+    try:
+        from prophet import Prophet
+    except ImportError:
+        Prophet = None
+    if Prophet is None:
+        st.error("Le module Prophet n'est pas installé. Veuillez exécuter `pip install prophet` pour les prévisions.")
+    else:
+        # Préparer les données pour Prophet
+        df_prophet = df[['Date', 'Poids']].rename(columns={'Date': 'ds', 'Poids': 'y'})
+        # Entraîner le modèle Prophet
+        model = Prophet(daily_seasonality=False, weekly_seasonality=True, yearly_seasonality=False)
+        model.fit(df_prophet)
+        # Choix de l'horizon de prévision
+        horizon_days = st.slider("Horizontale de prévision (jours)", min_value=7, max_value=180, value=30)
+        future = model.make_future_dataframe(periods=horizon_days, freq='D', include_history=False)
+        forecast = model.predict(future)
+        # Tracer la prévision
+        fig_pred = go.Figure()
+        # Trace historique
+        fig_pred.add_trace(go.Scatter(x=dates, y=weights, mode='lines', name="Historique", line=dict(color='#1f77b4')))
+        # Trace prévision (moyenne)
+        fig_pred.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat'], mode='lines', name="Prévision", line=dict(color='#2ca02c', dash='dash')))
+        # Intervalle de confiance
+        fig_pred.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_upper'], mode='lines', line=dict(color='rgba(0,0,0,0)'), showlegend=False, hoverinfo='skip'))
+        fig_pred.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_lower'], mode='lines', fill='tonexty', fillcolor='rgba(46, 204, 113, 0.2)',
+                                      line=dict(color='rgba(46, 204, 113, 0)'), showlegend=False, hoverinfo='skip', name="Confiance 95%"))
+        # Ligne verticale "Aujourd'hui"
+        today = dates.iloc[-1]
+        fig_pred.add_vline(x=today, line_width=2, line_dash="dot", line_color="grey", annotation_text="Aujourd'hui", annotation_position="top right")
+        fig_pred.update_layout(yaxis_title="Poids (kg)", legend_title_text="", margin=dict(t=10, b=0))
+        st.plotly_chart(fig_pred, use_container_width=True)
+        # Message sur la date potentielle d'atteinte de l'objectif
+        if target_weight:
+            # Chercher la première date forecast où l'objectif est atteint
+            if initial_weight > target_weight:
+                achieved = forecast[forecast['yhat'] <= target_weight]
+            else:
+                achieved = forecast[forecast['yhat'] >= target_weight]
+            if not achieved.empty:
+                goal_date = achieved.iloc[0]['ds']
+                st.success(f"🎯 D'après la prévision, l'objectif de **{target_weight:.1f} kg** pourrait être atteint vers le **{goal_date.strftime('%d %b %Y')}**.")
+            else:
+                st.info("Selon la tendance actuelle, l'objectif ne serait pas atteint sur l'horizon de prévision choisi.")
