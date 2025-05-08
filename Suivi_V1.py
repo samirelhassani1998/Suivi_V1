@@ -1,401 +1,600 @@
 import streamlit as st
+
+# IMPORTANT : appeler st.set_page_config en premier !
+st.set_page_config(page_title="Suivi du Poids Amélioré", layout="wide")
+
 import pandas as pd
 import numpy as np
-import altair as alt
-from datetime import datetime, timedelta
+import plotly.express as px
+import plotly.graph_objects as go
 
-# Configuration de la page Streamlit
-st.set_page_config(page_title="Suivi de Poids", layout="wide")
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split, cross_val_score, TimeSeriesSplit
+from sklearn.cluster import KMeans
+from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
+from sklearn.utils import resample
+from scipy import stats
 
-# CSS personnalisé pour un léger ajustement du style (par exemple couleur de fond plus claire)
-st.markdown("""
-<style>
-.stApp {
-    background-color: #F8F9FA;
-}
-</style>
-""", unsafe_allow_html=True)
+from statsmodels.tsa.seasonal import STL
+from statsmodels.tsa.statespace.sarimax import SARIMAX
 
-# Titre de l'application
-st.title("📊 Suivi de Poids Intelligent")
+# --- Injection de CSS personnalisé pour améliorer l'apparence globale ---
+st.markdown(
+    """
+    <style>
+    /* Style global */
+    .reportview-container {
+        font-family: 'Segoe UI', sans-serif;
+    }
+    .sidebar .sidebar-content {
+        background-image: linear-gradient(#2e7bcf, #2e7bcf);
+        color: white;
+    }
+    .stButton>button {
+        background-color: #2e7bcf;
+        color: white;
+        border: none;
+    }
+    .stMetric {
+        font-size: 1.5rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
-# Sidebar - Profil de l'utilisateur
-st.sidebar.header("Profil de l'utilisateur")
-height = st.sidebar.number_input("Taille (cm)", min_value=50, max_value=250, value=170)
-age = st.sidebar.number_input("Âge", min_value=0, max_value=120, value=30)
-sex = st.sidebar.selectbox("Sexe", options=["Homme", "Femme"])
+#############
+# TITRE ET DESCRIPTION
+#############
+st.title("Suivi de l'Évolution du Poids")
+st.markdown(
+    """
+    Suivez votre poids, calculez votre IMC, visualisez des tendances, réalisez des prévisions et détectez des anomalies.
+    Utilisez les onglets pour naviguer entre les fonctionnalités.
+    """
+)
 
-# Fonction pour générer des données d'exemple si l'utilisateur n'en a pas fourni
-def generate_sample_data():
-    start_date = pd.to_datetime("2023-01-01")
-    days = pd.date_range(start_date, periods=60)
-    weights = []
-    weight = 80.0  # poids initial en kg
-    # Simulation d'un cycle de perte/prise/perte de poids
-    for i, day in enumerate(days):
-        if i < 20:
-            # Perte de poids progressive
-            weight += np.random.normal(-0.05, 0.1)
-        elif i < 40:
-            # Prise de poids
-            weight += np.random.normal(0.1, 0.1)
-        else:
-            # Nouvelle perte de poids
-            weight += np.random.normal(-0.1, 0.1)
-        weights.append(round(weight, 1))
-    # Générer des données de calories et de pas cohérentes avec le cycle de poids
-    calories = []
-    steps = []
-    for i, w in enumerate(weights):
-        if i < 20:
-            cal = int(np.random.normal(1800, 100))  # en déficit
-            step = int(np.random.normal(10000, 1000))
-        elif i < 40:
-            cal = int(np.random.normal(2500, 150))  # surplus calorique
-            step = int(np.random.normal(5000, 500))
-        else:
-            cal = int(np.random.normal(2000, 150))  # maintenance modérée
-            step = int(np.random.normal(8000, 800))
-        calories.append(max(cal, 1200))
-        steps.append(max(step, 0))
-    df_sample = pd.DataFrame({
-        "Date": days, 
-        "Poids": weights, 
-        "Calories": calories, 
-        "Steps": steps
-    })
-    return df_sample
+#############
+# FONCTIONS
+#############
+@st.cache_data(ttl=300)
+def load_data(url: str) -> pd.DataFrame:
+    """
+    Charge et nettoie le jeu de données depuis un fichier CSV.
+    """
+    df = pd.read_csv(url, decimal=",")
+    df['Poids (Kgs)'] = (
+        df['Poids (Kgs)']
+        .astype(str)
+        .str.replace(',', '.')
+        .str.strip()
+    )
+    df['Poids (Kgs)'] = pd.to_numeric(df['Poids (Kgs)'], errors='coerce')
+    df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
+    df = df.dropna(subset=['Poids (Kgs)', 'Date']).sort_values('Date', ascending=True)
+    return df
 
-# Initialisation ou chargement des données
-if 'df_original' not in st.session_state:
-    st.session_state['df_original'] = None
-if 'df_current' not in st.session_state:
-    st.session_state['df_current'] = None
+def apply_theme(fig: go.Figure, theme_name: str) -> go.Figure:
+    """
+    Applique un thème Plotly à une figure et ajuste la mise en page.
+    """
+    theme_templates = {
+        "Dark": "plotly_dark",
+        "Light": "plotly_white",
+        "Solar": "plotly_solar",
+        "Seaborn": "seaborn",
+    }
+    if theme_name in theme_templates:
+        fig.update_layout(template=theme_templates[theme_name])
+    # Améliorations supplémentaires : marges et titres
+    fig.update_layout(
+        title=dict(font=dict(size=22)),
+        margin=dict(l=20, r=20, t=50, b=20),
+        hovermode="x unified"
+    )
+    return fig
 
-# Chargement d'un fichier CSV si l'utilisateur en importe un
-uploaded_file = st.file_uploader("Importer vos données de poids (CSV)", type="csv")
-if uploaded_file is not None:
-    new_df = pd.read_csv(uploaded_file)
-    # On s'assure que la colonne Date est bien de type date
-    if 'Date' in new_df.columns:
-        new_df['Date'] = pd.to_datetime(new_df['Date'])
-        new_df.sort_values('Date', inplace=True)
-    st.session_state['df_original'] = new_df.copy()
-    st.session_state['df_current'] = new_df.copy()
-elif st.session_state['df_current'] is None:
-    # Pas de fichier importé : on utilise des données d'exemple par défaut
-    sample_df = generate_sample_data()
-    st.session_state['df_original'] = sample_df.copy()
-    st.session_state['df_current'] = sample_df.copy()
+@st.cache_data
+def convert_df_to_csv(df: pd.DataFrame) -> bytes:
+    """
+    Convertit un DataFrame en CSV encodé en UTF-8.
+    """
+    return df.to_csv(index=False).encode('utf-8')
 
-# Récupération du DataFrame actuel
-df = st.session_state['df_current']
+#############
+# CHARGEMENT DES DONNÉES
+#############
+url = 'https://docs.google.com/spreadsheets/d/1qPhLKvm4BREErQrm0L38DcZFG4a-K0msSzARVIG_T_U/export?format=csv'
+df = load_data(url)
 
-# Création des onglets de l'application
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "Données", "Analyse Statistique", "Prévisions", 
-    "Modèles ML", "Clustering", "Aide"
+# Bouton pour recharger les données
+if st.button("Recharger les données"):
+    load_data.clear()
+    df = load_data(url)
+
+st.write(f"**Nombre total de lignes chargées :** {df.shape[0]}")
+st.write("Aperçu des dernières lignes :", df.tail())
+
+#############
+# SIDEBAR AVANCÉE
+#############
+st.sidebar.header("Paramètres Généraux")
+
+# Thème et type de moyenne mobile dans des expanders
+with st.sidebar.expander("Personnalisation du Thème"):
+    theme = st.selectbox("Choisir un thème", ["Default", "Dark", "Light", "Solar", "Seaborn"])
+
+with st.sidebar.expander("Paramètres de la Moyenne Mobile"):
+    ma_type = st.selectbox("Type de moyenne mobile", ["Simple", "Exponentielle"])
+    window_size = st.slider("Taille de la moyenne mobile (jours)", 1, 30, 7)
+
+# Filtre de dates
+with st.sidebar.expander("Filtre de Dates"):
+    if not df.empty:
+        date_min, date_max = df['Date'].min(), df['Date'].max()
+        date_range = st.date_input("Sélectionnez une plage de dates", [date_min, date_max])
+        if len(date_range) == 2:
+            start_date, end_date = date_range
+            df = df[(df['Date'] >= pd.to_datetime(start_date)) & (df['Date'] <= pd.to_datetime(end_date))]
+
+# Objectifs de poids et informations personnelles
+with st.sidebar.expander("Objectifs et Infos Personnelles"):
+    target_weight = st.number_input("Objectif 1 (Kgs)", value=95.0)
+    target_weight_2 = st.number_input("Objectif 2 (Kgs)", value=90.0)
+    target_weight_3 = st.number_input("Objectif 3 (Kgs)", value=85.0)
+    target_weight_4 = st.number_input("Objectif 4 (Kgs)", value=80.0)
+    st.markdown("---")
+    height_cm = st.number_input("Votre taille (cm)", value=182)
+    height_m = height_cm / 100.0
+
+# Paramètres anomalies et calories/activité
+with st.sidebar.expander("Paramètres d'Anomalies & Activité"):
+    z_score_threshold = st.slider("Seuil Z-score", 1.0, 5.0, 2.0, step=0.5)
+    st.markdown("**Santé et Activité**")
+    calories = st.number_input("Calories consommées aujourd'hui", min_value=0, value=2000)
+    calories_brul = st.number_input("Calories brûlées (approximatif)", min_value=0, value=500)
+    st.write("Bilan calorique estimé :", calories - calories_brul, "kcal")
+
+#############
+# CRÉATION DES ONGLETS
+#############
+tabs = st.tabs([
+    "Résumé", "Graphiques", "Prévisions", "Analyse des Données",
+    "Comparaison des Modèles", "Corrélation", "Personnalisation",
+    "Téléchargement", "Perte de Poids Hebdo", "Conseils"
 ])
 
-# --- Section 1: Données (saisie et édition) ---
-with tab1:
-    st.subheader("📂 Données de poids")
-    st.write("Vous pouvez ajouter, modifier ou supprimer des entrées dans le tableau ci-dessous:")
-    edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True, key="data_editor")
-    # Mise à jour des données courantes avec les modifications
-    st.session_state['df_current'] = edited_df.copy()
-    df = st.session_state['df_current']
-    # Boutons d'action pour annuler ou comparer les modifications
-    col1, col2, col3 = st.columns(3)
-    if col1.button("💾 Télécharger CSV mis à jour"):
-        # Export des données actuelles en CSV
-        csv = df.to_csv(index=False).encode('utf-8')
-        col1.download_button("Télécharger", data=csv, file_name="suivi_poids.csv", mime="text/csv")
-    if col2.button("↩️ Annuler les modifications"):
-        # Restaurer les données originales
-        st.session_state['df_current'] = st.session_state['df_original'].copy()
-        st.experimental_rerun()
-    if col3.button("🔍 Comparer avant/après"):
-        original = st.session_state['df_original'].reset_index(drop=True)
-        current = st.session_state['df_current'].reset_index(drop=True)
-        diff = current.compare(original)
-        if diff.empty:
-            st.info("Aucune modification par rapport aux données initiales.")
+#################################
+# 1. Onglet: RÉSUMÉ
+#################################
+with tabs[0]:
+    st.header("Résumé")
+    if df.empty:
+        st.warning("Aucune donnée disponible.")
+    else:
+        initial_weight = df['Poids (Kgs)'].iloc[0]
+        current_weight = df['Poids (Kgs)'].iloc[-1]
+        weight_lost = initial_weight - current_weight
+        total_weight_to_lose = initial_weight - target_weight_4 if initial_weight > target_weight_4 else 1
+        progress_percent = (weight_lost / total_weight_to_lose) * 100
+        current_bmi = current_weight / (height_m ** 2)
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Poids Actuel", f"{current_weight:.2f} Kgs")
+        col2.metric("Objectif Final", f"{target_weight_4:.2f} Kgs")
+        col3.metric("Progrès (%)", f"{progress_percent:.2f} %")
+        col4.metric("IMC Actuel", f"{current_bmi:.2f}")
+
+        with st.expander("Afficher les Statistiques Descriptives"):
+            st.dataframe(df["Poids (Kgs)"].describe())
+
+        st.subheader("Interprétation de l'IMC")
+        if current_bmi < 18.5:
+            st.info("**Sous-poids** (IMC < 18.5). [OMS](https://www.who.int/news-room/fact-sheets/detail/obesity-and-overweight)")
+        elif 18.5 <= current_bmi < 25:
+            st.success("**Poids Normal** (18.5 ≤ IMC < 25). [OMS](https://www.who.int/news-room/fact-sheets/detail/obesity-and-overweight)")
+        elif 25 <= current_bmi < 30:
+            st.warning("**Surpoids** (25 ≤ IMC < 30). [OMS](https://www.who.int/news-room/fact-sheets/detail/obesity-and-overweight)")
         else:
-            st.write("Différences entre les données initiales et les données actuelles :")
-            st.dataframe(diff)
-    # Affichage d'un graphique de la série de poids
-    st.line_chart(df.set_index('Date')['Poids'], use_container_width=True)
+            st.error("**Obésité** (IMC ≥ 30). [OMS](https://www.who.int/news-room/fact-sheets/detail/obesity-and-overweight)")
 
-# --- Section 2: Analyse Statistique ---
-with tab2:
-    st.subheader("📊 Analyse Statistique")
-    # Statistiques descriptives de base
-    st.markdown("**Statistiques descriptives (Poids)**")
-    st.write(df['Poids'].describe())
-    # Histogramme de la distribution du poids
-    st.markdown("**Distribution du poids (Histogramme)**")
-    hist_chart = alt.Chart(df).mark_bar(color='#4E79A7').encode(
-        alt.X('Poids', bin=alt.Bin(maxbins=20), title='Poids (kg)'),
-        alt.Y('count()', title='Fréquence')
-    )
-    st.altair_chart(hist_chart, use_container_width=True)
-    # Boîte à moustaches (box plot) pour visualiser les quartiles et outliers
-    st.markdown("**Boîte à moustaches (quartiles et outliers)**")
-    box_chart = alt.Chart(df).mark_boxplot(color='#59A14F').encode(y=alt.Y('Poids', title='Poids (kg)'))
-    st.altair_chart(box_chart, use_container_width=True)
-    # Détection des outliers via la méthode IQR
-    Q1, Q3 = df['Poids'].quantile(0.25), df['Poids'].quantile(0.75)
-    IQR = Q3 - Q1
-    lower_bound, upper_bound = Q1 - 1.5 * IQR, Q3 + 1.5 * IQR
-    outliers_df = df[(df['Poids'] < lower_bound) | (df['Poids'] > upper_bound)]
-    if not outliers_df.empty:
-        st.warning(f"Outliers détectés (en dehors de [{lower_bound:.1f} kg, {upper_bound:.1f} kg]) :")
-        st.dataframe(outliers_df)
+#################################
+# 2. Onglet: GRAPHIQUES
+#################################
+with tabs[1]:
+    st.header("Graphiques")
+    if df.empty:
+        st.warning("Pas de données à afficher.")
     else:
-        st.info("Aucun outlier détecté selon la méthode IQR.")
-    # Matrice de corrélation si au moins une autre variable numérique est présente en plus du poids
-    numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
-    if len(numeric_cols) > 1:
-        st.markdown("**Matrice de corrélation**")
-        corr_matrix = df[numeric_cols].corr()
-        # Affichage de la matrice de corrélation sous forme de heatmap
-        import seaborn as sns
-        import matplotlib.pyplot as plt
-        fig, ax = plt.subplots()
-        sns.heatmap(corr_matrix, annot=True, cmap="Blues", ax=ax)
-        st.pyplot(fig)
-    # Indicateurs IMC et TMB
-    st.markdown("**Indicateurs de santé**")
-    if height is not None and height > 0:
-        # Calcul de l'IMC avec la dernière valeur de poids connue
-        latest_weight = df['Poids'].iloc[-1]
-        height_m = height / 100.0
-        bmi = latest_weight / (height_m ** 2)
-        st.write(f"**IMC actuel :** {bmi:.1f}")
-        # Classification OMS de l'IMC
-        if bmi < 18.5:
-            st.write("Catégorie IMC : **Insuffisance pondérale** (maigreur)")
-        elif bmi < 25:
-            st.write("Catégorie IMC : **Corpulence normale**")
-        elif bmi < 30:
-            st.write("Catégorie IMC : **Surpoids**")
-        elif bmi < 35:
-            st.write("Catégorie IMC : **Obésité I**")
-        elif bmi < 40:
-            st.write("Catégorie IMC : **Obésité II**")
+        # Calcul de la moyenne mobile
+        if ma_type == "Simple":
+            df["Poids_MA"] = df["Poids (Kgs)"].rolling(window=window_size, min_periods=1).mean()
         else:
-            st.write("Catégorie IMC : **Obésité III**")
-        # Calcul du TMB (métabolisme basal) via formule de Mifflin-St Jeor
-        if sex == "Homme":
-            bmr = 10 * latest_weight + 6.25 * height - 5 * age + 5
-        else:
-            bmr = 10 * latest_weight + 6.25 * height - 5 * age - 161
-        st.write(f"**Taux Métabolique de Base estimé :** {bmr:.0f} kcal/jour")
-        # Calcul de la balance énergétique du dernier jour si les calories sont renseignées
-        if 'Calories' in df.columns:
-            last_cal = df['Calories'].iloc[-1]
-            # Estimation simplifiée des calories dépensées (BMR * 1.2 + calories brûlées par les pas)
-            cal_burn = bmr * 1.2
-            if 'Steps' in df.columns:
-                cal_burn += df['Steps'].iloc[-1] * 0.04  # approx 0.04 kcal par pas
-            balance = last_cal - cal_burn
-            st.write(f"**Balance énergétique du dernier jour :** {balance:+.0f} kcal")
-    else:
-        st.info("Veuillez renseigner votre taille, âge et sexe dans la barre latérale pour calculer l'IMC et le TMB.")
+            df["Poids_MA"] = df["Poids (Kgs)"].ewm(span=window_size, adjust=False).mean()
 
-# --- Section 3: Prévisions de poids ---
-with tab3:
-    st.subheader("🔮 Prévisions de poids")
-    st.write("Choisissez un modèle de prévision et l'horizon désiré :")
-    # Sélection du modèle de prévision et de l'horizon
-    model_choice = st.selectbox("Modèle", ["ARIMA", "Prophet", "LSTM"])
-    horizon = st.slider("Horizon (jours)", min_value=1, max_value=30, value=7)
-    future_dates = pd.date_range(df['Date'].max() + timedelta(days=1), periods=horizon, freq='D')
-    # Prévision avec ARIMA
-    if model_choice == "ARIMA":
-        try:
-            from pmdarima import auto_arima
-            model_arima = auto_arima(df['Poids'], seasonal=False)
-            forecast = model_arima.predict(n_periods=horizon)
-        except Exception as e:
-            st.error(f"Erreur lors de l'entraînement ARIMA: {e}")
-            forecast = [None] * horizon
-        pred_df = pd.DataFrame({"Date": future_dates, "Prévision": forecast})
-        st.line_chart(pred_df.set_index('Date')['Prévision'], use_container_width=True)
-        st.dataframe(pred_df.reset_index(drop=True))
-    # Prévision avec Prophet
-    elif model_choice == "Prophet":
-        try:
-            from prophet import Prophet
-            prophet_df = df[['Date', 'Poids']].rename(columns={'Date': 'ds', 'Poids': 'y'})
-            model_prophet = Prophet(daily_seasonality=True, yearly_seasonality=True)
-            model_prophet.fit(prophet_df)
-            future = model_prophet.make_future_dataframe(periods=horizon, freq='D')
-            forecast = model_prophet.predict(future)
-            forecast_future = forecast[['ds', 'yhat']].tail(horizon).rename(columns={'ds': 'Date', 'yhat': 'Prévision'})
-        except Exception as e:
-            st.error(f"Erreur lors de l'entraînement Prophet: {e}")
-            forecast_future = pd.DataFrame({"Date": future_dates, "Prévision": [None]*horizon})
-        st.line_chart(forecast_future.set_index('Date')['Prévision'], use_container_width=True)
-        st.dataframe(forecast_future.reset_index(drop=True))
-    # Prévision avec LSTM
-    else:
-        import tensorflow as tf
-        from tensorflow import keras
-        # Préparation des données pour LSTM (série normalisée entre 0 et 1)
-        data = df['Poids'].values.astype(np.float32)
-        # Normalisation min-max
-        min_val, max_val = data.min(), data.max()
-        data_norm = (data - min_val) / (max_val - min_val) if max_val > min_val else data
-        seq_len = 5  # utilise les 5 derniers jours pour prédire le suivant
-        X_train, y_train = [], []
-        for i in range(len(data_norm) - seq_len):
-            X_train.append(data_norm[i:i+seq_len])
-            y_train.append(data_norm[i+seq_len])
-        X_train, y_train = np.array(X_train), np.array(y_train)
-        X_train = X_train.reshape((X_train.shape[0], X_train.shape[1], 1))
-        # Construction du modèle LSTM simple
-        model_lstm = keras.Sequential([
-            keras.layers.LSTM(50, input_shape=(seq_len, 1)),
-            keras.layers.Dense(1)
-        ])
-        model_lstm.compile(optimizer='adam', loss='mse')
-        # Entraînement du modèle (epochs réduit si peu de données)
-        model_lstm.fit(X_train, y_train, epochs=50, batch_size=16, verbose=0)
-        # Préparation de la séquence initiale pour prédire en boucle
-        last_seq = data_norm[-seq_len:]
-        preds = []
-        seq = last_seq.copy()
-        for i in range(horizon):
-            x_input = seq.reshape(1, seq_len, 1)
-            pred_norm = model_lstm.predict(x_input, verbose=0)
-            # Ajouter la prédiction et faire glisser la séquence
-            seq = np.append(seq[1:], pred_norm)
-            preds.append(float(pred_norm))
-        # Reconversion des prédictions à l'échelle originale
-        preds = [(p * (max_val - min_val) + min_val) for p in preds]
-        pred_df = pd.DataFrame({"Date": future_dates, "Prévision": np.round(preds, 2)})
-        st.line_chart(pred_df.set_index('Date')['Prévision'], use_container_width=True)
-        st.dataframe(pred_df.reset_index(drop=True))
-
-# --- Section 4: Modèles supervisés (XGBoost + SHAP) ---
-with tab4:
-    st.subheader("🤖 Modèles ML supervisés & Interprétabilité")
-    st.write("Entraînement d’un modèle XGBoost pour prédire le poids et explication des facteurs (SHAP) :")
-    # Construction d'un jeu de données supervisé à partir de la série (features = poids des jours précédents + autres variables)
-    window = 3  # nombre de jours précédents utilisés comme features
-    features_list = []
-    target_list = []
-    df_ml = df.reset_index(drop=True)
-    for i in range(window, len(df_ml)):
-        # Features: poids des 3 jours précédents
-        feat = {f'Poids_j-{j}': df_ml.loc[i-j, 'Poids'] for j in range(1, window+1)}
-        # On peut ajouter d'autres variables des jours précédents comme les calories ou pas
-        if 'Calories' in df_ml.columns:
-            feat['Calories_j-1'] = df_ml.loc[i-1, 'Calories']
-        if 'Steps' in df_ml.columns:
-            feat['Steps_j-1'] = df_ml.loc[i-1, 'Steps']
-        features_list.append(feat)
-        target_list.append(df_ml.loc[i, 'Poids'])
-    if len(features_list) < 5:
-        st.info("Pas assez de données pour entraîner un modèle supervisé.")
-    else:
-        X = pd.DataFrame(features_list)
-        y = np.array(target_list)
-        # Séparation entraînement/test (80/20)
-        split_idx = int(0.8 * len(X))
-        X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
-        y_train, y_test = y[:split_idx], y[split_idx:]
-        # Entraînement du modèle XGBoost
-        import xgboost as xgb
-        model_xgb = xgb.XGBRegressor(objective='reg:squarederror', n_estimators=100)
-        model_xgb.fit(X_train, y_train)
-        # Prédiction sur le test et évaluation de l'erreur
-        preds = model_xgb.predict(X_test)
-        rmse = np.sqrt(np.mean((preds - y_test) ** 2))
-        st.write(f"**Erreur RMSE sur un échantillon de test :** {rmse:.2f} kg")
-        # Importance des caractéristiques via SHAP
-        import shap
-        explainer = shap.TreeExplainer(model_xgb)
-        shap_values = explainer.shap_values(X_train)
-        st.write("**Importance des facteurs selon SHAP :**")
-        # Graphique de synthèse SHAP (barres)
-        import matplotlib.pyplot as plt
-        shap.summary_plot(shap_values, X_train, plot_type="bar", show=False)
-        fig = plt.gcf()
-        st.pyplot(fig)
-        # (En alternative, on affiche un tableau des importances moyennes)
-        feature_importance = np.mean(np.abs(shap_values), axis=0)
-        imp_df = pd.DataFrame({
-            'Feature': X_train.columns,
-            'Importance_SHAP': feature_importance
-        }).sort_values('Importance_SHAP', ascending=False)
-        st.dataframe(imp_df.reset_index(drop=True))
-
-# --- Section 5: Clustering des cycles de poids ---
-with tab5:
-    st.subheader("📈 Clustering des cycles de poids")
-    st.write("Les données sont regroupées par semaine pour identifier des cycles de perte/stabilité/prise de poids :")
-    # Préparation des données hebdomadaires
-    df_week = df.copy()
-    df_week['Semaine'] = df_week['Date'].dt.isocalendar().week
-    df_week['Année'] = df_week['Date'].dt.year
-    weekly = df_week.groupby(['Année', 'Semaine'], as_index=False).agg(
-        poids_moy=('Poids', 'mean'),
-        variation=('Poids', lambda x: x.iloc[-1] - x.iloc[0]),
-        ecart_type=('Poids', 'std')
-    )
-    weekly = weekly.dropna()  # supprime les semaines incomplètes (écart-type NaN si une seule mesure)
-    if weekly.empty:
-        st.info("Pas assez de données pour effectuer un clustering hebdomadaire.")
-    else:
-        # Sélection du nombre de clusters k
-        k = st.slider("Nombre de clusters", min_value=2, max_value=5, value=3)
-        from sklearn.cluster import KMeans
-        kmeans = KMeans(n_clusters=k, n_init='auto', random_state=0)
-        weekly['cluster'] = kmeans.fit_predict(weekly[['variation', 'ecart_type']])
-        # Analyse des clusters formés
-        cluster_info = weekly.groupby('cluster').agg(
-            variation_moy=('variation', 'mean'),
-            ecart_type_moy=('ecart_type', 'mean'),
-            effectif=('cluster', 'count')
-        ).reset_index()
-        # Attribution d'un label descriptif à chaque cluster en fonction de la variation moyenne
-        labels = {}
-        for _, row in cluster_info.iterrows():
-            cid = int(row['cluster'])
-            if row['variation_moy'] > 0.2:
-                labels[cid] = "Prise de poids"
-            elif row['variation_moy'] < -0.2:
-                labels[cid] = "Perte de poids"
-            else:
-                labels[cid] = "Stable"
-        weekly['Type_semaine'] = weekly['cluster'].map(labels)
-        st.write("**Résumé des clusters :**")
-        st.dataframe(cluster_info.style.format({"variation_moy": "{:.2f}", "ecart_type_moy": "{:.2f}"}))
-        # Graphique de dispersion variation vs écart-type, coloré par cluster
-        scatter = alt.Chart(weekly).mark_circle(size=60).encode(
-            x=alt.X('variation', title='Variation hebdomadaire (kg)'),
-            y=alt.Y('ecart_type', title='Écart-type (kg)'),
-            color=alt.Color('Type_semaine', title='Cluster'),
-            tooltip=['Année', 'Semaine', 'variation', 'ecart_type', 'Type_semaine']
+        fig = px.line(
+            df, x="Date", y="Poids (Kgs)", markers=True,
+            title="Évolution du Poids dans le Temps",
+            labels={"Poids (Kgs)": "Poids (en Kgs)"}
         )
-        st.altair_chart(scatter, use_container_width=True)
-        # Description textuelle de chaque cluster
-        for cid, group in cluster_info.iterrows():
-            st.write(f"Cluster {group['cluster']} – {labels[int(group['cluster'])]} : variation moyenne = {group['variation_moy']:.2f} kg, écart-type moyen = {group['ecart_type_moy']:.2f} kg.")
+        # Ligne moyenne globale
+        mean_weight = df["Poids (Kgs)"].mean()
+        fig.add_hline(y=mean_weight, line_dash="dot",
+                      annotation_text="Moyenne Globale", annotation_position="bottom right")
+        # Courbe de moyenne mobile
+        fig.add_scatter(x=df["Date"], y=df["Poids_MA"], mode="lines",
+                        name=f"Moyenne Mobile ({ma_type}) {window_size} jours")
+        # Lignes d'objectifs
+        fig.add_hline(y=target_weight, line_dash="dash",
+                      annotation_text="Objectif 1", annotation_position="bottom right")
+        fig.add_hline(y=target_weight_2, line_dash="dash", line_color="red",
+                      annotation_text="Objectif 2", annotation_position="bottom right")
+        fig.add_hline(y=target_weight_3, line_dash="dash", line_color="green",
+                      annotation_text="Objectif 3", annotation_position="bottom right")
+        fig.add_hline(y=target_weight_4, line_dash="dash", line_color="purple",
+                      annotation_text="Objectif 4", annotation_position="bottom right")
 
-# --- Section 6: Aide et Documentation ---
-with tab6:
-    st.subheader("❓ Aide & Documentation")
+        fig = apply_theme(fig, theme)
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Histogramme de distribution du poids
+        fig_hist = px.histogram(df, x="Poids (Kgs)", nbins=30,
+                                title="Distribution des Poids")
+        fig_hist = apply_theme(fig_hist, theme)
+        st.plotly_chart(fig_hist, use_container_width=True)
+
+        # Évolution et distribution de l'IMC
+        df["IMC"] = df["Poids (Kgs)"] / (height_m ** 2)
+        fig_bmi = px.line(
+            df, x="Date", y="IMC", markers=True,
+            title="Évolution de l'IMC", labels={"IMC": "Indice de Masse Corporelle"}
+        )
+        fig_bmi = apply_theme(fig_bmi, theme)
+        st.plotly_chart(fig_bmi, use_container_width=True)
+
+        fig_bmi_hist = px.histogram(df, x="IMC", nbins=30,
+                                    title="Distribution de l'IMC")
+        fig_bmi_hist = apply_theme(fig_bmi_hist, theme)
+        st.plotly_chart(fig_bmi_hist, use_container_width=True)
+
+        # Détection d'anomalies avec Z-score
+        df['Z_score'] = np.abs(stats.zscore(df['Poids (Kgs)']))
+        df['Anomalies_Z'] = df['Z_score'] > z_score_threshold
+
+        fig_anomaly = px.scatter(
+            df, x="Date", y="Poids (Kgs)",
+            color="Anomalies_Z",
+            color_discrete_map={False: 'blue', True: 'red'},
+            title=f"Détection des Anomalies (Z-score > {z_score_threshold})"
+        )
+        fig_anomaly = apply_theme(fig_anomaly, theme)
+        st.plotly_chart(fig_anomaly, use_container_width=True)
+
+        st.write("Points de données considérés comme anomalies :")
+        st.dataframe(df[df["Anomalies_Z"]])
+
+#################################
+# 3. Onglet: PRÉVISIONS
+#################################
+with tabs[2]:
+    st.header("Prévisions")
+    if df.empty or len(df) < 2:
+        st.warning("Données insuffisantes pour faire des prévisions.")
+    else:
+        # Conversion de la date en variable numérique pour la régression
+        df["Date_numeric"] = (df["Date"] - df["Date"].min()) / np.timedelta64(1, "D")
+        X = df[["Date_numeric"]]
+        y = df["Poids (Kgs)"]
+
+        # Validation croisée temporelle et régression linéaire
+        tscv = TimeSeriesSplit(n_splits=5)
+        lin_scores = cross_val_score(LinearRegression(), X, y, scoring='neg_mean_squared_error', cv=tscv)
+        st.write(f"MSE moyen (Régression Linéaire) : **{-lin_scores.mean():.2f}**")
+
+        reg = LinearRegression().fit(X, y)
+        predictions = reg.predict(X)
+
+        # Intervalles de confiance par bootstrap
+        n_bootstraps = 500
+        boot_preds = np.zeros((n_bootstraps, len(X)))
+        for i in range(n_bootstraps):
+            X_boot, y_boot = resample(X, y)
+            reg_boot = LinearRegression().fit(X_boot, y_boot)
+            boot_preds[i] = reg_boot.predict(X)
+        pred_lower = np.percentile(boot_preds, 2.5, axis=0)
+        pred_upper = np.percentile(boot_preds, 97.5, axis=0)
+
+        fig_reg = px.scatter(
+            df, x="Date", y="Poids (Kgs)",
+            title="Régression Linéaire avec IC",
+            labels={"Poids (Kgs)": "Poids (en Kgs)"}
+        )
+        fig_reg.add_trace(go.Scatter(x=df["Date"], y=predictions,
+                                     mode='lines', name='Prévisions', line=dict(color='blue')))
+        fig_reg.add_trace(go.Scatter(x=df["Date"], y=pred_lower,
+                                     mode='lines', line_color='lightblue', name='IC Inférieur'))
+        fig_reg.add_trace(go.Scatter(x=df["Date"], y=pred_upper,
+                                     mode='lines', line_color='lightblue', fill='tonexty', name='IC Supérieur'))
+        fig_reg = apply_theme(fig_reg, theme)
+        st.plotly_chart(fig_reg, use_container_width=True)
+
+        # Estimation de la date d'atteinte de l'objectif final
+        try:
+            if reg.coef_[0] >= 0:
+                st.error("Le modèle n’indique pas une perte de poids. Impossible d’estimer la date d’atteinte de l’objectif.")
+            else:
+                days_to_target = (target_weight_4 - reg.intercept_) / reg.coef_[0]
+                target_date = df["Date"].min() + pd.to_timedelta(days_to_target, unit="D")
+                if target_date < df["Date"].max():
+                    st.warning("L'objectif a déjà été atteint selon les prévisions.")
+                else:
+                    st.write(f"**Date estimée** pour atteindre {target_weight_4} Kgs : {target_date.date()}")
+        except Exception as e:
+            st.error(f"Erreur dans le calcul de la date estimée : {e}")
+
+        # Prévisions futures
+        st.subheader("Prédictions Futures")
+        future_days = st.slider("Nombre de jours à prédire", 1, 365, 30)
+        future_dates = pd.date_range(start=df["Date"].max() + pd.Timedelta(days=1), periods=future_days)
+        future_numeric = (future_dates - df["Date"].min()) / np.timedelta64(1, "D")
+        future_predictions = reg.predict(future_numeric.values.reshape(-1, 1))
+        future_df = pd.DataFrame({"Date": future_dates, "Prévisions": future_predictions})
+        fig_future = px.line(future_df, x="Date", y="Prévisions", title="Prévisions Futures")
+        fig_future = apply_theme(fig_future, theme)
+        st.plotly_chart(fig_future, use_container_width=True)
+
+        # Taux de changement moyen
+        df["Poids_diff"] = df["Poids (Kgs)"].diff()
+        mean_change_rate = df["Poids_diff"].mean()
+        st.write(f"Taux de changement moyen du poids : **{mean_change_rate:.2f} Kgs/jour**")
+
+#################################
+# 4. Onglet: ANALYSE DES DONNÉES
+#################################
+with tabs[3]:
+    st.header("Analyse des Données")
+    if df.empty:
+        st.warning("Aucune donnée pour l’analyse.")
+    else:
+        st.subheader("Analyse STL (Tendance et Saisonnalité)")
+        stl = STL(df.set_index('Date')['Poids (Kgs)'], period=7)
+        res = stl.fit()
+        df["Trend"] = res.trend.values
+        df["Seasonal"] = res.seasonal.values
+        df["Resid"] = res.resid.values
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            fig_trend = px.line(df, x="Date", y="Trend", title="Tendance")
+            fig_trend = apply_theme(fig_trend, theme)
+            st.plotly_chart(fig_trend, use_container_width=True)
+        with col2:
+            fig_seasonal = px.line(df, x="Date", y="Seasonal", title="Saisonnalité")
+            fig_seasonal = apply_theme(fig_seasonal, theme)
+            st.plotly_chart(fig_seasonal, use_container_width=True)
+        with col3:
+            fig_resid = px.line(df, x="Date", y="Resid", title="Résidus")
+            fig_resid = apply_theme(fig_resid, theme)
+            st.plotly_chart(fig_resid, use_container_width=True)
+
+        st.subheader("Prédictions SARIMA")
+        sarima_model = SARIMAX(df["Poids (Kgs)"], order=(1,1,1), seasonal_order=(1,1,1,7))
+        sarima_results = sarima_model.fit(disp=False)
+        df["SARIMA_Predictions"] = sarima_results.predict(start=0, end=len(df)-1, dynamic=False)
+        fig_sarima = px.scatter(df, x="Date", y="Poids (Kgs)", title="SARIMA")
+        fig_sarima.add_trace(go.Scatter(x=df["Date"], y=df["SARIMA_Predictions"],
+                                        mode='lines', name='Prévisions SARIMA'))
+        fig_sarima = apply_theme(fig_sarima, theme)
+        st.plotly_chart(fig_sarima, use_container_width=True)
+
+#################################
+# 5. Onglet: COMPARAISON DES MODÈLES
+#################################
+with tabs[4]:
+    st.header("Comparaison des Modèles")
+    if df.empty or len(df) < 2:
+        st.warning("Pas assez de données pour comparer les modèles.")
+    else:
+        X = df[["Date_numeric"]]
+        y = df["Poids (Kgs)"]
+        tscv = TimeSeriesSplit(n_splits=5)
+        models = {
+            "Régression Linéaire": LinearRegression(),
+            "Random Forest": RandomForestRegressor(n_estimators=100, random_state=42)
+        }
+        model_scores = {}
+        for name, model in models.items():
+            scores = cross_val_score(model, X, y, scoring='neg_mean_squared_error', cv=tscv)
+            model_scores[name] = -scores.mean()
+        scores_df = pd.DataFrame.from_dict(model_scores, orient='index', columns=['MSE'])
+        st.write("**Comparaison des MSE moyens :**")
+        st.dataframe(scores_df)
+
+        for name, model in models.items():
+            model.fit(X, y)
+            df[name + "_Predictions"] = model.predict(X)
+
+        fig_compare = px.scatter(df, x="Date", y="Poids (Kgs)", title="Comparaison des Modèles")
+        for name in models.keys():
+            fig_compare.add_trace(go.Scatter(x=df["Date"], y=df[name + "_Predictions"],
+                                             mode='lines', name=name))
+        fig_compare = apply_theme(fig_compare, theme)
+        st.plotly_chart(fig_compare, use_container_width=True)
+
+        st.subheader("Métriques de Performance")
+        for name in models.keys():
+            mse = mean_squared_error(y, df[name + "_Predictions"])
+            mae = mean_absolute_error(y, df[name + "_Predictions"])
+            r2 = r2_score(y, df[name + "_Predictions"])
+            st.write(f"**{name}:** MSE = {mse:.2f}, MAE = {mae:.2f}, R² = {r2:.2f}")
+
+#################################
+# 6. Onglet: ANALYSE DE CORRÉLATION
+#################################
+with tabs[5]:
+    st.header("Analyse de Corrélation")
     st.markdown(
-        "**Bienvenue dans l'application de suivi de poids avancée !** Voici un guide rapide :\n"
-        "- **Données :** Importez un fichier CSV ou modifiez le tableau pour renseigner vos pesées (une date et un poids, éventuellement des colonnes Calories et Steps). Les modifications sont prises en compte immédiatement. Vous pouvez annuler des changements ou exporter le CSV mis à jour.\n"
-        "- **Analyse Statistique :** Visualisez la distribution de votre poids et repérez des anomalies. Les indicateurs de santé comme l'IMC sont calculés en temps réel. *(L'IMC = poids(kg)/taille(m)^2)*:contentReference[oaicite:13]{index=13}. Un IMC normal se situe entre 18,5 et 24,9 selon l'OMS:contentReference[oaicite:14]{index=14}.\n"
-        "- **Prévisions :** Trois modèles sont proposés pour prédire l'évolution de votre poids : ARIMA (modèle autorégressif classique):contentReference[oaicite:15]{index=15}, Prophet (outil de Facebook adapté aux tendances saisonnières):contentReference[oaicite:16]{index=16}, et LSTM (réseau de neurones récurrent apprenant les séquences):contentReference[oaicite:17]{index=17}. Sélectionnez un modèle et un horizon pour voir les projections futures.\n"
-        "- **Modèles ML :** Entraînez un modèle XGBoost (gradient boosting) sur vos données. XGBoost est une technique avancée de forêts d'arbres décisionnels boostés:contentReference[oaicite:18]{index=18} intégrant de la régularisation pour améliorer la précision des prédictions tout en évitant l'overfitting:contentReference[oaicite:19]{index=19}. L’application explique ensuite l'importance de chaque facteur sur le poids via les valeurs SHAP (issues de la théorie des jeux de Shapley):contentReference[oaicite:20]{index=20}, pour vous aider à comprendre **pourquoi** le modèle prédit tel ou tel poids.\n"
-        "- **Clustering :** Cette section regroupe vos semaines de suivi par similarité. Par exemple, vous pourrez distinguer vos semaines de **perte de poids** de celles de **prise de poids** grâce au clustering KMeans.\n\n"
-        "*(Sources : [OMS – Obésité et surpoids](https://www.who.int/fr/news-room/fact-sheets/detail/obesity-and-overweight), [WHO Healthy Lifestyle](https://www.who.int/europe/news-room/fact-sheets/item/a-healthy-lifestyle---who-recommendations).)*",
-        unsafe_allow_html=True
+    """
+    Analysez la relation entre votre poids et d'autres variables (ex. calories, IMC).
+    """
     )
+    if "Calories" not in df.columns:
+        df["Calories"] = np.nan
+
+    if not df.empty:
+        last_date = df["Date"].max()
+        st.write(f"Dernier enregistrement le : {last_date.date()}")
+        user_cal = st.number_input(f"Calories consommées pour le {last_date.date()}",
+                                   min_value=0, value=2000)
+        if st.button("Mettre à jour les calories"):
+            df.loc[df["Date"] == last_date, "Calories"] = user_cal
+            st.success(f"Calories du {last_date.date()} mises à jour !")
+
+        corr_cols = st.multiselect("Variables à corréler avec le Poids (Kgs) :", 
+                                   ["Calories", "IMC"], default=["Calories"])
+        if corr_cols:
+            for col in corr_cols:
+                valid_df = df.dropna(subset=[col, "Poids (Kgs)"])
+                if len(valid_df) > 1:
+                    correlation = valid_df["Poids (Kgs)"].corr(valid_df[col])
+                    st.write(f"**Corrélation (Poids vs {col})** : {correlation:.2f}")
+                    fig_corr = px.scatter(valid_df, x=col, y="Poids (Kgs)",
+                                          trendline="ols",
+                                          title=f"Poids vs {col}")
+                    fig_corr = apply_theme(fig_corr, theme)
+                    st.plotly_chart(fig_corr, use_container_width=True)
+                else:
+                    st.warning(f"Pas assez de données pour {col}.")
+
+#################################
+# 7. Onglet: PERSONNALISATION
+#################################
+with tabs[6]:
+    st.header("Personnalisation et Indicateurs")
+    if df.empty:
+        st.warning("Aucune donnée disponible.")
+    else:
+        current_weight = df['Poids (Kgs)'].iloc[-1]
+        initial_weight = df['Poids (Kgs)'].iloc[0]
+
+        if current_weight <= target_weight_4:
+            st.balloons()
+            st.success("Félicitations ! Objectif ultime atteint.")
+        elif current_weight <= target_weight_3:
+            st.success("Bravo ! Vous avez atteint l'objectif 3.")
+        elif current_weight <= target_weight_2:
+            st.info("Bien joué ! Objectif 2 atteint.")
+        elif current_weight <= target_weight:
+            st.info("Bon travail ! Objectif 1 atteint.")
+        else:
+            st.warning("Continuez vos efforts pour atteindre vos objectifs.")
+
+        # Indicateur de progression avec gauge
+        fig_gauge = go.Figure(go.Indicator(
+            mode="gauge+number+delta",
+            value=current_weight,
+            delta={'reference': target_weight_4},
+            gauge={
+                'axis': {'range': [target_weight_4 - 10, initial_weight + 10]},
+                'steps': [
+                    {'range': [target_weight_4, target_weight_3], 'color': "darkgreen"},
+                    {'range': [target_weight_3, target_weight_2], 'color': "lightgreen"},
+                    {'range': [target_weight_2, target_weight], 'color': "yellow"},
+                    {'range': [target_weight, initial_weight], 'color': "orange"}
+                ],
+                'threshold': {
+                    'line': {'color': "red", 'width': 4},
+                    'thickness': 0.75,
+                    'value': current_weight
+                }
+            }
+        ))
+        fig_gauge.update_layout(title="Progression vers l'Objectif Final")
+        fig_gauge = apply_theme(fig_gauge, theme)
+        st.plotly_chart(fig_gauge, use_container_width=True)
+
+#################################
+# 8. Onglet: TÉLÉCHARGEMENT & GESTION
+#################################
+with tabs[7]:
+    st.header("Téléchargement et Gestion des Données")
+    uploaded_file = st.file_uploader("Téléchargez un fichier CSV", type=["csv"])
+    if uploaded_file:
+        df_user = pd.read_csv(uploaded_file)
+        st.write("Aperçu :", df_user.head())
+        if st.button("Fusionner avec les données existantes"):
+            df_user['Poids (Kgs)'] = (
+                df_user['Poids (Kgs)']
+                .astype(str)
+                .str.replace(',', '.')
+                .str.strip()
+            )
+            df_user['Poids (Kgs)'] = pd.to_numeric(df_user['Poids (Kgs)'], errors='coerce')
+            df_user['Date'] = pd.to_datetime(df_user['Date'], dayfirst=True, errors='coerce')
+            df_user = df_user.dropna(subset=['Poids (Kgs)', 'Date']).sort_values('Date', ascending=True)
+            df = pd.concat([df, df_user]).drop_duplicates(subset=['Date']).sort_values('Date')
+            st.success("Fusion réussie. Données mises à jour.")
+
+    st.subheader("Télécharger vos données en CSV")
+    csv_data = convert_df_to_csv(df)
+    st.download_button(
+        label="Télécharger",
+        data=csv_data,
+        file_name='donnees_poids.csv',
+        mime='text/csv'
+    )
+
+    if st.button("Réinitialiser les données"):
+        df = pd.DataFrame(columns=['Date', 'Poids (Kgs)'])
+        st.success("Données réinitialisées. Rechargez ou importez un nouveau fichier.")
+
+#################################
+# 9. Onglet: PERTE DE POIDS HEBDO
+#################################
+with tabs[8]:
+    st.header("Perte de Poids Hebdomadaire")
+    if df.empty:
+        st.warning("Aucune donnée pour calculer la perte hebdomadaire.")
+    else:
+        df_weekly = df.set_index('Date').resample('W').mean().reset_index()
+        df_weekly['Perte_Poids'] = -df_weekly['Poids (Kgs)'].diff()
+        df_weekly = df_weekly.dropna()
+        st.write("Perte de poids par semaine :")
+        st.dataframe(df_weekly[['Date', 'Poids (Kgs)', 'Perte_Poids']])
+        fig_weekly = px.bar(
+            df_weekly, x='Date', y='Perte_Poids',
+            title='Perte de Poids Hebdomadaire',
+            labels={"Perte_Poids": "Perte (Kgs)"}
+        )
+        fig_weekly = apply_theme(fig_weekly, theme)
+        st.plotly_chart(fig_weekly, use_container_width=True)
+
+#################################
+# 10. Onglet: CONSEILS
+#################################
+with tabs[9]:
+    st.header("Conseils et Recommandations")
+    st.markdown(
+    """
+    **Recommandations générales :**  
+    - Adoptez une alimentation équilibrée (plus de détails sur [le guide OMS](https://www.who.int/publications/m/item/healthy-diet-factsheet)).  
+    - Pratiquez une activité physique régulière (cf. [recommandations OMS](https://www.who.int/news-room/fact-sheets/detail/physical-activity)).  
+    - Surveillez régulièrement votre poids et votre IMC ([Calculateur d'IMC OMS](https://www.who.int/tools/body-mass-index-bmi)).  
+    - En cas de doute, consultez un professionnel de santé.
+    """
+    )
+
+#############
+# SOURCES & RÉFÉRENCES
+#############
+st.markdown("---")
+st.markdown("**Sources et Références :**")
+st.markdown("- [Streamlit Documentation](https://docs.streamlit.io/)")
+st.markdown("- [Plotly Express Documentation](https://plotly.com/python/plotly-express/)")
+st.markdown("- [Plotly Graph Objects](https://plotly.com/python/)")
+st.markdown("- [Scikit-learn Model Evaluation](https://scikit-learn.org/stable/modules/model_evaluation.html)")
+st.markdown("- [Statsmodels SARIMAX](https://www.statsmodels.org/stable/generated/statsmodels.tsa.statespace.sarimax.SARIMAX.html)")
+st.markdown("- [Pandas Documentation](https://pandas.pydata.org/docs/)")
+st.markdown("- [SciPy Stats](https://docs.scipy.org/doc/scipy/reference/stats.html)")
+st.markdown("- [OMS - Obésité et Surpoids](https://www.who.int/news-room/fact-sheets/detail/obesity-and-overweight)")
