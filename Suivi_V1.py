@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor, IsolationForest
-from sklearn.model_selection import train_test_split, cross_val_score, TimeSeriesSplit
+from sklearn.model_selection import cross_val_score, TimeSeriesSplit
 from sklearn.cluster import KMeans
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 from sklearn.utils import resample
