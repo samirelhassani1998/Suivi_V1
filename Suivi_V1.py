@@ -9,12 +9,14 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 from sklearn.linear_model import LinearRegression
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import RandomForestRegressor, IsolationForest
 from sklearn.model_selection import train_test_split, cross_val_score, TimeSeriesSplit
 from sklearn.cluster import KMeans
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 from sklearn.utils import resample
 from scipy import stats
+
+from pmdarima import auto_arima
 
 from statsmodels.tsa.seasonal import STL
 from statsmodels.tsa.statespace.sarimax import SARIMAX
@@ -163,7 +165,7 @@ with st.sidebar.expander("Paramètres d'Anomalies & Activité"):
 tabs = st.tabs([
     "Résumé", "Graphiques", "Prévisions", "Analyse des Données",
     "Comparaison des Modèles", "Corrélation", "Personnalisation",
-    "Téléchargement", "Perte de Poids Hebdo", "Conseils"
+    "Téléchargement", "Perte de Poids Hebdo", "Conseils", "Analyses IA/ML"
 ])
 
 #################################
@@ -607,6 +609,64 @@ with tabs[9]:
     - En cas de doute, consultez un professionnel de santé.
     """
     )
+
+#################################
+# 11. Onglet: ANALYSES IA/ML
+#################################
+with tabs[10]:
+    st.header("Analyses IA/ML")
+    if df.empty or len(df) < 2:
+        st.warning("Données insuffisantes pour l'analyse.")
+    else:
+        st.subheader("Détection d'anomalies (IsolationForest)")
+        iso = IsolationForest(contamination=0.1, random_state=42)
+        df['IF_Anomaly'] = iso.fit_predict(df[["Poids (Kgs)"]]) == -1
+        fig_if = px.scatter(
+            df, x="Date", y="Poids (Kgs)",
+            color="IF_Anomaly",
+            color_discrete_map={False: 'blue', True: 'red'},
+            title="Anomalies détectées"
+        )
+        fig_if = apply_theme(fig_if, theme)
+        st.plotly_chart(fig_if, use_container_width=True)
+        st.write("Anomalies détectées :")
+        st.dataframe(df[df["IF_Anomaly"]])
+
+        st.subheader("Prévisions Auto-ARIMA")
+        future_arima_days = st.slider(
+            "Jours à prédire", 1, 60, 30, key="arima_days"
+        )
+        arima_model = auto_arima(
+            df["Poids (Kgs)"], seasonal=True, m=7, suppress_warnings=True
+        )
+        arima_forecast = arima_model.predict(n_periods=future_arima_days)
+        arima_dates = pd.date_range(
+            start=df["Date"].max() + pd.Timedelta(days=1),
+            periods=future_arima_days
+        )
+        fig_arima = px.line(
+            x=arima_dates, y=arima_forecast,
+            labels={"x": "Date", "y": "Prévision (Kgs)"},
+            title="Prévisions Auto-ARIMA"
+        )
+        fig_arima.add_scatter(
+            x=df["Date"], y=df["Poids (Kgs)"], mode='lines', name='Historique'
+        )
+        fig_arima = apply_theme(fig_arima, theme)
+        st.plotly_chart(fig_arima, use_container_width=True)
+
+        st.subheader("Clustering K-Means")
+        clusters = st.slider(
+            "Nombre de clusters", 2, 5, 3, key="kmeans_clusters"
+        )
+        kmeans = KMeans(n_clusters=clusters, random_state=42)
+        df['Cluster'] = kmeans.fit_predict(df[["Poids (Kgs)"]])
+        fig_cluster = px.scatter(
+            df, x="Date", y="Poids (Kgs)", color="Cluster",
+            title="Clusters de poids (K-Means)"
+        )
+        fig_cluster = apply_theme(fig_cluster, theme)
+        st.plotly_chart(fig_cluster, use_container_width=True)
 
 #############
 # SOURCES & RÉFÉRENCES
