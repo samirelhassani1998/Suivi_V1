@@ -18,6 +18,7 @@ from scipy import stats
 
 from statsmodels.tsa.seasonal import STL
 from statsmodels.tsa.statespace.sarimax import SARIMAX
+from statsmodels.tsa.stattools import acf, pacf
 
 # --- Injection de CSS personnalisé pour améliorer l'apparence globale ---
 st.markdown(
@@ -186,6 +187,9 @@ with tabs[0]:
         col3.metric("Progrès (%)", f"{progress_percent:.2f} %")
         col4.metric("IMC Actuel", f"{current_bmi:.2f}")
 
+        st.progress(min(max(progress_percent / 100, 0.0), 1.0))
+        st.caption(f"Avancement vers l'objectif final : {progress_percent:.1f}%")
+
         with st.expander("Afficher les Statistiques Descriptives"):
             st.dataframe(df["Poids (Kgs)"].describe())
 
@@ -348,6 +352,8 @@ with tabs[2]:
         df["Poids_diff"] = df["Poids (Kgs)"].diff()
         mean_change_rate = df["Poids_diff"].mean()
         st.write(f"Taux de changement moyen du poids : **{mean_change_rate:.2f} Kgs/jour**")
+        coef_var = df["Poids (Kgs)"].std() / df["Poids (Kgs)"].mean()
+        st.write(f"Coefficient de variation du poids : **{coef_var * 100:.2f}%**")
 
 #################################
 # 4. Onglet: ANALYSE DES DONNÉES
@@ -387,6 +393,23 @@ with tabs[3]:
                                         mode='lines', name='Prévisions SARIMA'))
         fig_sarima = apply_theme(fig_sarima, theme)
         st.plotly_chart(fig_sarima, use_container_width=True)
+
+        st.subheader("Variabilité et Corrélations Temporelles")
+        std_window = st.slider("Fenêtre pour l'écart type mobile", 3, 30, 7, key="std_window")
+        df["Rolling_STD"] = df["Poids (Kgs)"].rolling(window=std_window).std()
+        fig_std = px.line(df, x="Date", y="Rolling_STD", title="Écart Type Mobile")
+        fig_std = apply_theme(fig_std, theme)
+        st.plotly_chart(fig_std, use_container_width=True)
+
+        lag = st.slider("Nombre de décalages pour l'ACF/PACF", 1, 30, 7, key="acf_lag")
+        acf_vals = acf(df["Poids (Kgs)"], nlags=lag, missing='drop')
+        pacf_vals = pacf(df["Poids (Kgs)"], nlags=lag, method='ywm')
+        fig_acf = px.bar(x=list(range(len(acf_vals))), y=acf_vals, title="Autocorrélation (ACF)")
+        fig_pacf = px.bar(x=list(range(len(pacf_vals))), y=pacf_vals, title="Autocorrélation Partielle (PACF)")
+        fig_acf = apply_theme(fig_acf, theme)
+        fig_pacf = apply_theme(fig_pacf, theme)
+        st.plotly_chart(fig_acf, use_container_width=True)
+        st.plotly_chart(fig_pacf, use_container_width=True)
 
 #################################
 # 5. Onglet: COMPARAISON DES MODÈLES
