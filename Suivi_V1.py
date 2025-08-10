@@ -105,6 +105,37 @@ def convert_df_to_csv(df: pd.DataFrame) -> bytes:
     """
     return df.to_csv(index=False).encode('utf-8')
 
+def detect_anomalies(df: pd.DataFrame, method: str, z_threshold: float = 2.0) -> pd.DataFrame:
+    """Détecte les anomalies dans les poids selon la méthode choisie.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Jeu de données contenant la colonne ``Poids (Kgs)``.
+    method : str
+        "Z-score" ou "IsolationForest" pour sélectionner la technique.
+    z_threshold : float, optional
+        Seuil au-delà duquel un point est considéré comme anomalie pour la
+        méthode Z-score.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame enrichi avec une colonne booléenne ``Anomalies``.
+    """
+    df = df.copy()
+    if df.empty:
+        df["Anomalies"] = []
+        return df
+
+    if method == "IsolationForest":
+        model = IsolationForest(contamination=0.1, random_state=42)
+        df["Anomalies"] = model.fit_predict(df[["Poids (Kgs)"]]) == -1
+    else:
+        df["Z_score"] = np.abs(stats.zscore(df["Poids (Kgs)"]))
+        df["Anomalies"] = df["Z_score"] > z_threshold
+    return df
+
 #############
 # CHARGEMENT DES DONNÉES
 #############
@@ -153,6 +184,7 @@ with st.sidebar.expander("Objectifs et Infos Personnelles"):
 
 # Paramètres anomalies et calories/activité
 with st.sidebar.expander("Paramètres d'Anomalies & Activité"):
+    anomaly_method = st.selectbox("Méthode de détection", ["Z-score", "IsolationForest"])
     z_score_threshold = st.slider("Seuil Z-score", 1.0, 5.0, 2.0, step=0.5)
     st.markdown("**Santé et Activité**")
     calories = st.number_input("Calories consommées aujourd'hui", min_value=0, value=2000)
@@ -264,21 +296,24 @@ with tabs[1]:
         fig_bmi_hist = apply_theme(fig_bmi_hist, theme)
         st.plotly_chart(fig_bmi_hist, use_container_width=True)
 
-        # Détection d'anomalies avec Z-score
-        df['Z_score'] = np.abs(stats.zscore(df['Poids (Kgs)']))
-        df['Anomalies_Z'] = df['Z_score'] > z_score_threshold
-
+        # Détection d'anomalies
+        df_anom = detect_anomalies(df, anomaly_method, z_score_threshold)
+        title = (
+            f"Détection des Anomalies (Z-score > {z_score_threshold})"
+            if anomaly_method == "Z-score"
+            else "Détection des Anomalies (IsolationForest)"
+        )
         fig_anomaly = px.scatter(
-            df, x="Date", y="Poids (Kgs)",
-            color="Anomalies_Z",
+            df_anom, x="Date", y="Poids (Kgs)",
+            color="Anomalies",
             color_discrete_map={False: 'blue', True: 'red'},
-            title=f"Détection des Anomalies (Z-score > {z_score_threshold})"
+            title=title
         )
         fig_anomaly = apply_theme(fig_anomaly, theme)
         st.plotly_chart(fig_anomaly, use_container_width=True)
 
         st.write("Points de données considérés comme anomalies :")
-        st.dataframe(df[df["Anomalies_Z"]])
+        st.dataframe(df_anom[df_anom["Anomalies"]])
 
 #################################
 # 3. Onglet: PRÉVISIONS
