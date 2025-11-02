@@ -42,6 +42,19 @@ st.markdown(
     .stMetric {
         font-size: 1.5rem;
     }
+    .tab-description {
+        color: #425466;
+        margin-bottom: 1.5rem;
+        font-size: 1.05rem;
+    }
+    @media (max-width: 768px) {
+        .stMetric {
+            font-size: 1.2rem;
+        }
+        .tab-description {
+            font-size: 1rem;
+        }
+    }
     </style>
     """,
     unsafe_allow_html=True
@@ -54,9 +67,27 @@ st.title("Suivi de l'Évolution du Poids")
 st.markdown(
     """
     Suivez votre poids, calculez votre IMC, visualisez des tendances, réalisez des prévisions et détectez des anomalies.
-    Utilisez les onglets pour naviguer entre les fonctionnalités.
+    Utilisez les onglets pour naviguer entre les fonctionnalités et explorez chaque section selon un parcours en trois étapes :
+    **Sélection**, **Analyse**, puis **Résultats et recommandations**.
     """
 )
+
+
+def show_tab_header(title: str, description: str) -> None:
+    """Affiche un en-tête de page uniforme pour chaque onglet."""
+
+    st.header(title)
+    st.markdown(
+        f"<p class='tab-description'>{description}</p>",
+        unsafe_allow_html=True,
+    )
+
+
+def show_step(title: str, description: str) -> None:
+    """Affiche le titre d'étape et son texte explicatif."""
+
+    st.markdown(f"### {title}")
+    st.caption(description)
 
 #############
 # FONCTIONS
@@ -204,10 +235,18 @@ tabs = st.tabs([
 # 1. Onglet: RÉSUMÉ
 #################################
 with tabs[0]:
-    st.header("Résumé")
+    show_tab_header(
+        "Résumé",
+        "Vue d'ensemble de votre progression pondérale avec des indicateurs clés et des interprétations personnalisées.",
+    )
     if df.empty:
         st.warning("Aucune donnée disponible.")
     else:
+        show_step(
+            "Étape 1 – Sélection",
+            "Affinez la période analysée via le filtre de dates dans la barre latérale pour contextualiser les indicateurs.",
+        )
+
         initial_weight = df['Poids (Kgs)'].iloc[0]
         current_weight = df['Poids (Kgs)'].iloc[-1]
         weight_lost = initial_weight - current_weight
@@ -215,6 +254,11 @@ with tabs[0]:
         progress_percent = (weight_lost / total_weight_to_lose) * 100
         current_bmi = current_weight / (height_m ** 2)
 
+        st.divider()
+        show_step(
+            "Étape 2 – Analyse",
+            "Consultez les indicateurs calculés automatiquement pour suivre votre progression vers les objectifs fixés.",
+        )
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Poids Actuel", f"{current_weight:.2f} Kgs")
         col2.metric("Objectif Final", f"{target_weight_4:.2f} Kgs")
@@ -224,8 +268,13 @@ with tabs[0]:
         st.progress(min(max(progress_percent / 100, 0.0), 1.0))
         st.caption(f"Avancement vers l'objectif final : {progress_percent:.1f}%")
 
+        st.divider()
+        show_step(
+            "Étape 3 – Résultats et interprétations",
+            "Analysez la distribution du poids et interprétez l'IMC pour déterminer la prochaine action à mener.",
+        )
         with st.expander("Afficher les Statistiques Descriptives"):
-            st.dataframe(df["Poids (Kgs)"].describe())
+            st.dataframe(df["Poids (Kgs)"].describe(), use_container_width=True)
 
         st.subheader("Interprétation de l'IMC")
         if current_bmi < 18.5:
@@ -241,16 +290,29 @@ with tabs[0]:
 # 2. Onglet: GRAPHIQUES
 #################################
 with tabs[1]:
-    st.header("Graphiques")
+    show_tab_header(
+        "Graphiques",
+        "Visualisez l'évolution de votre poids, de l'IMC et repérez rapidement les tendances ou anomalies.",
+    )
     if df.empty:
         st.warning("Pas de données à afficher.")
     else:
+        show_step(
+            "Étape 1 – Sélection",
+            "Choisissez le type de moyenne mobile et ajustez les objectifs dans la barre latérale pour personnaliser les graphiques.",
+        )
+
         # Calcul de la moyenne mobile
         if ma_type == "Simple":
             df["Poids_MA"] = df["Poids (Kgs)"].rolling(window=window_size, min_periods=1).mean()
         else:
             df["Poids_MA"] = df["Poids (Kgs)"].ewm(span=window_size, adjust=False).mean()
 
+        st.divider()
+        show_step(
+            "Étape 2 – Analyse",
+            "Examinez l'évolution temporelle, la distribution des données et l'impact des objectifs sur votre trajectoire.",
+        )
         fig = px.line(
             df, x="Date", y="Poids (Kgs)", markers=True,
             title="Évolution du Poids dans le Temps",
@@ -312,17 +374,30 @@ with tabs[1]:
         fig_anomaly = apply_theme(fig_anomaly, theme)
         st.plotly_chart(fig_anomaly, use_container_width=True)
 
+        st.divider()
+        show_step(
+            "Étape 3 – Résultats et interprétations",
+            "Identifiez les points atypiques et appuyez-vous sur les graphiques pour préparer les actions correctives.",
+        )
         st.write("Points de données considérés comme anomalies :")
-        st.dataframe(df_anom[df_anom["Anomalies"]])
+        st.dataframe(df_anom[df_anom["Anomalies"]], use_container_width=True)
 
 #################################
 # 3. Onglet: PRÉVISIONS
 #################################
 with tabs[2]:
-    st.header("Prévisions")
+    show_tab_header(
+        "Prévisions",
+        "Projetez votre trajectoire de poids avec différents horizons temporels et estimez la date d'atteinte de vos objectifs.",
+    )
     if df.empty or len(df) < 2:
         st.warning("Données insuffisantes pour faire des prévisions.")
     else:
+        show_step(
+            "Étape 1 – Sélection",
+            "Définissez l'horizon de projection dans la barre latérale et choisissez les objectifs à atteindre.",
+        )
+
         # Conversion de la date en variable numérique pour la régression
         df["Date_numeric"] = (df["Date"] - df["Date"].min()) / np.timedelta64(1, "D")
         X = df[["Date_numeric"]]
@@ -333,6 +408,11 @@ with tabs[2]:
         lin_scores = cross_val_score(LinearRegression(), X, y, scoring='neg_mean_squared_error', cv=tscv)
         st.write(f"MSE moyen (Régression Linéaire) : **{-lin_scores.mean():.2f}**")
 
+        st.divider()
+        show_step(
+            "Étape 2 – Analyse",
+            "Explorez les prévisions issues de la régression linéaire et les intervalles de confiance pour quantifier l'incertitude.",
+        )
         reg = LinearRegression().fit(X, y)
         predictions = reg.predict(X)
 
@@ -374,6 +454,12 @@ with tabs[2]:
         except Exception as e:
             st.error(f"Erreur dans le calcul de la date estimée : {e}")
 
+        st.divider()
+        show_step(
+            "Étape 3 – Résultats et interprétations",
+            "Générez des scénarios futurs, observez le rythme de variation et interprétez les indicateurs clés pour ajuster le plan.",
+        )
+
         # Prévisions futures
         st.subheader("Prédictions Futures")
         future_days = st.slider("Nombre de jours à prédire", 1, 365, 30)
@@ -396,10 +482,23 @@ with tabs[2]:
 # 4. Onglet: ANALYSE DES DONNÉES
 #################################
 with tabs[3]:
-    st.header("Analyse des Données")
+    show_tab_header(
+        "Analyse des Données",
+        "Décomposez votre série temporelle, mesurez la variabilité et identifiez les schémas de saisonnalité.",
+    )
     if df.empty:
         st.warning("Aucune donnée pour l’analyse.")
     else:
+        show_step(
+            "Étape 1 – Sélection",
+            "Ajustez les paramètres d'analyse dans la barre latérale (fenêtre d'écart type, lag ACF/PACF) pour cibler les signaux pertinents.",
+        )
+
+        st.divider()
+        show_step(
+            "Étape 2 – Analyse",
+            "Décomposez la série pour séparer tendance, saisonnalité et résidus avant de comparer plusieurs modèles temporels.",
+        )
         st.subheader("Analyse STL (Tendance et Saisonnalité)")
         stl = STL(df.set_index('Date')['Poids (Kgs)'], period=7)
         res = stl.fit()
@@ -448,14 +547,29 @@ with tabs[3]:
         st.plotly_chart(fig_acf, use_container_width=True)
         st.plotly_chart(fig_pacf, use_container_width=True)
 
+        st.divider()
+        show_step(
+            "Étape 3 – Résultats et interprétations",
+            "Synthétisez les enseignements : une tendance baissière régulière valide vos efforts, tandis que des pics de variabilité indiquent des semaines à surveiller.",
+        )
+        st.info("Utilisez les graphiques de résidus et d'écart type mobile pour confirmer la stabilité de vos progrès avant de lancer de nouvelles prévisions.")
+
 #################################
 # 5. Onglet: COMPARAISON DES MODÈLES
 #################################
 with tabs[4]:
-    st.header("Comparaison des Modèles")
+    show_tab_header(
+        "Comparaison des Modèles",
+        "Comparez plusieurs approches de modélisation pour choisir la stratégie prédictive la plus adaptée.",
+    )
     if df.empty or len(df) < 2:
         st.warning("Pas assez de données pour comparer les modèles.")
     else:
+        show_step(
+            "Étape 1 – Sélection",
+            "Utilisez les paramètres de la barre latérale pour définir la période et les objectifs avant d'entraîner les modèles.",
+        )
+
         X = df[["Date_numeric"]]
         y = df["Poids (Kgs)"]
         tscv = TimeSeriesSplit(n_splits=5)
@@ -468,8 +582,13 @@ with tabs[4]:
             scores = cross_val_score(model, X, y, scoring='neg_mean_squared_error', cv=tscv)
             model_scores[name] = -scores.mean()
         scores_df = pd.DataFrame.from_dict(model_scores, orient='index', columns=['MSE'])
+        st.divider()
+        show_step(
+            "Étape 2 – Analyse",
+            "Consultez les métriques de validation croisée pour identifier le modèle le plus fiable selon l'erreur quadratique moyenne.",
+        )
         st.write("**Comparaison des MSE moyens :**")
-        st.dataframe(scores_df)
+        st.dataframe(scores_df, use_container_width=True)
 
         for name, model in models.items():
             model.fit(X, y)
@@ -482,6 +601,11 @@ with tabs[4]:
         fig_compare = apply_theme(fig_compare, theme)
         st.plotly_chart(fig_compare, use_container_width=True)
 
+        st.divider()
+        show_step(
+            "Étape 3 – Résultats et interprétations",
+            "Analysez les courbes superposées et les métriques détaillées pour retenir le modèle le plus cohérent avec votre objectif de perte de poids.",
+        )
         st.subheader("Métriques de Performance")
         for name in models.keys():
             mse = mean_squared_error(y, df[name + "_Predictions"])
@@ -493,11 +617,13 @@ with tabs[4]:
 # 6. Onglet: ANALYSE DE CORRÉLATION
 #################################
 with tabs[5]:
-    st.header("Analyse de Corrélation")
-    st.markdown(
-    """
-    Analysez la relation entre votre poids et d'autres variables (ex. calories, IMC).
-    """
+    show_tab_header(
+        "Analyse de Corrélation",
+        "Analysez les liens entre votre poids et d'autres facteurs pour mieux comprendre les leviers d'action.",
+    )
+    show_step(
+        "Étape 1 – Sélection",
+        "Complétez les données auxiliaires (calories, IMC) et choisissez les variables à étudier.",
     )
     if "Calories" not in df.columns:
         df["Calories"] = np.nan
@@ -511,7 +637,12 @@ with tabs[5]:
             df.loc[df["Date"] == last_date, "Calories"] = user_cal
             st.success(f"Calories du {last_date.date()} mises à jour !")
 
-        corr_cols = st.multiselect("Variables à corréler avec le Poids (Kgs) :", 
+        st.divider()
+        show_step(
+            "Étape 2 – Analyse",
+            "Sélectionnez les variables à corréler et observez les diagrammes de dispersion avec la droite de tendance.",
+        )
+        corr_cols = st.multiselect("Variables à corréler avec le Poids (Kgs) :",
                                    ["Calories", "IMC"], default=["Calories"])
         if corr_cols:
             for col in corr_cols:
@@ -527,14 +658,29 @@ with tabs[5]:
                 else:
                     st.warning(f"Pas assez de données pour {col}.")
 
+        st.divider()
+        show_step(
+            "Étape 3 – Résultats et interprétations",
+            "Utilisez les coefficients obtenus pour identifier les habitudes à ajuster (alimentation, activité, etc.).",
+        )
+        st.caption("Astuce : une corrélation positive suggère que l'augmentation de la variable est associée à une hausse du poids.")
+
 #################################
 # 7. Onglet: PERSONNALISATION
 #################################
 with tabs[6]:
-    st.header("Personnalisation et Indicateurs")
+    show_tab_header(
+        "Personnalisation et Indicateurs",
+        "Suivez vos objectifs personnalisés et visualisez votre progression à l'aide d'indicateurs dynamiques.",
+    )
     if df.empty:
         st.warning("Aucune donnée disponible.")
     else:
+        show_step(
+            "Étape 1 – Sélection",
+            "Ajustez vos objectifs dans la barre latérale pour mettre à jour instantanément les indicateurs.",
+        )
+
         current_weight = df['Poids (Kgs)'].iloc[-1]
         initial_weight = df['Poids (Kgs)'].iloc[0]
 
@@ -550,6 +696,11 @@ with tabs[6]:
         else:
             st.warning("Continuez vos efforts pour atteindre vos objectifs.")
 
+        st.divider()
+        show_step(
+            "Étape 2 – Analyse",
+            "Visualisez votre position actuelle par rapport aux seuils définis à l'aide du cadran interactif.",
+        )
         # Indicateur de progression avec gauge
         fig_gauge = go.Figure(go.Indicator(
             mode="gauge+number+delta",
@@ -574,15 +725,29 @@ with tabs[6]:
         fig_gauge = apply_theme(fig_gauge, theme)
         st.plotly_chart(fig_gauge, use_container_width=True)
 
+        st.divider()
+        show_step(
+            "Étape 3 – Résultats et interprétations",
+            "Identifiez l'écart restant et planifiez les actions correctives lorsque le cadran reste au-dessus de la zone verte.",
+        )
+
 #################################
 # 8. Onglet: TÉLÉCHARGEMENT & GESTION
 #################################
 with tabs[7]:
-    st.header("Téléchargement et Gestion des Données")
+    show_tab_header(
+        "Téléchargement et Gestion des Données",
+        "Importez, fusionnez et exportez vos suivis en toute simplicité.",
+    )
+    show_step(
+        "Étape 1 – Sélection",
+        "Choisissez un fichier CSV à importer ou décidez de repartir de zéro.",
+    )
     uploaded_file = st.file_uploader("Téléchargez un fichier CSV", type=["csv"])
     if uploaded_file:
         df_user = pd.read_csv(uploaded_file)
-        st.write("Aperçu :", df_user.head())
+        st.write("Aperçu :")
+        st.dataframe(df_user.head(), use_container_width=True)
         if st.button("Fusionner avec les données existantes"):
             df_user['Poids (Kgs)'] = (
                 df_user['Poids (Kgs)']
@@ -596,6 +761,11 @@ with tabs[7]:
             df = pd.concat([df, df_user]).drop_duplicates(subset=['Date']).sort_values('Date')
             st.success("Fusion réussie. Données mises à jour.")
 
+    st.divider()
+    show_step(
+        "Étape 2 – Analyse",
+        "Avant l'export, vérifiez le nombre de lignes et le format pour garantir la cohérence des suivis.",
+    )
     st.subheader("Télécharger vos données en CSV")
     csv_data = convert_df_to_csv(df)
     st.download_button(
@@ -605,6 +775,11 @@ with tabs[7]:
         mime='text/csv'
     )
 
+    st.divider()
+    show_step(
+        "Étape 3 – Résultats et interprétations",
+        "Réinitialisez les données uniquement si vous souhaitez repartir sur un suivi vierge.",
+    )
     if st.button("Réinitialiser les données"):
         df = pd.DataFrame(columns=['Date', 'Poids (Kgs)'])
         st.success("Données réinitialisées. Rechargez ou importez un nouveau fichier.")
@@ -613,15 +788,28 @@ with tabs[7]:
 # 9. Onglet: PERTE DE POIDS HEBDO
 #################################
 with tabs[8]:
-    st.header("Perte de Poids Hebdomadaire")
+    show_tab_header(
+        "Perte de Poids Hebdomadaire",
+        "Suivez les variations de poids semaine par semaine pour détecter rapidement les écarts.",
+    )
     if df.empty:
         st.warning("Aucune donnée pour calculer la perte hebdomadaire.")
     else:
+        show_step(
+            "Étape 1 – Sélection",
+            "Assurez-vous que la période filtrée couvre plusieurs semaines afin de calculer des tendances fiables.",
+        )
+
         df_weekly = df.set_index('Date').resample('W').mean().reset_index()
         df_weekly['Perte_Poids'] = -df_weekly['Poids (Kgs)'].diff()
         df_weekly = df_weekly.dropna()
+        st.divider()
+        show_step(
+            "Étape 2 – Analyse",
+            "Examinez les moyennes hebdomadaires et la perte associée pour repérer les semaines performantes ou critiques.",
+        )
         st.write("Perte de poids par semaine :")
-        st.dataframe(df_weekly[['Date', 'Poids (Kgs)', 'Perte_Poids']])
+        st.dataframe(df_weekly[['Date', 'Poids (Kgs)', 'Perte_Poids']], use_container_width=True)
         fig_weekly = px.bar(
             df_weekly, x='Date', y='Perte_Poids',
             title='Perte de Poids Hebdomadaire',
@@ -630,29 +818,65 @@ with tabs[8]:
         fig_weekly = apply_theme(fig_weekly, theme)
         st.plotly_chart(fig_weekly, use_container_width=True)
 
+        st.divider()
+        show_step(
+            "Étape 3 – Résultats et interprétations",
+            "Planifiez vos actions (nutrition, activité) selon les semaines où la perte ralentit ou s'inverse.",
+        )
+
 #################################
 # 10. Onglet: CONSEILS
 #################################
 with tabs[9]:
-    st.header("Conseils et Recommandations")
+    show_tab_header(
+        "Conseils et Recommandations",
+        "Retrouvez des recommandations pratiques pour accompagner vos analyses de données.",
+    )
+    show_step(
+        "Étape 1 – Sélection",
+        "Repérez les thématiques qui vous concernent (alimentation, activité, suivi médical).",
+    )
     st.markdown(
     """
-    **Recommandations générales :**  
-    - Adoptez une alimentation équilibrée (plus de détails sur [le guide OMS](https://www.who.int/publications/m/item/healthy-diet-factsheet)).  
-    - Pratiquez une activité physique régulière (cf. [recommandations OMS](https://www.who.int/news-room/fact-sheets/detail/physical-activity)).  
-    - Surveillez régulièrement votre poids et votre IMC ([Calculateur d'IMC OMS](https://www.who.int/tools/body-mass-index-bmi)).  
+    **Recommandations générales :**
+    - Adoptez une alimentation équilibrée (plus de détails sur [le guide OMS](https://www.who.int/publications/m/item/healthy-diet-factsheet)).
+    - Pratiquez une activité physique régulière (cf. [recommandations OMS](https://www.who.int/news-room/fact-sheets/detail/physical-activity)).
+    - Surveillez régulièrement votre poids et votre IMC ([Calculateur d'IMC OMS](https://www.who.int/tools/body-mass-index-bmi)).
     - En cas de doute, consultez un professionnel de santé.
     """
+    )
+    st.divider()
+    show_step(
+        "Étape 2 – Analyse",
+        "Croisez ces recommandations avec vos résultats pour déterminer les priorités de la semaine.",
+    )
+    st.divider()
+    show_step(
+        "Étape 3 – Résultats et interprétations",
+        "Notez vos actions à entreprendre (consultation, plan de repas, séance sportive) afin de maintenir la dynamique.",
     )
 
 #################################
 # 11. Onglet: ANALYSES IA/ML
 #################################
 with tabs[10]:
-    st.header("Analyses IA/ML")
+    show_tab_header(
+        "Analyses IA/ML",
+        "Exploitez des techniques avancées d'apprentissage automatique pour approfondir vos analyses.",
+    )
     if df.empty or len(df) < 2:
         st.warning("Données insuffisantes pour l'analyse.")
     else:
+        show_step(
+            "Étape 1 – Sélection",
+            "Affinez la plage de dates et choisissez les paramètres de détection dans la barre latérale.",
+        )
+
+        st.divider()
+        show_step(
+            "Étape 2 – Analyse",
+            "Lancez les modèles d'anomalies, d'auto-ARIMA et de clustering pour comparer leurs diagnostics.",
+        )
         st.subheader("Détection d'anomalies (IsolationForest)")
         iso = IsolationForest(contamination=0.1, random_state=42)
         df['IF_Anomaly'] = iso.fit_predict(df[["Poids (Kgs)"]]) == -1
@@ -665,7 +889,7 @@ with tabs[10]:
         fig_if = apply_theme(fig_if, theme)
         st.plotly_chart(fig_if, use_container_width=True)
         st.write("Anomalies détectées :")
-        st.dataframe(df[df["IF_Anomaly"]])
+        st.dataframe(df[df["IF_Anomaly"]], use_container_width=True)
 
         st.subheader("Prévisions Auto-ARIMA")
         future_arima_days = st.slider(
@@ -702,6 +926,12 @@ with tabs[10]:
         )
         fig_cluster = apply_theme(fig_cluster, theme)
         st.plotly_chart(fig_cluster, use_container_width=True)
+
+        st.divider()
+        show_step(
+            "Étape 3 – Résultats et interprétations",
+            "Comparez les diagnostics des trois modules pour prioriser vos actions (surveiller les anomalies, suivre les prévisions ou segmenter vos périodes).",
+        )
 
 #############
 # SOURCES & RÉFÉRENCES
