@@ -8,12 +8,13 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 
+from typing import Tuple
+
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor, IsolationForest
 from sklearn.model_selection import cross_val_score, TimeSeriesSplit
 from sklearn.cluster import KMeans
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
-from sklearn.utils import resample
 from scipy import stats
 
 from pmdarima import auto_arima
@@ -135,6 +136,79 @@ def detect_anomalies(df: pd.DataFrame, method: str, z_threshold: float = 2.0) ->
         df["Z_score"] = np.abs(stats.zscore(df["Poids (Kgs)"]))
         df["Anomalies"] = df["Z_score"] > z_threshold
     return df
+
+
+@st.cache_data
+def filter_data_by_period(
+    data: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp
+) -> pd.DataFrame:
+    """Retourne les données filtrées entre deux dates incluses."""
+
+    if data.empty:
+        return data
+    mask = (data["Date"] >= start) & (data["Date"] <= end)
+    return data.loc[mask].copy()
+
+
+def _fit_forecast_model(
+    model_name: str, X_train: np.ndarray, y_train: np.ndarray
+):
+    """Entraîne un modèle de prévision selon le nom choisi."""
+
+    if model_name == "Régression Linéaire":
+        model = LinearRegression()
+        model.fit(X_train, y_train)
+        return model
+    if model_name == "Random Forest":
+        model = RandomForestRegressor(n_estimators=200, random_state=42)
+        model.fit(X_train, y_train)
+        return model
+    if model_name == "Auto-ARIMA":
+        # Auto-ARIMA s'entraîne uniquement sur la série temporelle.
+        return auto_arima(
+            y_train,
+            seasonal=True,
+            m=7,
+            suppress_warnings=True,
+            error_action="ignore",
+        )
+    raise ValueError(f"Modèle non supporté: {model_name}")
+
+
+@st.cache_resource
+def get_cached_forecast_model(
+    model_name: str, X_train: np.ndarray, y_train: np.ndarray
+):
+    """Renvoie un modèle de prévision entraîné et mis en cache."""
+
+    return _fit_forecast_model(model_name, X_train, y_train)
+
+
+def compute_bootstrap_interval(
+    model_name: str,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    future_X: np.ndarray,
+    n_bootstraps: int = 200,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Calcule un intervalle de confiance via bootstrap."""
+
+    if future_X.size == 0:
+        return np.array([]), np.array([])
+
+    preds = np.zeros((n_bootstraps, future_X.shape[0]))
+    rng = np.random.default_rng(42)
+    for i in range(n_bootstraps):
+        indices = rng.integers(0, len(X_train), len(X_train))
+        X_boot = X_train[indices]
+        y_boot = y_train[indices]
+        model = _fit_forecast_model(model_name, X_boot, y_boot)
+        preds[i] = model.predict(future_X)
+
+    return (
+        np.percentile(preds, 2.5, axis=0),
+        np.percentile(preds, 97.5, axis=0),
+    )
 
 #############
 # CHARGEMENT DES DONNÉES
@@ -323,74 +397,248 @@ with tabs[2]:
     if df.empty or len(df) < 2:
         st.warning("Données insuffisantes pour faire des prévisions.")
     else:
-        # Conversion de la date en variable numérique pour la régression
         df["Date_numeric"] = (df["Date"] - df["Date"].min()) / np.timedelta64(1, "D")
-        X = df[["Date_numeric"]]
-        y = df["Poids (Kgs)"]
 
-        # Validation croisée temporelle et régression linéaire
-        tscv = TimeSeriesSplit(n_splits=5)
-        lin_scores = cross_val_score(LinearRegression(), X, y, scoring='neg_mean_squared_error', cv=tscv)
-        st.write(f"MSE moyen (Régression Linéaire) : **{-lin_scores.mean():.2f}**")
+        st.subheader("Paramètres de projection")
+        col_left, col_right = st.columns(2)
+        with col_left:
+            default_period = (
+                df["Date"].min().date(),
+                df["Date"].max().date(),
+            )
+            training_period = st.date_input(
+                "Période d'entraînement",
+                value=default_period,
+                min_value=df["Date"].min().date(),
+                max_value=df["Date"].max().date(),
+            )
+        with col_right:
+            model_name = st.selectbox(
+                "Modèle de prévision",
+                ["Régression Linéaire", "Random Forest", "Auto-ARIMA"],
+            )
 
-        reg = LinearRegression().fit(X, y)
-        predictions = reg.predict(X)
+        if not isinstance(training_period, (list, tuple)) or len(training_period) != 2:
+            st.warning("Veuillez sélectionner une plage de dates valide pour l'entraînement.")
+        else:
+            start_train = pd.to_datetime(training_period[0])
+            end_train = pd.to_datetime(training_period[1])
+            train_df = filter_data_by_period(df, start_train, end_train)
+            train_df = train_df.sort_values("Date").reset_index(drop=True)
 
-        # Intervalles de confiance par bootstrap
-        n_bootstraps = 500
-        boot_preds = np.zeros((n_bootstraps, len(X)))
-        for i in range(n_bootstraps):
-            X_boot, y_boot = resample(X, y)
-            reg_boot = LinearRegression().fit(X_boot, y_boot)
-            boot_preds[i] = reg_boot.predict(X)
-        pred_lower = np.percentile(boot_preds, 2.5, axis=0)
-        pred_upper = np.percentile(boot_preds, 97.5, axis=0)
-
-        fig_reg = px.scatter(
-            df, x="Date", y="Poids (Kgs)",
-            title="Régression Linéaire avec IC",
-            labels={"Poids (Kgs)": "Poids (en Kgs)"}
-        )
-        fig_reg.add_trace(go.Scatter(x=df["Date"], y=predictions,
-                                     mode='lines', name='Prévisions', line=dict(color='blue')))
-        fig_reg.add_trace(go.Scatter(x=df["Date"], y=pred_lower,
-                                     mode='lines', line_color='lightblue', name='IC Inférieur'))
-        fig_reg.add_trace(go.Scatter(x=df["Date"], y=pred_upper,
-                                     mode='lines', line_color='lightblue', fill='tonexty', name='IC Supérieur'))
-        fig_reg = apply_theme(fig_reg, theme)
-        st.plotly_chart(fig_reg, use_container_width=True)
-
-        # Estimation de la date d'atteinte de l'objectif final
-        try:
-            if reg.coef_[0] >= 0:
-                st.error("Le modèle n’indique pas une perte de poids. Impossible d’estimer la date d’atteinte de l’objectif.")
+            if train_df.empty or len(train_df) < 2:
+                st.warning("La période d'entraînement sélectionnée ne contient pas assez de données.")
             else:
-                days_to_target = (target_weight_4 - reg.intercept_) / reg.coef_[0]
-                target_date = df["Date"].min() + pd.to_timedelta(days_to_target, unit="D")
-                if target_date < df["Date"].max():
-                    st.warning("L'objectif a déjà été atteint selon les prévisions.")
-                else:
-                    st.write(f"**Date estimée** pour atteindre {target_weight_4} Kgs : {target_date.date()}")
-        except Exception as e:
-            st.error(f"Erreur dans le calcul de la date estimée : {e}")
+                projection_start_default = (
+                    train_df["Date"].max() + pd.Timedelta(days=1)
+                ).date()
+                col_params1, col_params2 = st.columns(2)
+                with col_params1:
+                    projection_start = st.date_input(
+                        "Date de début de projection",
+                        value=projection_start_default,
+                        min_value=train_df["Date"].max().date(),
+                    )
+                with col_params2:
+                    horizon_days = st.slider(
+                        "Horizon (jours)",
+                        min_value=7,
+                        max_value=180,
+                        value=30,
+                    )
 
-        # Prévisions futures
-        st.subheader("Prédictions Futures")
-        future_days = st.slider("Nombre de jours à prédire", 1, 365, 30)
-        future_dates = pd.date_range(start=df["Date"].max() + pd.Timedelta(days=1), periods=future_days)
-        future_numeric = (future_dates - df["Date"].min()) / np.timedelta64(1, "D")
-        future_predictions = reg.predict(future_numeric.values.reshape(-1, 1))
-        future_df = pd.DataFrame({"Date": future_dates, "Prévisions": future_predictions})
-        fig_future = px.line(future_df, x="Date", y="Prévisions", title="Prévisions Futures")
-        fig_future = apply_theme(fig_future, theme)
-        st.plotly_chart(fig_future, use_container_width=True)
+                projection_start_ts = pd.to_datetime(projection_start)
+                future_dates = pd.date_range(
+                    start=projection_start_ts,
+                    periods=horizon_days,
+                    freq="D",
+                )
 
-        # Taux de changement moyen
-        df["Poids_diff"] = df["Poids (Kgs)"].diff()
-        mean_change_rate = df["Poids_diff"].mean()
-        st.write(f"Taux de changement moyen du poids : **{mean_change_rate:.2f} Kgs/jour**")
-        coef_var = df["Poids (Kgs)"].std() / df["Poids (Kgs)"].mean()
-        st.write(f"Coefficient de variation du poids : **{coef_var * 100:.2f}%**")
+                train_df["Date_numeric_model"] = (
+                    (train_df["Date"] - train_df["Date"].min())
+                    / np.timedelta64(1, "D")
+                )
+                X_train = train_df[["Date_numeric_model"]].values
+                y_train = train_df["Poids (Kgs)"].values
+
+                try:
+                    model = get_cached_forecast_model(model_name, X_train, y_train)
+                except Exception as exc:
+                    st.error(f"Erreur lors de l'entraînement du modèle : {exc}")
+                    model = None
+
+                if model is not None:
+                    if model_name == "Auto-ARIMA":
+                        in_sample_pred = model.predict_in_sample()
+                        forecast_values, conf_int = model.predict(
+                            n_periods=horizon_days, return_conf_int=True
+                        )
+                        lower_ci = conf_int[:, 0]
+                        upper_ci = conf_int[:, 1]
+                    else:
+                        in_sample_pred = model.predict(X_train)
+                        future_numeric = (
+                            (future_dates - train_df["Date"].min())
+                            / np.timedelta64(1, "D")
+                        ).values.reshape(-1, 1)
+                        forecast_values = model.predict(future_numeric)
+                        lower_ci, upper_ci = compute_bootstrap_interval(
+                            model_name, X_train, y_train, future_numeric
+                        )
+
+                    forecast_values = np.asarray(forecast_values)
+                    lower_ci = np.asarray(lower_ci)
+                    upper_ci = np.asarray(upper_ci)
+
+                    fig_forecast = go.Figure()
+                    fig_forecast.add_trace(
+                        go.Scatter(
+                            x=train_df["Date"],
+                            y=train_df["Poids (Kgs)"],
+                            mode="markers+lines",
+                            name="Historique",
+                        )
+                    )
+                    fig_forecast.add_trace(
+                        go.Scatter(
+                            x=train_df["Date"],
+                            y=in_sample_pred,
+                            mode="lines",
+                            name="Ajustement du modèle",
+                            line=dict(dash="dot"),
+                        )
+                    )
+                    fig_forecast.add_trace(
+                        go.Scatter(
+                            x=future_dates,
+                            y=forecast_values,
+                            mode="lines+markers",
+                            name="Prévision",
+                            line=dict(color="#1E88E5", width=3),
+                        )
+                    )
+
+                    if lower_ci.size and upper_ci.size:
+                        ci_x = list(future_dates) + list(future_dates[::-1])
+                        ci_y = list(upper_ci) + list(lower_ci[::-1])
+                        fig_forecast.add_trace(
+                            go.Scatter(
+                                x=ci_x,
+                                y=ci_y,
+                                fill="toself",
+                                fillcolor="rgba(30, 136, 229, 0.15)",
+                                line=dict(color="rgba(30, 136, 229, 0.1)"),
+                                hoverinfo="skip",
+                                name="IC 95%",
+                                showlegend=True,
+                            )
+                        )
+
+                    anomalies_df = detect_anomalies(
+                        train_df[["Date", "Poids (Kgs)"]].copy(),
+                        anomaly_method,
+                        z_score_threshold,
+                    )
+                    anomalies_points = anomalies_df[anomalies_df["Anomalies"]]
+                    if not anomalies_points.empty:
+                        fig_forecast.add_trace(
+                            go.Scatter(
+                                x=anomalies_points["Date"],
+                                y=anomalies_points["Poids (Kgs)"],
+                                mode="markers",
+                                marker=dict(color="red", size=10, symbol="x"),
+                                name="Anomalies",
+                            )
+                        )
+                        for _, row in anomalies_points.head(3).iterrows():
+                            fig_forecast.add_annotation(
+                                x=row["Date"],
+                                y=row["Poids (Kgs)"],
+                                text=f"Anomalie ({row['Poids (Kgs)']:.1f} kg)",
+                                showarrow=True,
+                                arrowhead=2,
+                                arrowcolor="red",
+                                ay=-40,
+                            )
+
+                    if forecast_values.size:
+                        if target_weight_4 and np.any(forecast_values <= target_weight_4):
+                            target_idx = int(np.where(forecast_values <= target_weight_4)[0][0])
+                            fig_forecast.add_annotation(
+                                x=future_dates[target_idx],
+                                y=forecast_values[target_idx],
+                                text=f"Objectif {target_weight_4:.1f} kg atteint",
+                                showarrow=True,
+                                arrowhead=2,
+                                arrowcolor="green",
+                                ay=-60,
+                                bgcolor="rgba(76, 175, 80, 0.15)",
+                            )
+
+                        if forecast_values.size > 1:
+                            diffs = np.diff(forecast_values)
+                            jump_idx = int(np.argmax(np.abs(diffs)))
+                            if np.abs(diffs[jump_idx]) > 0.3:
+                                fig_forecast.add_annotation(
+                                    x=future_dates[jump_idx + 1],
+                                    y=forecast_values[jump_idx + 1],
+                                    text="Variation marquée",
+                                    showarrow=True,
+                                    arrowcolor="#FB8C00",
+                                    ay=-50,
+                                    bgcolor="rgba(251, 140, 0, 0.15)",
+                                )
+
+                    fig_forecast.update_layout(
+                        title="Prévisions personnalisées",
+                        yaxis_title="Poids (Kgs)",
+                        xaxis_title="Date",
+                    )
+                    fig_forecast = apply_theme(fig_forecast, theme)
+                    st.plotly_chart(fig_forecast, use_container_width=True)
+
+                    latest_forecast = forecast_values[-1] if forecast_values.size else np.nan
+                    col_metrics1, col_metrics2, col_metrics3 = st.columns(3)
+                    col_metrics1.metric(
+                        "Poids prévu en fin d'horizon",
+                        f"{latest_forecast:.2f} Kgs" if not np.isnan(latest_forecast) else "-",
+                    )
+                    delta_value = (
+                        latest_forecast - y_train[-1]
+                        if forecast_values.size and y_train.size
+                        else np.nan
+                    )
+                    col_metrics2.metric(
+                        "Variation prévue",
+                        f"{delta_value:+.2f} Kgs" if not np.isnan(delta_value) else "-",
+                    )
+                    if lower_ci.size and upper_ci.size:
+                        col_metrics3.metric(
+                            "IC 95% (fin d'horizon)",
+                            f"[{lower_ci[-1]:.2f}; {upper_ci[-1]:.2f}] Kgs",
+                        )
+                    else:
+                        col_metrics3.metric("IC 95% (fin d'horizon)", "Non disponible")
+
+                    forecast_df = pd.DataFrame({
+                        "Date": future_dates,
+                        "Prévision (Kgs)": forecast_values,
+                    })
+                    if lower_ci.size and upper_ci.size:
+                        forecast_df["IC Inférieur (Kgs)"] = lower_ci
+                        forecast_df["IC Supérieur (Kgs)"] = upper_ci
+
+                    st.write("Tableau des projections")
+                    st.dataframe(forecast_df)
+
+                    mean_change_rate = train_df["Poids (Kgs)"].diff().mean()
+                    st.write(
+                        f"Taux de changement moyen (ensemble d'entraînement) : **{mean_change_rate:.2f} Kgs/jour**"
+                    )
+                    coef_var = train_df["Poids (Kgs)"].std() / train_df["Poids (Kgs)"].mean()
+                    st.write(
+                        f"Coefficient de variation (ensemble d'entraînement) : **{coef_var * 100:.2f}%**"
+                    )
 
 #################################
 # 4. Onglet: ANALYSE DES DONNÉES
