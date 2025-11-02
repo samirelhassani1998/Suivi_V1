@@ -3,6 +3,8 @@ import streamlit as st
 # IMPORTANT : appeler st.set_page_config en premier !
 st.set_page_config(page_title="Suivi du Poids Amélioré", layout="wide")
 
+import io
+
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -61,12 +63,8 @@ st.markdown(
 #############
 # FONCTIONS
 #############
-@st.cache_data(ttl=300)
-def load_data(url: str) -> pd.DataFrame:
-    """
-    Charge et nettoie le jeu de données depuis un fichier CSV.
-    """
-    df = pd.read_csv(url, decimal=",")
+def preprocess_weight_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Nettoie et met en forme le jeu de données de poids."""
     df['Poids (Kgs)'] = (
         df['Poids (Kgs)']
         .astype(str)
@@ -77,6 +75,20 @@ def load_data(url: str) -> pd.DataFrame:
     df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
     df = df.dropna(subset=['Poids (Kgs)', 'Date']).sort_values('Date', ascending=True)
     return df
+
+@st.cache_data(ttl=300)
+def load_data(url: str) -> pd.DataFrame:
+    """
+    Charge et nettoie le jeu de données depuis un fichier CSV distant.
+    """
+    df = pd.read_csv(url, decimal=",")
+    return preprocess_weight_data(df)
+
+@st.cache_data
+def load_uploaded_data(file_bytes: bytes) -> pd.DataFrame:
+    """Charge les données fournies par l'utilisateur via un fichier CSV."""
+    df = pd.read_csv(io.BytesIO(file_bytes))
+    return preprocess_weight_data(df)
 
 def apply_theme(fig: go.Figure, theme_name: str) -> go.Figure:
     """
@@ -105,7 +117,12 @@ def convert_df_to_csv(df: pd.DataFrame) -> bytes:
     """
     return df.to_csv(index=False).encode('utf-8')
 
-def detect_anomalies(df: pd.DataFrame, method: str, z_threshold: float = 2.0) -> pd.DataFrame:
+def detect_anomalies(
+    df: pd.DataFrame,
+    method: str,
+    z_threshold: float = 2.0,
+    iqr_multiplier: float = 1.5
+) -> pd.DataFrame:
     """Détecte les anomalies dans les poids selon la méthode choisie.
 
     Parameters
@@ -113,10 +130,12 @@ def detect_anomalies(df: pd.DataFrame, method: str, z_threshold: float = 2.0) ->
     df : pd.DataFrame
         Jeu de données contenant la colonne ``Poids (Kgs)``.
     method : str
-        "Z-score" ou "IsolationForest" pour sélectionner la technique.
+        "Z-score", "IQR" ou "IsolationForest" pour sélectionner la technique.
     z_threshold : float, optional
         Seuil au-delà duquel un point est considéré comme anomalie pour la
         méthode Z-score.
+    iqr_multiplier : float, optional
+        Multiplicateur appliqué à l'IQR pour la détection d'anomalies.
 
     Returns
     -------
@@ -131,6 +150,13 @@ def detect_anomalies(df: pd.DataFrame, method: str, z_threshold: float = 2.0) ->
     if method == "IsolationForest":
         model = IsolationForest(contamination=0.1, random_state=42)
         df["Anomalies"] = model.fit_predict(df[["Poids (Kgs)"]]) == -1
+    elif method == "IQR":
+        q1 = df["Poids (Kgs)"].quantile(0.25)
+        q3 = df["Poids (Kgs)"].quantile(0.75)
+        iqr = q3 - q1
+        lower_bound = q1 - iqr_multiplier * iqr
+        upper_bound = q3 + iqr_multiplier * iqr
+        df["Anomalies"] = ~df["Poids (Kgs)"].between(lower_bound, upper_bound)
     else:
         df["Z_score"] = np.abs(stats.zscore(df["Poids (Kgs)"]))
         df["Anomalies"] = df["Z_score"] > z_threshold
@@ -139,21 +165,45 @@ def detect_anomalies(df: pd.DataFrame, method: str, z_threshold: float = 2.0) ->
 #############
 # CHARGEMENT DES DONNÉES
 #############
-url = 'https://docs.google.com/spreadsheets/d/1qPhLKvm4BREErQrm0L38DcZFG4a-K0msSzARVIG_T_U/export?format=csv'
-df = load_data(url)
-
-# Bouton pour recharger les données
-if st.button("Recharger les données"):
-    load_data.clear()
-    df = load_data(url)
-
-st.write(f"**Nombre total de lignes chargées :** {df.shape[0]}")
-st.write("Aperçu des dernières lignes :", df.tail())
+DATA_URL = 'https://docs.google.com/spreadsheets/d/1qPhLKvm4BREErQrm0L38DcZFG4a-K0msSzARVIG_T_U/export?format=csv'
+default_df = load_data(DATA_URL)
+df = default_df.copy()
+data_origin = "Données par défaut"
 
 #############
 # SIDEBAR AVANCÉE
 #############
 st.sidebar.header("Paramètres Généraux")
+
+with st.sidebar.expander("Chargement des Données"):
+    data_source = st.radio(
+        "Source des données",
+        ["Données par défaut", "Fichier CSV"],
+        key="data_source_choice"
+    )
+    if data_source == "Données par défaut":
+        if st.button("Recharger les données", key="reload_default_data"):
+            load_data.clear()
+            default_df = load_data(DATA_URL)
+        df = default_df.copy()
+        data_origin = "Données par défaut"
+    else:
+        uploaded_file = st.file_uploader(
+            "Importer un fichier CSV",
+            type=["csv"],
+            key="uploaded_weight_file"
+        )
+        if uploaded_file is not None:
+            try:
+                df = load_uploaded_data(uploaded_file.getvalue())
+                data_origin = f"Fichier importé ({uploaded_file.name})"
+            except Exception as exc:
+                st.error(f"Erreur lors du chargement du fichier : {exc}")
+                df = pd.DataFrame(columns=["Date", "Poids (Kgs)"])
+                data_origin = "Import échoué"
+        else:
+            df = pd.DataFrame(columns=["Date", "Poids (Kgs)"])
+            data_origin = "Aucun fichier chargé"
 
 # Thème et type de moyenne mobile dans des expanders
 with st.sidebar.expander("Personnalisation du Thème"):
@@ -164,13 +214,42 @@ with st.sidebar.expander("Paramètres de la Moyenne Mobile"):
     window_size = st.slider("Taille de la moyenne mobile (jours)", 1, 30, 7)
 
 # Filtre de dates
+filtered_df = df.copy()
 with st.sidebar.expander("Filtre de Dates"):
-    if not df.empty:
-        date_min, date_max = df['Date'].min(), df['Date'].max()
+    if not filtered_df.empty:
+        date_min, date_max = filtered_df['Date'].min(), filtered_df['Date'].max()
         date_range = st.date_input("Sélectionnez une plage de dates", [date_min, date_max])
         if len(date_range) == 2:
             start_date, end_date = date_range
-            df = df[(df['Date'] >= pd.to_datetime(start_date)) & (df['Date'] <= pd.to_datetime(end_date))]
+            filtered_df = filtered_df[(filtered_df['Date'] >= pd.to_datetime(start_date)) & (filtered_df['Date'] <= pd.to_datetime(end_date))]
+
+with st.sidebar.expander("Filtre de Poids"):
+    if not filtered_df.empty:
+        min_weight = float(filtered_df['Poids (Kgs)'].min())
+        max_weight = float(filtered_df['Poids (Kgs)'].max())
+        if min_weight == max_weight:
+            st.info("Les données filtrées contiennent une seule valeur de poids.")
+        else:
+            weight_range = st.slider(
+                "Plage de poids (Kgs)",
+                min_value=min_weight,
+                max_value=max_weight,
+                value=(min_weight, max_weight),
+                step=0.1,
+            )
+            filtered_df = filtered_df[
+                (filtered_df['Poids (Kgs)'] >= weight_range[0]) &
+                (filtered_df['Poids (Kgs)'] <= weight_range[1])
+            ]
+
+df = filtered_df
+
+if not df.empty:
+    st.write(f"**Source des données :** {data_origin}")
+    st.write(f"**Nombre de lignes après filtrage :** {df.shape[0]}")
+    st.write("Aperçu des dernières lignes :", df.tail())
+else:
+    st.warning("Aucune donnée disponible. Veuillez vérifier vos filtres ou charger un fichier valide.")
 
 # Objectifs de poids et informations personnelles
 with st.sidebar.expander("Objectifs et Infos Personnelles"):
@@ -182,10 +261,27 @@ with st.sidebar.expander("Objectifs et Infos Personnelles"):
     height_cm = st.number_input("Votre taille (cm)", value=182)
     height_m = height_cm / 100.0
 
+if not df.empty and height_m > 0:
+    df["IMC"] = df["Poids (Kgs)"] / (height_m ** 2)
+
 # Paramètres anomalies et calories/activité
 with st.sidebar.expander("Paramètres d'Anomalies & Activité"):
-    anomaly_method = st.selectbox("Méthode de détection", ["Z-score", "IsolationForest"])
-    z_score_threshold = st.slider("Seuil Z-score", 1.0, 5.0, 2.0, step=0.5)
+    anomaly_method = st.selectbox("Méthode de détection", ["Z-score", "IQR", "IsolationForest"])
+    if anomaly_method == "Z-score":
+        z_score_threshold = st.slider("Seuil Z-score", 1.0, 5.0, 2.0, step=0.5)
+        iqr_multiplier = 1.5
+    elif anomaly_method == "IQR":
+        iqr_multiplier = st.slider(
+            "Multiplicateur IQR",
+            min_value=0.5,
+            max_value=3.0,
+            value=1.5,
+            step=0.1,
+        )
+        z_score_threshold = 2.0
+    else:
+        z_score_threshold = 2.0
+        iqr_multiplier = 1.5
     st.markdown("**Santé et Activité**")
     calories = st.number_input("Calories consommées aujourd'hui", min_value=0, value=2000)
     calories_brul = st.number_input("Calories brûlées (approximatif)", min_value=0, value=500)
@@ -297,12 +393,13 @@ with tabs[1]:
         st.plotly_chart(fig_bmi_hist, use_container_width=True)
 
         # Détection d'anomalies
-        df_anom = detect_anomalies(df, anomaly_method, z_score_threshold)
-        title = (
-            f"Détection des Anomalies (Z-score > {z_score_threshold})"
-            if anomaly_method == "Z-score"
-            else "Détection des Anomalies (IsolationForest)"
-        )
+        df_anom = detect_anomalies(df, anomaly_method, z_score_threshold, iqr_multiplier)
+        if anomaly_method == "Z-score":
+            title = f"Détection des Anomalies (Z-score > {z_score_threshold})"
+        elif anomaly_method == "IQR":
+            title = f"Détection des Anomalies (IQR × {iqr_multiplier:.1f})"
+        else:
+            title = "Détection des Anomalies (IsolationForest)"
         fig_anomaly = px.scatter(
             df_anom, x="Date", y="Poids (Kgs)",
             color="Anomalies",
@@ -503,6 +600,59 @@ with tabs[5]:
         df["Calories"] = np.nan
 
     if not df.empty:
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        if numeric_cols:
+            st.subheader("Statistiques descriptives")
+            stats_df = df[numeric_cols].agg(['mean', 'median', 'std', 'min', 'max']).T
+            stats_df.columns = ["Moyenne", "Médiane", "Écart-type", "Min", "Max"]
+            st.dataframe(stats_df.round(2))
+
+            st.subheader("Matrice de corrélation")
+            if len(numeric_cols) >= 2:
+                corr_matrix = df[numeric_cols].corr().round(2)
+                fig_corr_matrix = px.imshow(
+                    corr_matrix,
+                    text_auto=True,
+                    aspect="auto",
+                    title="Corrélations entre variables numériques"
+                )
+                fig_corr_matrix = apply_theme(fig_corr_matrix, theme)
+                st.plotly_chart(fig_corr_matrix, use_container_width=True)
+            else:
+                st.info("Une seule variable numérique disponible pour le moment.")
+
+            st.subheader("Distributions et boîtes à moustaches")
+            distribution_cols = st.multiselect(
+                "Colonnes à analyser",
+                numeric_cols,
+                default=["Poids (Kgs)"] if "Poids (Kgs)" in numeric_cols else numeric_cols,
+                key="distribution_columns",
+            )
+            for col in distribution_cols:
+                col_hist, col_box = st.columns(2)
+                with col_hist:
+                    fig_hist = px.histogram(df, x=col, nbins=30, title=f"Distribution de {col}")
+                    fig_hist = apply_theme(fig_hist, theme)
+                    st.plotly_chart(fig_hist, use_container_width=True)
+                with col_box:
+                    fig_box = px.box(df, y=col, title=f"Boîte à moustaches - {col}")
+                    fig_box = apply_theme(fig_box, theme)
+                    st.plotly_chart(fig_box, use_container_width=True)
+
+            if len(distribution_cols) >= 2:
+                st.subheader("Matrice de dispersion")
+                scatter_data = df[distribution_cols].dropna()
+                if not scatter_data.empty:
+                    fig_matrix = px.scatter_matrix(
+                        scatter_data,
+                        dimensions=distribution_cols,
+                        title="Relations croisées"
+                    )
+                    fig_matrix = apply_theme(fig_matrix, theme)
+                    st.plotly_chart(fig_matrix, use_container_width=True)
+                else:
+                    st.info("Les colonnes sélectionnées ne contiennent pas assez de données pour la matrice de dispersion.")
+
         last_date = df["Date"].max()
         st.write(f"Dernier enregistrement le : {last_date.date()}")
         user_cal = st.number_input(f"Calories consommées pour le {last_date.date()}",
