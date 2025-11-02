@@ -28,8 +28,8 @@ def _get_data():
 
 def render_linear_regression(df):
     st.header("Régression Linéaire et Intervalles de Confiance")
-    if df.empty or len(df) < 2:
-        st.warning("Données insuffisantes pour faire des prévisions.")
+    if df.empty or len(df) < 3:
+        st.warning("Données insuffisantes pour faire des prévisions (minimum 3 entrées).")
         return
 
     df = df.copy()
@@ -37,15 +37,20 @@ def render_linear_regression(df):
     X = df[["Date_numeric"]]
     y = df["Poids (Kgs)"]
 
-    tscv = TimeSeriesSplit(n_splits=5)
-    lin_scores = cross_val_score(
-        LinearRegression(),
-        X,
-        y,
-        scoring="neg_mean_squared_error",
-        cv=tscv,
-    )
-    st.write(f"MSE moyen (Régression Linéaire) : **{-lin_scores.mean():.2f}**")
+    n_splits = min(5, len(df) - 1)
+    try:
+        tscv = TimeSeriesSplit(n_splits=n_splits)
+        lin_scores = cross_val_score(
+            LinearRegression(),
+            X,
+            y,
+            scoring="neg_mean_squared_error",
+            cv=tscv,
+        )
+        st.write(f"MSE moyen (Régression Linéaire) : **{-lin_scores.mean():.2f}**")
+    except ValueError as error:
+        st.warning(f"Validation croisée impossible avec les données actuelles : {error}")
+        lin_scores = None
 
     reg = LinearRegression().fit(X, y)
     predictions = reg.predict(X)
@@ -134,12 +139,21 @@ def render_stl_and_sarima(df):
         st.warning("Aucune donnée pour l’analyse.")
         return
 
+    period = 7
+    if len(df) < period * 2:
+        st.warning("Au moins 14 enregistrements sont nécessaires pour l'analyse STL/SARIMA.")
+        return
+
     theme = st.session_state.get("theme", "Default")
     df = df.copy()
 
     st.subheader("Analyse STL (Tendance et Saisonnalité)")
-    stl = STL(df.set_index("Date")["Poids (Kgs)"], period=7)
-    res = stl.fit()
+    try:
+        stl = STL(df.set_index("Date")["Poids (Kgs)"], period=period)
+        res = stl.fit()
+    except ValueError as error:
+        st.warning(f"Impossible de réaliser la décomposition STL : {error}")
+        return
     df["Trend"] = res.trend.values
     df["Seasonal"] = res.seasonal.values
     df["Resid"] = res.resid.values
@@ -159,31 +173,58 @@ def render_stl_and_sarima(df):
         st.plotly_chart(fig_resid, use_container_width=True)
 
     st.subheader("Prédictions SARIMA")
-    sarima_model = SARIMAX(df["Poids (Kgs)"], order=(1, 1, 1), seasonal_order=(1, 1, 1, 7))
-    sarima_results = sarima_model.fit(disp=False)
-    df["SARIMA_Predictions"] = sarima_results.predict(start=0, end=len(df) - 1, dynamic=False)
-    fig_sarima = px.scatter(df, x="Date", y="Poids (Kgs)", title="SARIMA")
-    fig_sarima.add_trace(
-        go.Scatter(
-            x=df["Date"],
-            y=df["SARIMA_Predictions"],
-            mode="lines",
-            name="Prévisions SARIMA",
+    try:
+        sarima_model = SARIMAX(df["Poids (Kgs)"], order=(1, 1, 1), seasonal_order=(1, 1, 1, period))
+        sarima_results = sarima_model.fit(disp=False)
+        df["SARIMA_Predictions"] = sarima_results.predict(start=0, end=len(df) - 1, dynamic=False)
+        fig_sarima = px.scatter(df, x="Date", y="Poids (Kgs)", title="SARIMA")
+        fig_sarima.add_trace(
+            go.Scatter(
+                x=df["Date"],
+                y=df["SARIMA_Predictions"],
+                mode="lines",
+                name="Prévisions SARIMA",
+            )
         )
-    )
-    fig_sarima = apply_theme(fig_sarima, theme)
-    st.plotly_chart(fig_sarima, use_container_width=True)
+        fig_sarima = apply_theme(fig_sarima, theme)
+        st.plotly_chart(fig_sarima, use_container_width=True)
+    except Exception as error:  # statsmodels peut lever plusieurs types d'exceptions
+        st.warning(f"Le modèle SARIMA n'a pas pu converger : {error}")
 
     st.subheader("Variabilité et Corrélations Temporelles")
-    std_window = st.slider("Fenêtre pour l'écart type mobile", 3, 30, 7, key="std_window")
+    max_window = min(30, len(df))
+    if max_window < 3:
+        st.warning("Données insuffisantes pour calculer un écart type mobile.")
+        return
+    std_window = st.slider(
+        "Fenêtre pour l'écart type mobile",
+        min_value=3,
+        max_value=max_window,
+        value=min(7, max_window),
+        key="std_window",
+    )
     df["Rolling_STD"] = df["Poids (Kgs)"].rolling(window=std_window).std()
     fig_std = px.line(df, x="Date", y="Rolling_STD", title="Écart Type Mobile")
     fig_std = apply_theme(fig_std, theme)
     st.plotly_chart(fig_std, use_container_width=True)
 
-    lag = st.slider("Nombre de décalages pour l'ACF/PACF", 1, 30, 7, key="acf_lag")
-    acf_vals = acf(df["Poids (Kgs)"], nlags=lag, missing="drop")
-    pacf_vals = pacf(df["Poids (Kgs)"], nlags=lag, method="ywm")
+    max_lag = min(30, len(df) - 1)
+    if max_lag < 1:
+        st.warning("Pas assez d'observations pour calculer l'ACF/PACF.")
+        return
+    lag = st.slider(
+        "Nombre de décalages pour l'ACF/PACF",
+        min_value=1,
+        max_value=max_lag,
+        value=min(7, max_lag),
+        key="acf_lag",
+    )
+    try:
+        acf_vals = acf(df["Poids (Kgs)"], nlags=lag, missing="drop")
+        pacf_vals = pacf(df["Poids (Kgs)"], nlags=lag, method="ywm")
+    except ValueError as error:
+        st.warning(f"Impossible de calculer l'ACF/PACF : {error}")
+        return
     fig_acf = px.bar(x=list(range(len(acf_vals))), y=acf_vals, title="Autocorrélation (ACF)")
     fig_pacf = px.bar(x=list(range(len(pacf_vals))), y=pacf_vals, title="Autocorrélation Partielle (PACF)")
     fig_acf = apply_theme(fig_acf, theme)
@@ -198,21 +239,30 @@ def render_auto_arima(df):
         st.warning("Aucune donnée pour générer des prévisions Auto-ARIMA.")
         return
 
+    if len(df) < 10:
+        st.warning("Au moins 10 enregistrements sont nécessaires pour entraîner Auto-ARIMA.")
+        return
+
     theme = st.session_state.get("theme", "Default")
     future_arima_days = st.slider(
         "Jours à prédire",
-        1,
-        60,
-        30,
+        min_value=1,
+        max_value=60,
+        value=30,
         key="arima_days",
     )
-    arima_model = auto_arima(
-        df["Poids (Kgs)"],
-        seasonal=True,
-        m=7,
-        suppress_warnings=True,
-    )
-    arima_forecast = arima_model.predict(n_periods=future_arima_days)
+    try:
+        arima_model = auto_arima(
+            df["Poids (Kgs)"],
+            seasonal=True,
+            m=7,
+            suppress_warnings=True,
+        )
+        arima_forecast = arima_model.predict(n_periods=future_arima_days)
+    except Exception as error:  # pmdarima renvoie divers types d'erreurs
+        st.warning(f"Le modèle Auto-ARIMA n'a pas pu être ajusté : {error}")
+        return
+
     arima_dates = pd.date_range(
         start=df["Date"].max() + pd.Timedelta(days=1),
         periods=future_arima_days,

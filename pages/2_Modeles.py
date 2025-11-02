@@ -26,15 +26,20 @@ def _get_data():
 
 def render_model_comparison(df):
     st.header("Comparaison des Modèles")
-    if df.empty or len(df) < 2:
-        st.warning("Pas assez de données pour comparer les modèles.")
+    if df.empty or len(df) < 3:
+        st.warning("Pas assez de données pour comparer les modèles (minimum 3 entrées).")
         return
 
     df = df.copy()
     df["Date_numeric"] = (df["Date"] - df["Date"].min()) / np.timedelta64(1, "D")
     X = df[["Date_numeric"]]
     y = df["Poids (Kgs)"]
-    tscv = TimeSeriesSplit(n_splits=5)
+    n_splits = min(5, len(df) - 1)
+    try:
+        tscv = TimeSeriesSplit(n_splits=n_splits)
+    except ValueError as error:
+        st.warning(f"Impossible de configurer la validation croisée : {error}")
+        return
 
     models = {
         "Régression Linéaire": LinearRegression(),
@@ -42,21 +47,33 @@ def render_model_comparison(df):
     }
     model_scores = {}
     for name, model in models.items():
-        scores = cross_val_score(
-            model,
-            X,
-            y,
-            scoring="neg_mean_squared_error",
-            cv=tscv,
-        )
+        try:
+            scores = cross_val_score(
+                model,
+                X,
+                y,
+                scoring="neg_mean_squared_error",
+                cv=tscv,
+            )
+        except ValueError as error:
+            st.warning(f"Échec de la validation croisée pour {name} : {error}")
+            continue
         model_scores[name] = -scores.mean()
+
+    if not model_scores:
+        st.warning("Impossible de calculer les scores des modèles avec les données actuelles.")
+        return
 
     scores_df = pd.DataFrame.from_dict(model_scores, orient="index", columns=["MSE"])
     st.write("**Comparaison des MSE moyens :**")
     st.dataframe(scores_df)
 
     for name, model in models.items():
-        model.fit(X, y)
+        try:
+            model.fit(X, y)
+        except ValueError as error:
+            st.warning(f"Impossible d'entraîner le modèle {name} : {error}")
+            continue
         df[name + "_Predictions"] = model.predict(X)
 
     theme = st.session_state.get("theme", "Default")
@@ -159,11 +176,15 @@ def render_ml_insights(df):
     st.dataframe(df_iso[df_iso["IF_Anomaly"]])
 
     st.subheader("Clustering K-Means")
+    max_clusters = min(5, len(df))
+    if max_clusters < 2:
+        st.warning("Données insuffisantes pour réaliser un clustering.")
+        return
     clusters = st.slider(
         "Nombre de clusters",
-        2,
-        5,
-        3,
+        min_value=2,
+        max_value=max_clusters,
+        value=min(3, max_clusters),
         key="kmeans_clusters",
     )
     df_cluster = df.copy()
