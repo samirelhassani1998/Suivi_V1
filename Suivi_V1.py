@@ -105,6 +105,7 @@ def convert_df_to_csv(df: pd.DataFrame) -> bytes:
     """
     return df.to_csv(index=False).encode('utf-8')
 
+@st.cache_data
 def detect_anomalies(df: pd.DataFrame, method: str, z_threshold: float = 2.0) -> pd.DataFrame:
     """Détecte les anomalies dans les poids selon la méthode choisie.
 
@@ -135,6 +136,110 @@ def detect_anomalies(df: pd.DataFrame, method: str, z_threshold: float = 2.0) ->
         df["Z_score"] = np.abs(stats.zscore(df["Poids (Kgs)"]))
         df["Anomalies"] = df["Z_score"] > z_threshold
     return df
+
+
+@st.cache_data
+def compute_linear_regression_analysis(
+    df: pd.DataFrame,
+    future_days: int,
+    n_bootstraps: int = 500,
+) -> dict:
+    """Calcule les résultats liés au modèle de régression linéaire."""
+    df_reg = df.copy()
+    df_reg["Date_numeric"] = (df_reg["Date"] - df_reg["Date"].min()) / np.timedelta64(1, "D")
+    X = df_reg[["Date_numeric"]]
+    y = df_reg["Poids (Kgs)"]
+
+    tscv = TimeSeriesSplit(n_splits=5)
+    lin_scores = cross_val_score(
+        LinearRegression(), X, y, scoring="neg_mean_squared_error", cv=tscv
+    )
+
+    reg = LinearRegression().fit(X, y)
+    predictions = reg.predict(X)
+
+    boot_preds = np.zeros((n_bootstraps, len(X)))
+    for i in range(n_bootstraps):
+        X_boot, y_boot = resample(X, y, random_state=42 + i)
+        reg_boot = LinearRegression().fit(X_boot, y_boot)
+        boot_preds[i] = reg_boot.predict(X)
+
+    pred_lower = np.percentile(boot_preds, 2.5, axis=0)
+    pred_upper = np.percentile(boot_preds, 97.5, axis=0)
+
+    future_dates = pd.date_range(
+        start=df_reg["Date"].max() + pd.Timedelta(days=1), periods=future_days
+    )
+    future_numeric = (future_dates - df_reg["Date"].min()) / np.timedelta64(1, "D")
+    future_predictions = reg.predict(future_numeric.values.reshape(-1, 1))
+    future_df = pd.DataFrame({"Date": future_dates, "Prévisions": future_predictions})
+
+    df_reg["Poids_diff"] = df_reg["Poids (Kgs)"].diff()
+    mean_change_rate = df_reg["Poids_diff"].mean()
+    coef_var = df_reg["Poids (Kgs)"].std() / df_reg["Poids (Kgs)"].mean()
+
+    return {
+        "mse": -lin_scores.mean(),
+        "predictions": predictions,
+        "pred_lower": pred_lower,
+        "pred_upper": pred_upper,
+        "intercept": reg.intercept_,
+        "coef": reg.coef_[0],
+        "future_df": future_df,
+        "mean_change_rate": mean_change_rate,
+        "coef_var": coef_var,
+    }
+
+
+@st.cache_data
+def compute_stl_components(series: pd.Series, period: int = 7) -> dict:
+    """Retourne les composantes STL (tendance, saisonnalité, résidus)."""
+    stl = STL(series, period=period)
+    res = stl.fit()
+    return {
+        "trend": res.trend,
+        "seasonal": res.seasonal,
+        "resid": res.resid,
+    }
+
+
+@st.cache_data
+def compute_sarima_predictions(
+    series: pd.Series,
+    order=(1, 1, 1),
+    seasonal_order=(1, 1, 1, 7),
+) -> pd.Series:
+    """Ajuste un modèle SARIMA et retourne les prédictions."""
+    sarima_model = SARIMAX(series, order=order, seasonal_order=seasonal_order)
+    sarima_results = sarima_model.fit(disp=False)
+    return sarima_results.predict(start=0, end=len(series) - 1, dynamic=False)
+
+
+@st.cache_data
+def compute_isolation_forest_labels(
+    values: pd.DataFrame, contamination: float = 0.1
+) -> np.ndarray:
+    """Détecte les anomalies via IsolationForest et retourne les labels."""
+    iso = IsolationForest(contamination=contamination, random_state=42)
+    return iso.fit_predict(values) == -1
+
+
+@st.cache_data
+def compute_auto_arima_forecast(
+    series: pd.Series, future_days: int, seasonal: bool = True, m: int = 7
+) -> np.ndarray:
+    """Entraîne un modèle Auto-ARIMA et retourne les prévisions."""
+    arima_model = auto_arima(
+        series, seasonal=seasonal, m=m, suppress_warnings=True
+    )
+    return arima_model.predict(n_periods=future_days)
+
+
+@st.cache_data
+def compute_kmeans_clusters(values: pd.DataFrame, clusters: int) -> np.ndarray:
+    """Calcule l'appartenance aux clusters via K-Means."""
+    kmeans = KMeans(n_clusters=clusters, random_state=42, n_init=10)
+    return kmeans.fit_predict(values)
 
 #############
 # CHARGEMENT DES DONNÉES
@@ -323,28 +428,15 @@ with tabs[2]:
     if df.empty or len(df) < 2:
         st.warning("Données insuffisantes pour faire des prévisions.")
     else:
-        # Conversion de la date en variable numérique pour la régression
-        df["Date_numeric"] = (df["Date"] - df["Date"].min()) / np.timedelta64(1, "D")
-        X = df[["Date_numeric"]]
-        y = df["Poids (Kgs)"]
+        future_days = st.slider("Nombre de jours à prédire", 1, 365, 30)
+        regression_results = compute_linear_regression_analysis(df, future_days)
+        st.write(
+            f"MSE moyen (Régression Linéaire) : **{regression_results['mse']:.2f}**"
+        )
 
-        # Validation croisée temporelle et régression linéaire
-        tscv = TimeSeriesSplit(n_splits=5)
-        lin_scores = cross_val_score(LinearRegression(), X, y, scoring='neg_mean_squared_error', cv=tscv)
-        st.write(f"MSE moyen (Régression Linéaire) : **{-lin_scores.mean():.2f}**")
-
-        reg = LinearRegression().fit(X, y)
-        predictions = reg.predict(X)
-
-        # Intervalles de confiance par bootstrap
-        n_bootstraps = 500
-        boot_preds = np.zeros((n_bootstraps, len(X)))
-        for i in range(n_bootstraps):
-            X_boot, y_boot = resample(X, y)
-            reg_boot = LinearRegression().fit(X_boot, y_boot)
-            boot_preds[i] = reg_boot.predict(X)
-        pred_lower = np.percentile(boot_preds, 2.5, axis=0)
-        pred_upper = np.percentile(boot_preds, 97.5, axis=0)
+        predictions = regression_results["predictions"]
+        pred_lower = regression_results["pred_lower"]
+        pred_upper = regression_results["pred_upper"]
 
         fig_reg = px.scatter(
             df, x="Date", y="Poids (Kgs)",
@@ -362,10 +454,12 @@ with tabs[2]:
 
         # Estimation de la date d'atteinte de l'objectif final
         try:
-            if reg.coef_[0] >= 0:
+            coef = regression_results["coef"]
+            intercept = regression_results["intercept"]
+            if coef >= 0:
                 st.error("Le modèle n’indique pas une perte de poids. Impossible d’estimer la date d’atteinte de l’objectif.")
             else:
-                days_to_target = (target_weight_4 - reg.intercept_) / reg.coef_[0]
+                days_to_target = (target_weight_4 - intercept) / coef
                 target_date = df["Date"].min() + pd.to_timedelta(days_to_target, unit="D")
                 if target_date < df["Date"].max():
                     st.warning("L'objectif a déjà été atteint selon les prévisions.")
@@ -376,20 +470,15 @@ with tabs[2]:
 
         # Prévisions futures
         st.subheader("Prédictions Futures")
-        future_days = st.slider("Nombre de jours à prédire", 1, 365, 30)
-        future_dates = pd.date_range(start=df["Date"].max() + pd.Timedelta(days=1), periods=future_days)
-        future_numeric = (future_dates - df["Date"].min()) / np.timedelta64(1, "D")
-        future_predictions = reg.predict(future_numeric.values.reshape(-1, 1))
-        future_df = pd.DataFrame({"Date": future_dates, "Prévisions": future_predictions})
+        future_df = regression_results["future_df"]
         fig_future = px.line(future_df, x="Date", y="Prévisions", title="Prévisions Futures")
         fig_future = apply_theme(fig_future, theme)
         st.plotly_chart(fig_future, use_container_width=True)
 
         # Taux de changement moyen
-        df["Poids_diff"] = df["Poids (Kgs)"].diff()
-        mean_change_rate = df["Poids_diff"].mean()
+        mean_change_rate = regression_results["mean_change_rate"]
         st.write(f"Taux de changement moyen du poids : **{mean_change_rate:.2f} Kgs/jour**")
-        coef_var = df["Poids (Kgs)"].std() / df["Poids (Kgs)"].mean()
+        coef_var = regression_results["coef_var"]
         st.write(f"Coefficient de variation du poids : **{coef_var * 100:.2f}%**")
 
 #################################
@@ -401,11 +490,12 @@ with tabs[3]:
         st.warning("Aucune donnée pour l’analyse.")
     else:
         st.subheader("Analyse STL (Tendance et Saisonnalité)")
-        stl = STL(df.set_index('Date')['Poids (Kgs)'], period=7)
-        res = stl.fit()
-        df["Trend"] = res.trend.values
-        df["Seasonal"] = res.seasonal.values
-        df["Resid"] = res.resid.values
+        stl_components = compute_stl_components(
+            df.set_index('Date')["Poids (Kgs)"], period=7
+        )
+        df["Trend"] = stl_components["trend"]
+        df["Seasonal"] = stl_components["seasonal"]
+        df["Resid"] = stl_components["resid"]
 
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -422,9 +512,10 @@ with tabs[3]:
             st.plotly_chart(fig_resid, use_container_width=True)
 
         st.subheader("Prédictions SARIMA")
-        sarima_model = SARIMAX(df["Poids (Kgs)"], order=(1,1,1), seasonal_order=(1,1,1,7))
-        sarima_results = sarima_model.fit(disp=False)
-        df["SARIMA_Predictions"] = sarima_results.predict(start=0, end=len(df)-1, dynamic=False)
+        sarima_predictions = compute_sarima_predictions(
+            df["Poids (Kgs)"], order=(1, 1, 1), seasonal_order=(1, 1, 1, 7)
+        )
+        df["SARIMA_Predictions"] = sarima_predictions
         fig_sarima = px.scatter(df, x="Date", y="Poids (Kgs)", title="SARIMA")
         fig_sarima.add_trace(go.Scatter(x=df["Date"], y=df["SARIMA_Predictions"],
                                         mode='lines', name='Prévisions SARIMA'))
@@ -456,8 +547,12 @@ with tabs[4]:
     if df.empty or len(df) < 2:
         st.warning("Pas assez de données pour comparer les modèles.")
     else:
-        X = df[["Date_numeric"]]
-        y = df["Poids (Kgs)"]
+        df_models = df.copy()
+        df_models["Date_numeric"] = (
+            df_models["Date"] - df_models["Date"].min()
+        ) / np.timedelta64(1, "D")
+        X = df_models[["Date_numeric"]]
+        y = df_models["Poids (Kgs)"]
         tscv = TimeSeriesSplit(n_splits=5)
         models = {
             "Régression Linéaire": LinearRegression(),
@@ -473,20 +568,20 @@ with tabs[4]:
 
         for name, model in models.items():
             model.fit(X, y)
-            df[name + "_Predictions"] = model.predict(X)
+            df_models[name + "_Predictions"] = model.predict(X)
 
-        fig_compare = px.scatter(df, x="Date", y="Poids (Kgs)", title="Comparaison des Modèles")
+        fig_compare = px.scatter(df_models, x="Date", y="Poids (Kgs)", title="Comparaison des Modèles")
         for name in models.keys():
-            fig_compare.add_trace(go.Scatter(x=df["Date"], y=df[name + "_Predictions"],
+            fig_compare.add_trace(go.Scatter(x=df_models["Date"], y=df_models[name + "_Predictions"],
                                              mode='lines', name=name))
         fig_compare = apply_theme(fig_compare, theme)
         st.plotly_chart(fig_compare, use_container_width=True)
 
         st.subheader("Métriques de Performance")
         for name in models.keys():
-            mse = mean_squared_error(y, df[name + "_Predictions"])
-            mae = mean_absolute_error(y, df[name + "_Predictions"])
-            r2 = r2_score(y, df[name + "_Predictions"])
+            mse = mean_squared_error(y, df_models[name + "_Predictions"])
+            mae = mean_absolute_error(y, df_models[name + "_Predictions"])
+            r2 = r2_score(y, df_models[name + "_Predictions"])
             st.write(f"**{name}:** MSE = {mse:.2f}, MAE = {mae:.2f}, R² = {r2:.2f}")
 
 #################################
@@ -654,8 +749,7 @@ with tabs[10]:
         st.warning("Données insuffisantes pour l'analyse.")
     else:
         st.subheader("Détection d'anomalies (IsolationForest)")
-        iso = IsolationForest(contamination=0.1, random_state=42)
-        df['IF_Anomaly'] = iso.fit_predict(df[["Poids (Kgs)"]]) == -1
+        df['IF_Anomaly'] = compute_isolation_forest_labels(df[["Poids (Kgs)"]])
         fig_if = px.scatter(
             df, x="Date", y="Poids (Kgs)",
             color="IF_Anomaly",
@@ -671,10 +765,9 @@ with tabs[10]:
         future_arima_days = st.slider(
             "Jours à prédire", 1, 60, 30, key="arima_days"
         )
-        arima_model = auto_arima(
-            df["Poids (Kgs)"], seasonal=True, m=7, suppress_warnings=True
+        arima_forecast = compute_auto_arima_forecast(
+            df["Poids (Kgs)"], future_arima_days, seasonal=True, m=7
         )
-        arima_forecast = arima_model.predict(n_periods=future_arima_days)
         arima_dates = pd.date_range(
             start=df["Date"].max() + pd.Timedelta(days=1),
             periods=future_arima_days
@@ -694,8 +787,7 @@ with tabs[10]:
         clusters = st.slider(
             "Nombre de clusters", 2, 5, 3, key="kmeans_clusters"
         )
-        kmeans = KMeans(n_clusters=clusters, random_state=42)
-        df['Cluster'] = kmeans.fit_predict(df[["Poids (Kgs)"]])
+        df['Cluster'] = compute_kmeans_clusters(df[["Poids (Kgs)"]], clusters)
         fig_cluster = px.scatter(
             df, x="Date", y="Poids (Kgs)", color="Cluster",
             title="Clusters de poids (K-Means)"
