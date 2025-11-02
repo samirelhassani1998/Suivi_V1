@@ -26,6 +26,6 @@ pip install -r requirements.txt
 Exécutez l'application Streamlit avec la commande suivante :
 
 ```bash
-streamlit run Suivi_V1.py
+streamlit run streamlit_app.py
 ```
 
