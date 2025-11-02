@@ -10,10 +10,12 @@ import plotly.graph_objects as go
 
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor, IsolationForest
-from sklearn.model_selection import cross_val_score, TimeSeriesSplit
+from sklearn.model_selection import cross_val_score, TimeSeriesSplit, train_test_split
 from sklearn.cluster import KMeans
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 from sklearn.utils import resample
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from scipy import stats
 
 from pmdarima import auto_arima
@@ -104,6 +106,60 @@ def convert_df_to_csv(df: pd.DataFrame) -> bytes:
     Convertit un DataFrame en CSV encodé en UTF-8.
     """
     return df.to_csv(index=False).encode('utf-8')
+
+def prepare_supervised_features(
+    data: pd.DataFrame,
+    target_column: str = "Poids (Kgs)",
+    lags: tuple[int, ...] = (1, 7),
+    rolling_windows: tuple[int, ...] = (3, 7),
+) -> tuple[pd.DataFrame, pd.Series]:
+    """Crée un jeu de données supervisé pour l'entraînement des modèles.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Données filtrées sur lesquelles entraîner les modèles.
+    target_column : str, optional
+        Colonne cible représentant le poids, by default "Poids (Kgs)".
+    lags : tuple[int, ...], optional
+        Retards appliqués au poids pour créer des features, by default (1, 7).
+    rolling_windows : tuple[int, ...], optional
+        Fenêtres utilisées pour calculer des moyennes mobiles, by default (3, 7).
+
+    Returns
+    -------
+    tuple[pd.DataFrame, pd.Series]
+        Features préparées et cible correspondante.
+    """
+    if data.empty:
+        return pd.DataFrame(), pd.Series(dtype=float)
+
+    df_features = data.copy()
+    df_features["Date_numeric"] = (df_features["Date"] - df_features["Date"].min()) / np.timedelta64(1, "D")
+    df_features["DayOfWeek"] = df_features["Date"].dt.dayofweek
+    df_features["WeekOfYear"] = df_features["Date"].dt.isocalendar().week.astype(int)
+    df_features["Month"] = df_features["Date"].dt.month
+
+    for lag in lags:
+        df_features[f"Poids_lag_{lag}"] = df_features[target_column].shift(lag)
+
+    for window in rolling_windows:
+        df_features[f"RollingMean_{window}"] = (
+            df_features[target_column].rolling(window=window).mean()
+        )
+
+    df_features = df_features.dropna(subset=[target_column] + [col for col in df_features.columns if "Poids_lag_" in col or "RollingMean_" in col])
+
+    feature_columns = [
+        "Date_numeric",
+        "DayOfWeek",
+        "WeekOfYear",
+        "Month",
+    ] + [col for col in df_features.columns if col.startswith("Poids_lag_") or col.startswith("RollingMean_")]
+
+    X = df_features[feature_columns]
+    y = df_features[target_column]
+    return X, y
 
 def detect_anomalies(df: pd.DataFrame, method: str, z_threshold: float = 2.0) -> pd.DataFrame:
     """Détecte les anomalies dans les poids selon la méthode choisie.
@@ -456,38 +512,122 @@ with tabs[4]:
     if df.empty or len(df) < 2:
         st.warning("Pas assez de données pour comparer les modèles.")
     else:
-        X = df[["Date_numeric"]]
-        y = df["Poids (Kgs)"]
-        tscv = TimeSeriesSplit(n_splits=5)
-        models = {
-            "Régression Linéaire": LinearRegression(),
-            "Random Forest": RandomForestRegressor(n_estimators=100, random_state=42)
-        }
-        model_scores = {}
-        for name, model in models.items():
-            scores = cross_val_score(model, X, y, scoring='neg_mean_squared_error', cv=tscv)
-            model_scores[name] = -scores.mean()
-        scores_df = pd.DataFrame.from_dict(model_scores, orient='index', columns=['MSE'])
-        st.write("**Comparaison des MSE moyens :**")
-        st.dataframe(scores_df)
+        st.subheader("Sélection de la période d'entraînement")
+        min_date = df["Date"].min().date()
+        max_date = df["Date"].max().date()
+        date_range = st.date_input(
+            "Choisissez la période d'analyse",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date,
+        )
 
-        for name, model in models.items():
-            model.fit(X, y)
-            df[name + "_Predictions"] = model.predict(X)
+        if not isinstance(date_range, (list, tuple)) or len(date_range) != 2:
+            st.error("Veuillez sélectionner une période valide (date de début et de fin).")
+        else:
+            start_date, end_date = date_range
+            if start_date > end_date:
+                st.error("La date de début doit être antérieure à la date de fin.")
+            else:
+                mask = (df["Date"] >= pd.Timestamp(start_date)) & (df["Date"] <= pd.Timestamp(end_date))
+                df_period = df.loc[mask].copy()
 
-        fig_compare = px.scatter(df, x="Date", y="Poids (Kgs)", title="Comparaison des Modèles")
-        for name in models.keys():
-            fig_compare.add_trace(go.Scatter(x=df["Date"], y=df[name + "_Predictions"],
-                                             mode='lines', name=name))
-        fig_compare = apply_theme(fig_compare, theme)
-        st.plotly_chart(fig_compare, use_container_width=True)
+                st.write(
+                    f"Période sélectionnée : **{start_date}** → **{end_date}** | "
+                    f"Nombre d'observations : **{len(df_period)}**"
+                )
 
-        st.subheader("Métriques de Performance")
-        for name in models.keys():
-            mse = mean_squared_error(y, df[name + "_Predictions"])
-            mae = mean_absolute_error(y, df[name + "_Predictions"])
-            r2 = r2_score(y, df[name + "_Predictions"])
-            st.write(f"**{name}:** MSE = {mse:.2f}, MAE = {mae:.2f}, R² = {r2:.2f}")
+                X, y = prepare_supervised_features(df_period)
+
+                if X.empty or y.empty:
+                    st.warning(
+                        "Données insuffisantes après la préparation des features. "
+                        "Augmentez la période sélectionnée pour inclure davantage d'observations."
+                    )
+                else:
+                    test_size_pct = st.slider(
+                        "Proportion de l'échantillon de test (%)",
+                        min_value=10,
+                        max_value=40,
+                        value=20,
+                        step=5,
+                        help="Les données les plus récentes seront utilisées pour le test."
+                    )
+                    test_size = test_size_pct / 100
+
+                    try:
+                        X_train, X_test, y_train, y_test = train_test_split(
+                            X,
+                            y,
+                            test_size=test_size,
+                            shuffle=False,
+                        )
+                    except ValueError as exc:
+                        st.error(f"Impossible de réaliser la séparation train/test : {exc}")
+                    else:
+                        linear_pipeline = Pipeline(
+                            steps=[
+                                ("scaler", StandardScaler()),
+                                ("model", LinearRegression()),
+                            ]
+                        )
+                        rf_model = RandomForestRegressor(n_estimators=200, random_state=42)
+
+                        linear_pipeline.fit(X_train, y_train)
+                        rf_model.fit(X_train, y_train)
+
+                        y_pred_lin = linear_pipeline.predict(X_test)
+                        y_pred_rf = rf_model.predict(X_test)
+
+                        mse_lin = mean_squared_error(y_test, y_pred_lin)
+                        r2_lin = r2_score(y_test, y_pred_lin)
+                        mse_rf = mean_squared_error(y_test, y_pred_rf)
+                        r2_rf = r2_score(y_test, y_pred_rf)
+
+                        col_lin, col_rf = st.columns(2)
+                        with col_lin:
+                            st.metric("MSE (Régression Linéaire)", f"{mse_lin:.2f}")
+                            st.metric("R² (Régression Linéaire)", f"{r2_lin:.2f}")
+                        with col_rf:
+                            st.metric("MSE (Random Forest)", f"{mse_rf:.2f}")
+                            st.metric("R² (Random Forest)", f"{r2_rf:.2f}")
+
+                        results_df = pd.DataFrame({
+                            "Date": df_period.loc[X_test.index, "Date"],
+                            "Poids Réel": y_test,
+                            "Régression Linéaire": y_pred_lin,
+                            "Random Forest": y_pred_rf,
+                        }).sort_values("Date")
+
+                        fig_compare = px.line(
+                            results_df,
+                            x="Date",
+                            y=["Poids Réel", "Régression Linéaire", "Random Forest"],
+                            title="Comparaison des prédictions",
+                            labels={"value": "Poids (Kgs)", "variable": "Série"},
+                        )
+                        fig_compare = apply_theme(fig_compare, theme)
+                        st.plotly_chart(fig_compare, use_container_width=True)
+
+                        importances = pd.DataFrame(
+                            {
+                                "Feature": X.columns,
+                                "Importance": rf_model.feature_importances_,
+                            }
+                        ).sort_values("Importance", ascending=False)
+
+                        fig_importance = px.bar(
+                            importances,
+                            x="Importance",
+                            y="Feature",
+                            orientation="h",
+                            title="Importance des variables (Random Forest)",
+                        )
+                        fig_importance = apply_theme(fig_importance, theme)
+                        st.plotly_chart(fig_importance, use_container_width=True)
+
+                        with st.expander("Aperçu des features utilisées"):
+                            st.dataframe(X)
 
 #################################
 # 6. Onglet: ANALYSE DE CORRÉLATION
