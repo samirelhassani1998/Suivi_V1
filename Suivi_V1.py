@@ -279,7 +279,7 @@ with tabs[1]:
 #################################
 with tabs[2]:
     st.header("Prévisions")
-    if df.empty or len(df) < 2:
+    if df.empty or len(df) < 3:
         st.warning("Données insuffisantes pour faire des prévisions.")
     else:
         # Conversion de la date en variable numérique pour la régression
@@ -288,7 +288,8 @@ with tabs[2]:
         y = df["Poids (Kgs)"]
 
         # Validation croisée temporelle et régression linéaire
-        tscv = TimeSeriesSplit(n_splits=5)
+        n_splits = min(5, len(df) - 1)
+        tscv = TimeSeriesSplit(n_splits=n_splits)
         lin_scores = cross_val_score(LinearRegression(), X, y, scoring='neg_mean_squared_error', cv=tscv)
         st.write(f"MSE moyen (Régression Linéaire) : **{-lin_scores.mean():.2f}**")
 
@@ -393,12 +394,13 @@ with tabs[3]:
 #################################
 with tabs[4]:
     st.header("Comparaison des Modèles")
-    if df.empty or len(df) < 2:
+    if df.empty or len(df) < 3:
         st.warning("Pas assez de données pour comparer les modèles.")
     else:
         X = df[["Date_numeric"]]
         y = df["Poids (Kgs)"]
-        tscv = TimeSeriesSplit(n_splits=5)
+        n_splits = min(5, len(df) - 1)
+        tscv = TimeSeriesSplit(n_splits=n_splits)
         models = {
             "Régression Linéaire": LinearRegression(),
             "Random Forest": RandomForestRegressor(n_estimators=100, random_state=42)
