@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import pandas as pd
 import streamlit as st
 
 from app.utils import (
@@ -42,13 +43,25 @@ st.markdown(
 def _load_dataset() -> None:
     """Load the dataset and store both raw and filtered versions."""
     if "data_url" not in st.session_state:
-        st.session_state["data_url"] = DATA_URL
+        st.session_state["data_url"] = st.secrets.get("data_url", DATA_URL)
 
     if st.session_state.get("reload_requested"):
         load_data.clear()
         st.session_state.pop("reload_requested")
 
-    df = load_data(st.session_state["data_url"])
+    try:
+        df = load_data(st.session_state["data_url"])
+    except RuntimeError as error:
+        st.error(
+            "Impossible de charger les données distantes. "
+            "Veuillez vérifier la connexion réseau ou réessayer plus tard."
+        )
+        st.caption(str(error))
+        empty_df = pd.DataFrame(columns=["Date", "Poids (Kgs)"])
+        st.session_state["raw_data"] = empty_df
+        st.session_state["filtered_data"] = empty_df
+        st.stop()
+
     st.session_state["raw_data"] = df
     st.session_state["filtered_data"] = df
 
@@ -86,13 +99,17 @@ def _configure_sidebar() -> None:
 
     df = st.session_state.get("raw_data")
     if df is not None and not df.empty:
-        date_min, date_max = get_date_range(df)
-        date_range = st.sidebar.date_input(
-            "Sélectionnez une plage de dates",
-            (date_min, date_max),
-            key="date_range",
-        )
-        st.session_state["filtered_data"] = filter_by_dates(df, date_range)
+        try:
+            date_min, date_max = get_date_range(df)
+            date_range = st.sidebar.date_input(
+                "Sélectionnez une plage de dates",
+                (date_min, date_max),
+                key="date_range",
+            )
+            st.session_state["filtered_data"] = filter_by_dates(df, date_range)
+        except ValueError as error:
+            st.sidebar.error(f"Impossible de déterminer la plage de dates : {error}")
+            st.session_state["filtered_data"] = df
     else:
         st.session_state["filtered_data"] = df
 
@@ -167,13 +184,19 @@ def _configure_sidebar() -> None:
 
 def _register_pages() -> None:
     """Register the Streamlit pages for navigation."""
-    pages = [
-        st.Page("pages/1_Analyse.py", title="Analyse", icon="📊"),
-        st.Page("pages/2_Modeles.py", title="Modèles", icon="🤖"),
-        st.Page("pages/3_Predictions.py", title="Prédictions", icon="📈"),
-    ]
-    navigator = st.navigation(pages)
-    navigator.run()
+    if hasattr(st, "Page") and hasattr(st, "navigation"):
+        pages = [
+            st.Page("pages/1_Analyse.py", title="Analyse", icon="📊"),
+            st.Page("pages/2_Modeles.py", title="Modèles", icon="🤖"),
+            st.Page("pages/3_Predictions.py", title="Prédictions", icon="📈"),
+        ]
+        navigator = st.navigation(pages)
+        navigator.run()
+    else:
+        st.sidebar.info(
+            "Utilisez le menu de navigation Streamlit (colonne de gauche) "
+            "pour accéder aux autres pages."
+        )
 
 
 def main() -> None:

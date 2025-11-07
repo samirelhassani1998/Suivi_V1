@@ -1,31 +1,78 @@
 # Suivi_V1
 
-Application Streamlit pour suivre l'évolution du poids et analyser les données.
-De nouvelles fonctionnalités d'IA et de machine learning permettent d'explorer
-les tendances, de détecter les anomalies et de réaliser des prévisions avancées.
-Une détection d'anomalies configurable (Z-score ou IsolationForest) aide à
-identifier les mesures de poids atypiques.
+Application Streamlit pour analyser l'évolution du poids, détecter les anomalies
+et générer des prévisions à l'aide de modèles statistiques et de machine
+learning.
 
-URL : https://samirelhassani1998-suivi-v1-suivi-v1-knzeqy.streamlit.app/
+- **Application déployée :** https://samirelhassani1998-suivi-v1-suivi-v1-knzeqy.streamlit.app/
+- **Entrée principale :** `streamlit_app.py`
+- **Pages** : `pages/1_Analyse.py`, `pages/2_Modeles.py`, `pages/3_Predictions.py`
 
 ## Prérequis
 
-Utilisez Python 3.11 ou une version plus récente afin de garantir la
-compatibilité avec les bibliothèques listées dans `requirements.txt`.
+- Python 3.10 ou 3.11
+- Accès réseau sortant vers Google Sheets (pour le jeu de données distant)
+- `git` pour récupérer le dépôt
 
-## Installation des dépendances
-
-Installez les paquets nécessaires à l'aide de `pip` :
+## Installation locale
 
 ```bash
+git clone https://github.com/<votre-utilisateur>/Suivi_V1.git
+cd Suivi_V1
+python -m venv .venv
+source .venv/bin/activate  # sous Windows : .venv\Scripts\activate
+pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-## Lancement de l'application
+### Secrets (optionnel)
 
-Exécutez l'application Streamlit avec la commande suivante :
+L'application peut lire une URL de données alternative ou des clés API via
+`.streamlit/secrets.toml`. Inspirez-vous de
+[`.streamlit/secrets.example.toml`](.streamlit/secrets.example.toml) :
+
+```toml
+# .streamlit/secrets.toml
+# data_url = "https://mon-fichier.csv"
+# openai_api_key = "sk-..."
+```
+
+## Lancement de l'application
 
 ```bash
 streamlit run streamlit_app.py
 ```
 
+La commande démarre un serveur local sur http://localhost:8501.
+
+## Déploiement sur Streamlit Cloud
+
+1. Pousser la branche sur GitHub/GitLab.
+2. Créer une application Streamlit Cloud en pointant vers `streamlit_app.py`.
+3. Définir les secrets éventuels directement dans l'interface Streamlit Cloud
+   (onglet **Secrets**).
+4. Déployer. Les dépendances sont contrôlées par `requirements.txt`.
+
+## Tests et qualité
+
+- Le chargement des données est mis en cache (`st.cache_data`) et gère les
+  erreurs réseau.
+- Les pages utilisent des garde-fous lorsqu'il n'y a pas assez de données pour
+  entraîner un modèle.
+- Les dépendances sont épinglées pour garantir un déploiement reproductible.
+
+## Troubleshooting
+
+| Problème | Solution |
+| --- | --- |
+| **Erreur réseau** | Vérifier la connectivité sortante. Configurer `data_url` dans `st.secrets` si besoin. |
+| **`st.Page` manquant** | Mettre à jour Streamlit (>=1.38) ou utiliser le menu multipage natif. |
+| **Dépendances manquantes** | Recréer l'environnement virtuel et réinstaller les paquets depuis `requirements.txt`. |
+| **Quota API** | Ajouter un mécanisme de repli et afficher un message utilisateur (voir `TECH_REPORT.md`). |
+
+## Ressources complémentaires
+
+- [Streamlit Documentation](https://docs.streamlit.io/)
+- [Plotly Express](https://plotly.com/python/plotly-express/)
+- [Scikit-learn](https://scikit-learn.org/stable/)
+- [Statsmodels](https://www.statsmodels.org/)
