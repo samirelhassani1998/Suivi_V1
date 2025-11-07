@@ -8,16 +8,40 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from pandas.errors import EmptyDataError, ParserError
 from scipy import stats
 from sklearn.ensemble import IsolationForest
 
 DATA_URL = "https://docs.google.com/spreadsheets/d/1qPhLKvm4BREErQrm0L38DcZFG4a-K0msSzARVIG_T_U/export?format=csv"
 
+PLOTLY_TEMPLATES = {
+    "Dark": "plotly_dark",
+    "Light": "plotly_white",
+    "Solar": "plotly",
+    "Seaborn": "seaborn",
+}
 
-@st.cache_data(ttl=300)
+
+@st.cache_data(ttl=300, show_spinner=False)
 def load_data(url: str = DATA_URL) -> pd.DataFrame:
-    """Load and clean the dataset from the provided URL."""
-    df = pd.read_csv(url, decimal=",")
+    """Load and clean the dataset from the provided URL.
+
+    The Google Sheets export occasionally returns transient HTTP/empty payload
+    errors.  We normalise the weight column, convert the dates and keep only
+    valid rows.  Any failure is wrapped into a ``RuntimeError`` so that the
+    caller can display a helpful message instead of crashing the Streamlit app.
+    """
+
+    try:
+        df = pd.read_csv(url, decimal=",")
+    except (EmptyDataError, ParserError) as error:
+        raise RuntimeError("Le fichier de données est vide ou invalide.") from error
+    except Exception as error:  # pragma: no cover - network errors vary widely
+        raise RuntimeError("Impossible de télécharger les données distantes.") from error
+
+    if df.empty:
+        raise RuntimeError("Aucune donnée disponible dans la source distante.")
+
     df["Poids (Kgs)"] = (
         df["Poids (Kgs)"]
         .astype(str)
@@ -26,20 +50,25 @@ def load_data(url: str = DATA_URL) -> pd.DataFrame:
     )
     df["Poids (Kgs)"] = pd.to_numeric(df["Poids (Kgs)"], errors="coerce")
     df["Date"] = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce")
-    df = df.dropna(subset=["Poids (Kgs)", "Date"]).sort_values("Date", ascending=True)
+
+    df = (
+        df.dropna(subset=["Poids (Kgs)", "Date"])
+        .drop_duplicates(subset=["Date"], keep="last")
+        .sort_values("Date", ascending=True)
+        .reset_index(drop=True)
+    )
+
+    if df.empty:
+        raise RuntimeError("Les données récupérées ne contiennent aucune date/valeur valide.")
+
     return df
 
 
 def apply_theme(fig: go.Figure, theme_name: str) -> go.Figure:
     """Apply a plotly theme to the provided figure."""
-    theme_templates = {
-        "Dark": "plotly_dark",
-        "Light": "plotly_white",
-        "Solar": "plotly_solar",
-        "Seaborn": "seaborn",
-    }
-    if theme_name in theme_templates:
-        fig.update_layout(template=theme_templates[theme_name])
+    template = PLOTLY_TEMPLATES.get(theme_name)
+    if template:
+        fig.update_layout(template=template)
     fig.update_layout(
         title=dict(font=dict(size=22)),
         margin=dict(l=20, r=20, t=50, b=20),
