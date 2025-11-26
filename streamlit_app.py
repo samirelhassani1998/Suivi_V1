@@ -12,6 +12,7 @@ from app.utils import (
     get_date_range,
     load_data,
 )
+from app.auth import check_password
 
 
 st.set_page_config(page_title="Suivi du Poids Amélioré", layout="wide")
@@ -200,6 +201,9 @@ def _register_pages() -> None:
 
 
 def main() -> None:
+    if not check_password():
+        st.stop()
+
     _load_dataset()
     _configure_sidebar()
 

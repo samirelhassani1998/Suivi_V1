@@ -1,12 +1,15 @@
 # Suivi_V1
 
-Application Streamlit pour analyser l'évolution du poids, détecter les anomalies
-et générer des prévisions à l'aide de modèles statistiques et de machine
-learning.
+Application Streamlit pour analyser l'évolution du poids, détecter les anomalies et générer des prévisions à l'aide de modèles statistiques et de machine learning.
 
 - **Application déployée :** https://samirelhassani1998-suivi-v1-suivi-v1-knzeqy.streamlit.app/
 - **Entrée principale :** `streamlit_app.py`
 - **Pages** : `pages/1_Analyse.py`, `pages/2_Modeles.py`, `pages/3_Predictions.py`
+
+## Accès Sécurisé
+
+L'application est protégée par un mot de passe pour restreindre l'accès aux données.
+**Mot de passe :** `1234567890`
 
 ## Prérequis
 
@@ -17,25 +20,22 @@ learning.
 ## Installation locale
 
 ```bash
-git clone https://github.com/<votre-utilisateur>/Suivi_V1.git
+git clone https://github.com/samirelhassani1998/Suivi_V1.git
 cd Suivi_V1
 python -m venv .venv
-source .venv/bin/activate  # sous Windows : .venv\Scripts\activate
+# Activer l'environnement virtuel :
+# Windows :
+.venv\Scripts\activate
+# Mac/Linux :
+source .venv/bin/activate
+
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
 ### Secrets (optionnel)
 
-L'application peut lire une URL de données alternative ou des clés API via
-`.streamlit/secrets.toml`. Inspirez-vous de
-[`.streamlit/secrets.example.toml`](.streamlit/secrets.example.toml) :
-
-```toml
-# .streamlit/secrets.toml
-# data_url = "https://mon-fichier.csv"
-# openai_api_key = "sk-..."
-```
+L'application peut lire une URL de données alternative ou des clés API via `.streamlit/secrets.toml`. Inspirez-vous de [`.streamlit/secrets.example.toml`](.streamlit/secrets.example.toml).
 
 ## Lancement de l'application
 
@@ -49,17 +49,14 @@ La commande démarre un serveur local sur http://localhost:8501.
 
 1. Pousser la branche sur GitHub/GitLab.
 2. Créer une application Streamlit Cloud en pointant vers `streamlit_app.py`.
-3. Définir les secrets éventuels directement dans l'interface Streamlit Cloud
-   (onglet **Secrets**).
-4. Déployer. Les dépendances sont contrôlées par `requirements.txt`.
+3. Définir les secrets éventuels directement dans l'interface Streamlit Cloud (onglet **Secrets**).
+4. Déployer. Les dépendances sont contrôlées par `requirements.txt` (versions épinglées pour la stabilité).
 
 ## Tests et qualité
 
-- Le chargement des données est mis en cache (`st.cache_data`) et gère les
-  erreurs réseau.
-- Les pages utilisent des garde-fous lorsqu'il n'y a pas assez de données pour
-  entraîner un modèle.
-- Les dépendances sont épinglées pour garantir un déploiement reproductible.
+- **Authentification** : Un module `app/auth.py` gère la sécurité.
+- **Données** : Le chargement est mis en cache (`st.cache_data`) et gère les erreurs réseau.
+- **Dépendances** : `requirements.txt` contient des versions strictes pour éviter les conflits.
 
 ## Troubleshooting
 
@@ -68,7 +65,7 @@ La commande démarre un serveur local sur http://localhost:8501.
 | **Erreur réseau** | Vérifier la connectivité sortante. Configurer `data_url` dans `st.secrets` si besoin. |
 | **`st.Page` manquant** | Mettre à jour Streamlit (>=1.38) ou utiliser le menu multipage natif. |
 | **Dépendances manquantes** | Recréer l'environnement virtuel et réinstaller les paquets depuis `requirements.txt`. |
-| **Quota API** | Ajouter un mécanisme de repli et afficher un message utilisateur (voir `TECH_REPORT.md`). |
+| **Quota API** | Ajouter un mécanisme de repli et afficher un message utilisateur. |
 
 ## Ressources complémentaires
 

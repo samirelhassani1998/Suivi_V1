@@ -1,19 +1,5 @@
 """Analyse page for the multipage Streamlit application."""
 
-from __future__ import annotations
-
-import numpy as np
-import plotly.express as px
-import plotly.graph_objects as go
-import streamlit as st
-
-from app.utils import (
-    apply_theme,
-    convert_df_to_csv,
-    detect_anomalies,
-    load_data,
-)
-
 
 def _get_data():
     df = st.session_state.get("filtered_data")
