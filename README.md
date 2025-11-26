@@ -3,7 +3,7 @@
 Application Streamlit pour analyser l'évolution du poids, détecter les anomalies et générer des prévisions à l'aide de modèles statistiques et de machine learning.
 
 - **Application déployée :** https://samirelhassani1998-suivi-v1-suivi-v1-knzeqy.streamlit.app/
-- **Entrée principale :** `streamlit_app.py`
+- **Entrée principale :** `Suivi_V1.py`
 - **Pages** : `pages/1_Analyse.py`, `pages/2_Modeles.py`, `pages/3_Predictions.py`
 
 ## Accès Sécurisé
@@ -40,7 +40,7 @@ L'application peut lire une URL de données alternative ou des clés API via `.s
 ## Lancement de l'application
 
 ```bash
-streamlit run streamlit_app.py
+streamlit run Suivi_V1.py
 ```
 
 La commande démarre un serveur local sur http://localhost:8501.
@@ -48,7 +48,7 @@ La commande démarre un serveur local sur http://localhost:8501.
 ## Déploiement sur Streamlit Cloud
 
 1. Pousser la branche sur GitHub/GitLab.
-2. Créer une application Streamlit Cloud en pointant vers `streamlit_app.py`.
+2. Créer une application Streamlit Cloud en pointant vers `Suivi_V1.py`.
 3. Définir les secrets éventuels directement dans l'interface Streamlit Cloud (onglet **Secrets**).
 4. Déployer. Les dépendances sont contrôlées par `requirements.txt` (versions épinglées pour la stabilité).
 
