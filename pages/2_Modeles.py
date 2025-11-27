@@ -26,6 +26,8 @@ def _get_data():
     df = st.session_state.get("filtered_data")
     if df is None:
         df = load_data()
+        st.session_state["filtered_data"] = df
+        st.session_state["raw_data"] = df
     return df.copy()
 
 

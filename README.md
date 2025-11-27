@@ -9,6 +9,7 @@ Application Streamlit pour analyser l'évolution du poids, détecter les anomali
 ## Accès Sécurisé
 
 L'application est protégée par un mot de passe pour restreindre l'accès aux données.
+Veuillez contacter l'administrateur pour obtenir les identifiants.
 
 ## Prérequis
 

@@ -13,6 +13,7 @@ if not check_password():
 
 from app.utils import (
     apply_theme,
+    calculate_moving_average,
     convert_df_to_csv,
     detect_anomalies,
     load_data,
@@ -23,6 +24,8 @@ def _get_data():
     df = st.session_state.get("filtered_data")
     if df is None:
         df = load_data()
+        st.session_state["filtered_data"] = df
+        st.session_state["raw_data"] = df
     return df.copy()
 
 
@@ -88,10 +91,7 @@ def render_graphs(df):
     )
 
     df = df.copy()
-    if ma_type == "Simple":
-        df["Poids_MA"] = df["Poids (Kgs)"].rolling(window=window_size, min_periods=1).mean()
-    else:
-        df["Poids_MA"] = df["Poids (Kgs)"].ewm(span=window_size, adjust=False).mean()
+    df["Poids_MA"] = calculate_moving_average(df, "Poids (Kgs)", window_size, ma_type)
 
     fig = px.line(
         df,

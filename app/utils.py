@@ -121,3 +121,53 @@ def filter_by_dates(
         start_date, end_date = map(pd.to_datetime, date_range)
         filtered = df[(df["Date"] >= start_date) & (df["Date"] <= end_date)]
     return filtered
+
+
+def calculate_moving_average(
+    df: pd.DataFrame,
+    column: str,
+    window_size: int,
+    method: str = "Simple",
+) -> pd.Series:
+    """Calculate moving average for a specific column."""
+    if method == "Exponentielle":
+        return df[column].ewm(span=window_size, adjust=False).mean()
+    return df[column].rolling(window=window_size, min_periods=1).mean()
+
+
+def train_linear_regression(
+    df: pd.DataFrame, target_col: str, date_col: str = "Date"
+) -> Tuple[object, float]:
+    """Train a simple linear regression model on date (numeric)."""
+    from sklearn.linear_model import LinearRegression
+    from sklearn.metrics import mean_squared_error
+
+    df = df.copy()
+    df["Date_numeric"] = (df[date_col] - df[date_col].min()) / np.timedelta64(1, "D")
+    X = df[["Date_numeric"]]
+    y = df[target_col]
+
+    model = LinearRegression()
+    model.fit(X, y)
+    predictions = model.predict(X)
+    mse = mean_squared_error(y, predictions)
+    
+    return model, mse
+
+
+def predict_future_linear(
+    model: object,
+    df: pd.DataFrame,
+    days: int,
+    date_col: str = "Date",
+) -> pd.DataFrame:
+    """Generate future predictions using a trained linear model."""
+    last_date = df[date_col].max()
+    start_date = df[date_col].min()
+    
+    future_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=days)
+    future_numeric = (future_dates - start_date) / np.timedelta64(1, "D")
+    
+    predictions = model.predict(future_numeric.values.reshape(-1, 1))
+    return pd.DataFrame({date_col: future_dates, "Prediction": predictions})
+
