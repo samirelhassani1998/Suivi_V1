@@ -80,14 +80,12 @@ def _configure_sidebar() -> None:
         ["Default", "Dark", "Light", "Solar", "Seaborn"],
         key="theme",
     )
-    st.session_state["theme"] = theme
 
     ma_type = st.sidebar.selectbox(
         "Type de moyenne mobile",
         ["Simple", "Exponentielle"],
         key="ma_type",
     )
-    st.session_state["ma_type"] = ma_type
 
     window_size = st.sidebar.slider(
         "Taille de la moyenne mobile (jours)",
@@ -96,7 +94,6 @@ def _configure_sidebar() -> None:
         st.session_state.get("window_size", 7),
         key="window_size",
     )
-    st.session_state["window_size"] = window_size
 
     df = st.session_state.get("raw_data")
     if df is not None and not df.empty:
@@ -152,7 +149,6 @@ def _configure_sidebar() -> None:
         ["Z-score", "IsolationForest"],
         key="anomaly_method",
     )
-    st.session_state["anomaly_method"] = anomaly_method
 
     z_threshold = st.sidebar.slider(
         "Seuil Z-score",
@@ -162,7 +158,6 @@ def _configure_sidebar() -> None:
         step=0.5,
         key="z_threshold",
     )
-    st.session_state["z_threshold"] = z_threshold
 
     calories = st.sidebar.number_input(
         "Calories consommées aujourd'hui",
