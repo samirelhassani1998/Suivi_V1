@@ -1,6 +1,24 @@
 """Analyse page for the multipage Streamlit application."""
 
 
+import streamlit as st
+import plotly.express as px
+import plotly.graph_objects as go
+import numpy as np
+
+from app.auth import check_password
+
+if not check_password():
+    st.stop()
+
+from app.utils import (
+    apply_theme,
+    convert_df_to_csv,
+    detect_anomalies,
+    load_data,
+)
+
+
 def _get_data():
     df = st.session_state.get("filtered_data")
     if df is None:

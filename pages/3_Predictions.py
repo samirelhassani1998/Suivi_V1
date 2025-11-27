@@ -8,6 +8,23 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from pmdarima import auto_arima
+from sklearn.linear_model import LinearRegression
+from sklearn.model_selection import TimeSeriesSplit, cross_val_score
+from sklearn.utils import resample
+from statsmodels.tsa.seasonal import STL
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from statsmodels.tsa.stattools import acf, pacf
+
+from app.auth import check_password
+
+if not check_password():
+    st.stop()
+
+from app.utils import apply_theme, load_data
+
+
+def _get_data():
     df = st.session_state.get("filtered_data")
     if df is None:
         df = load_data()
