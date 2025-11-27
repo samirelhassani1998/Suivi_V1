@@ -6,10 +6,6 @@ Application Streamlit pour analyser l'évolution du poids, détecter les anomali
 - **Entrée principale :** `Suivi_V1.py`
 - **Pages** : `pages/1_Analyse.py`, `pages/2_Modeles.py`, `pages/3_Predictions.py`
 
-## Accès Sécurisé
-
-L'application est protégée par un mot de passe pour restreindre l'accès aux données.
-Veuillez contacter l'administrateur pour obtenir les identifiants.
 
 ## Prérequis
 
