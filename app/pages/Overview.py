@@ -17,6 +17,9 @@ from app.utils import (
     load_data,
 )
 
+if st.secrets.get("debug_mode", False):
+    st.info("DEBUG: Page Overview.py chargée et exécutée.")
+
 
 def _reset_data_cache() -> None:
     """Clear cached data and session copies before retrying a load."""
@@ -38,6 +41,10 @@ def _render_empty_state(title: str, details: str, show_retry: bool = False) -> N
 
 def _get_data():
     """Fetch dataset from session or remote source with resilience."""
+    
+    # DEBUG: Force visual check
+    if st.secrets.get("debug_mode", False):
+        st.info("DEBUG: _get_data() called.")
 
     cached_df = st.session_state.get("filtered_data")
     if cached_df is not None:
@@ -49,15 +56,16 @@ def _get_data():
     with st.spinner("Chargement des données de poids..."):
         try:
             df = load_data(data_url)
-        except RuntimeError as error:
+        except Exception as error:
+            st.error(f"Erreur critique lors du chargement : {error}")
+            if st.secrets.get("debug_mode", False):
+                st.exception(error)
+                
             _render_empty_state(
                 "Impossible de charger les données.",
-                "Vérifiez la connectivité, la permission Google Sheets et la clé `data_url` "
-                "dans `st.secrets`. Configurez `data_url` ou placez votre CSV accessible "
-                "publiquement.",
+                "Vérifiez la connectivité et la configuration. Voir le message d'erreur ci-dessus.",
                 show_retry=True,
             )
-            st.caption(str(error))
             return None
 
     st.session_state["raw_data"] = df
