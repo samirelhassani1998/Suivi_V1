@@ -6,10 +6,7 @@ import plotly.graph_objects as go
 import numpy as np
 import streamlit as st
 
-from app.auth import check_password
 
-if not check_password():
-    st.stop()
 
 from app.utils import (
     apply_theme,

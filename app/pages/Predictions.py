@@ -16,10 +16,7 @@ from statsmodels.tsa.seasonal import STL
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from statsmodels.tsa.stattools import acf, pacf
 
-from app.auth import check_password
 
-if not check_password():
-    st.stop()
 
 from app.utils import apply_theme, load_data
 
