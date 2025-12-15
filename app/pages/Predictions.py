@@ -20,7 +20,8 @@ from statsmodels.tsa.stattools import acf, pacf
 
 from app.utils import apply_theme, load_data
 
-
+# ALWAYS show page proof (non-conditional)
+st.caption(f"PAGE={__file__}")
 def _get_data():
     df = st.session_state.get("filtered_data")
     if df is None:

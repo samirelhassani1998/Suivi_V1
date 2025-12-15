@@ -17,8 +17,8 @@ from app.utils import (
     load_data,
 )
 
-if st.secrets.get("debug_mode", False):
-    st.info("DEBUG: Page Overview.py chargée et exécutée.")
+# ALWAYS show page proof (non-conditional)
+st.caption(f"PAGE={__file__}")
 
 
 def _reset_data_cache() -> None:
@@ -324,8 +324,15 @@ def main():
         )
         return
 
-    st.write(f"**Nombre total de lignes chargées :** {df.shape[0]}")
-    st.write("Aperçu des dernières lignes :", df.tail())
+    # Data Health Check
+    st.subheader("📊 Données Chargées")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Lignes", df.shape[0])
+    col2.metric("Première Date", df["Date"].min().strftime("%d/%m/%Y") if not df.empty else "N/A")
+    col3.metric("Dernière Date", df["Date"].max().strftime("%d/%m/%Y") if not df.empty else "N/A")
+    
+    with st.expander("Aperçu des données brutes"):
+        st.dataframe(df.tail(10))
 
     render_summary(df)
     render_graphs(df)
