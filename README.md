@@ -30,8 +30,9 @@ L'application est protégée par un mot de passe (défini dans `secrets.toml` ou
     ```
 
 3.  **Configurer les secrets** :
-    - Copiez `.streamlit/secrets.toml.example` vers `.streamlit/secrets.toml`.
-    - Modifiez-le avec votre URL et mot de passe.
+    - Copiez le contenu de `.streamlit/secrets.toml.example`.
+    - Créez un fichier `.streamlit/secrets.toml` localement.
+    - Remplissez le mot de passe dans la section `[auth]`.
 
 ## Lancement
 
@@ -43,7 +44,11 @@ streamlit run Suivi_V1.py
 
 1. Poussez sur GitHub.
 2. Déployez sur Streamlit Cloud en pointant sur `Suivi_V1.py`.
-3. Ajoutez vos secrets dans la configuration de l'application Cloud.
+3. Ajoutez vos secrets dans la configuration de l'application Cloud (Settings -> Secrets) :
+   ```toml
+   [auth]
+   password = "votre_mot_de_passe"
+   ```
 
 ## Qualité & Robustesse
 
