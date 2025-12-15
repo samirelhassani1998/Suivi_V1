@@ -12,11 +12,10 @@ from app.utils import (
     apply_theme,
     calculate_moving_average,
     convert_df_to_csv,
-    detect_anomalies,
     DATA_URL,
     load_data,
-    show_deployment_info,
 )
+from app.deploy import show_deployment_info
 
 # ALWAYS show page proof (non-conditional)
 st.caption(f"PAGE={__file__}")

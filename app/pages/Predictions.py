@@ -18,7 +18,8 @@ from statsmodels.tsa.stattools import acf, pacf
 
 
 
-from app.utils import apply_theme, load_data, show_deployment_info
+from app.utils import apply_theme, load_data
+from app.deploy import show_deployment_info
 
 # ALWAYS show page proof (non-conditional)
 st.caption(f"PAGE={__file__}")
