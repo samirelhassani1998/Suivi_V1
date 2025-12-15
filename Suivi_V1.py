@@ -177,6 +177,15 @@ def _configure_sidebar() -> None:
         calories - calories_burned,
         "kcal",
     )
+    
+    st.sidebar.markdown("---")
+    with st.sidebar.expander("État du système", expanded=False):
+        st.write(f"Python: {st.secrets.get('python_version', '3.9+')}")
+        st.write(f"Streamlit: {st.__version__}")
+        if "password" in st.secrets:
+             st.success("Secrets: Configuré")
+        else:
+             st.error("Secrets: Manquant")
 
 
 def _register_pages() -> None:
