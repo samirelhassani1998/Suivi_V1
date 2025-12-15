@@ -1,10 +1,10 @@
 """Analyse page for the multipage Streamlit application."""
 
 
-import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
+import streamlit as st
 
 from app.auth import check_password
 
@@ -16,23 +16,65 @@ from app.utils import (
     calculate_moving_average,
     convert_df_to_csv,
     detect_anomalies,
+    DATA_URL,
     load_data,
 )
 
 
+def _reset_data_cache() -> None:
+    """Clear cached data and session copies before retrying a load."""
+
+    load_data.clear()
+    st.session_state.pop("filtered_data", None)
+    st.session_state.pop("raw_data", None)
+
+
+def _render_empty_state(title: str, details: str, show_retry: bool = False) -> None:
+    """Display a guided empty/error state with optional retry button."""
+
+    st.warning(title)
+    st.info(details)
+    if show_retry and st.button("↻ Réessayer le chargement", type="primary"):
+        _reset_data_cache()
+        st.rerun()
+
+
 def _get_data():
-    df = st.session_state.get("filtered_data")
-    if df is None:
-        df = load_data()
-        st.session_state["filtered_data"] = df
-        st.session_state["raw_data"] = df
+    """Fetch dataset from session or remote source with resilience."""
+
+    cached_df = st.session_state.get("filtered_data")
+    if cached_df is not None:
+        return cached_df.copy()
+
+    data_url = st.session_state.get("data_url") or st.secrets.get("data_url", DATA_URL)
+    st.session_state["data_url"] = data_url
+
+    with st.spinner("Chargement des données de poids..."):
+        try:
+            df = load_data(data_url)
+        except RuntimeError as error:
+            _render_empty_state(
+                "Impossible de charger les données.",
+                "Vérifiez la connectivité, la permission Google Sheets et la clé `data_url` "
+                "dans `st.secrets`. Configurez `data_url` ou placez votre CSV accessible "
+                "publiquement.",
+                show_retry=True,
+            )
+            st.caption(str(error))
+            return None
+
+    st.session_state["raw_data"] = df
+    st.session_state["filtered_data"] = df
     return df.copy()
 
 
 def render_summary(df):
     st.header("Résumé")
     if df.empty:
-        st.warning("Aucune donnée disponible.")
+        _render_empty_state(
+            "Aucune donnée disponible.",
+            "Ajoutez des lignes avec les colonnes `Date` (jj/mm/aaaa) et `Poids (Kgs)`.",
+        )
         return
 
     height_m = st.session_state.get("height_m", 1.82)
@@ -238,6 +280,27 @@ def render_correlation(df):
 
 def main():
     df = _get_data()
+    if df is None:
+        return
+
+    expected_columns = {"Date", "Poids (Kgs)"}
+    missing_columns = expected_columns - set(df.columns)
+    if missing_columns:
+        _render_empty_state(
+            "Colonnes manquantes pour afficher les analyses.",
+            "Le fichier doit contenir les colonnes `Date` et `Poids (Kgs)` (séparateur point ou virgule).",
+            show_retry=True,
+        )
+        return
+
+    if df.empty:
+        _render_empty_state(
+            "Aucune donnée de poids disponible.",
+            "Ajoutez des mesures de poids à la source ou chargez un CSV avec les colonnes attendues.",
+            show_retry=True,
+        )
+        return
+
     st.write(f"**Nombre total de lignes chargées :** {df.shape[0]}")
     st.write("Aperçu des dernières lignes :", df.tail())
 
