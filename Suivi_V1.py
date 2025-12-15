@@ -15,7 +15,7 @@ from app.utils import (
 from app.auth import check_password
 
 
-st.set_page_config(page_title="Suivi du Poids Amélioré", layout="wide")
+st.set_page_config(page_title="Suivi & Analyses du Poids", layout="wide")
 
 st.markdown(
     """
@@ -43,6 +43,7 @@ st.markdown(
 
 def _load_dataset() -> None:
     """Load the dataset and store both raw and filtered versions."""
+
     if "data_url" not in st.session_state:
         st.session_state["data_url"] = st.secrets.get("data_url", DATA_URL)
 
@@ -50,18 +51,19 @@ def _load_dataset() -> None:
         load_data.clear()
         st.session_state.pop("reload_requested")
 
-    try:
-        df = load_data(st.session_state["data_url"])
-    except RuntimeError as error:
-        st.error(
-            "Impossible de charger les données distantes. "
-            "Veuillez vérifier la connexion réseau ou réessayer plus tard."
-        )
-        st.caption(str(error))
-        empty_df = pd.DataFrame(columns=["Date", "Poids (Kgs)"])
-        st.session_state["raw_data"] = empty_df
-        st.session_state["filtered_data"] = empty_df
-        st.stop()
+    with st.spinner("Chargement des données de poids..."):
+        try:
+            df = load_data(st.session_state["data_url"])
+        except RuntimeError as error:
+            st.error(
+                "Impossible de charger les données distantes. "
+                "Veuillez vérifier la connexion réseau ou réessayer plus tard."
+            )
+            st.caption(str(error))
+            empty_df = pd.DataFrame(columns=["Date", "Poids (Kgs)"])
+            st.session_state["raw_data"] = empty_df
+            st.session_state["filtered_data"] = empty_df
+            st.stop()
 
     st.session_state["raw_data"] = df
     st.session_state["filtered_data"] = df
@@ -179,20 +181,38 @@ def _configure_sidebar() -> None:
 
 
 def _register_pages() -> None:
-    """Register the Streamlit pages for navigation."""
+    """Register the Streamlit pages for navigation with explicit labels."""
+
+    analyse_page = ("pages/1_Analyse.py", "Suivi & Analyses du poids", "📊")
+    model_page = ("pages/2_Modeles.py", "Modèles prédictifs", "🤖")
+    prediction_page = ("pages/3_Predictions.py", "Prévisions du poids", "📈")
+
     if hasattr(st, "Page") and hasattr(st, "navigation"):
         pages = [
-            st.Page("pages/1_Analyse.py", title="Analyse", icon="📊"),
-            st.Page("pages/2_Modeles.py", title="Modèles", icon="🤖"),
-            st.Page("pages/3_Predictions.py", title="Prédictions", icon="📈"),
+            st.Page(analyse_page[0], title=analyse_page[1], icon=analyse_page[2]),
+            st.Page(model_page[0], title=model_page[1], icon=model_page[2]),
+            st.Page(prediction_page[0], title=prediction_page[1], icon=prediction_page[2]),
         ]
         navigator = st.navigation(pages)
         navigator.run()
     else:
-        st.sidebar.info(
-            "Utilisez le menu de navigation Streamlit (colonne de gauche) "
-            "pour accéder aux autres pages."
-        )
+        if hasattr(st.sidebar, "page_link"):
+            st.sidebar.page_link(
+                analyse_page[0], label=f"{analyse_page[2]} {analyse_page[1]}"
+            )
+            st.sidebar.page_link(
+                model_page[0], label=f"{model_page[2]} {model_page[1]}"
+            )
+            st.sidebar.page_link(
+                prediction_page[0], label=f"{prediction_page[2]} {prediction_page[1]}"
+            )
+        else:
+            st.sidebar.markdown("## Navigation")
+            st.sidebar.markdown(f"[{analyse_page[2]} {analyse_page[1]}]({analyse_page[0]})")
+            st.sidebar.markdown(f"[{model_page[2]} {model_page[1]}]({model_page[0]})")
+            st.sidebar.markdown(
+                f"[{prediction_page[2]} {prediction_page[1]}]({prediction_page[0]})"
+            )
 
 
 def main() -> None:
@@ -201,16 +221,35 @@ def main() -> None:
 
     _load_dataset()
     _configure_sidebar()
+    _register_pages()
 
-    st.title("Suivi de l'Évolution du Poids")
+    st.title("Suivi & Analyses du Poids")
     st.markdown(
         """
-        Suivez votre poids, calculez votre IMC, visualisez des tendances, réalisez des prévisions et détectez des anomalies.
-        Utilisez la navigation pour accéder aux différentes analyses.
+        Retrouvez vos courbes de poids, IMC, anomalies et prévisions en un clic.
+        La page d'analyses rassemble toutes les visualisations clés pour suivre vos progrès.
         """
     )
 
-    _register_pages()
+    if hasattr(st, "page_link"):
+        st.page_link(
+            "pages/1_Analyse.py",
+            label="📊 Accéder directement aux analyses du poids",
+            icon="📊",
+        )
+    else:
+        st.markdown("[📊 Accéder directement aux analyses du poids](pages/1_Analyse.py)")
+
+    st.markdown("---")
+    st.subheader("Navigation rapide")
+    if hasattr(st, "page_link"):
+        st.page_link("pages/1_Analyse.py", label="📊 Suivi & Analyses du poids", icon="📊")
+        st.page_link("pages/2_Modeles.py", label="🤖 Modèles prédictifs", icon="🤖")
+        st.page_link("pages/3_Predictions.py", label="📈 Prévisions du poids", icon="📈")
+    else:
+        st.markdown("[📊 Suivi & Analyses du poids](pages/1_Analyse.py)")
+        st.markdown("[🤖 Modèles prédictifs](pages/2_Modeles.py)")
+        st.markdown("[📈 Prévisions du poids](pages/3_Predictions.py)")
 
     st.markdown("---")
     st.markdown("**Sources et Références :**")
