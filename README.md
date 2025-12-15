@@ -47,8 +47,10 @@ streamlit run Suivi_V1.py
 3. Ajoutez vos secrets dans la configuration de l'application Cloud (Settings -> Secrets) :
    ```toml
    [auth]
+   required = true
    password = "votre_mot_de_passe"
    ```
+   *Astuce : pour activer le mode démo sans mot de passe, mettez `required = false`.*
 
 ## Qualité & Robustesse
 
