@@ -14,10 +14,7 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import TimeSeriesSplit, cross_val_score
 
-from app.auth import check_password
 
-if not check_password():
-    st.stop()
 
 from app.utils import apply_theme, load_data
 
