@@ -32,15 +32,21 @@ def load_data(url: str = DATA_URL) -> pd.DataFrame:
     caller can display a helpful message instead of crashing the Streamlit app.
     """
 
+    url = st.secrets.get("data_url", url)
+
     try:
         df = pd.read_csv(url, decimal=",")
-    except (EmptyDataError, ParserError) as error:
+    except (EmptyDataError, ParserError, ValueError) as error:
         raise RuntimeError("Le fichier de données est vide ou invalide.") from error
-    except Exception as error:  # pragma: no cover - network errors vary widely
+    except Exception as error:  # pragma: no cover
         raise RuntimeError("Impossible de télécharger les données distantes.") from error
 
     if df.empty:
         raise RuntimeError("Aucune donnée disponible dans la source distante.")
+
+    # Robust column cleaning
+    if "Poids (Kgs)" not in df.columns or "Date" not in df.columns:
+         raise RuntimeError("Le fichier ne contient pas les colonnes requises ('Poids (Kgs)', 'Date').")
 
     df["Poids (Kgs)"] = (
         df["Poids (Kgs)"]

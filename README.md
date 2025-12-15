@@ -4,55 +4,52 @@ Application Streamlit pour analyser l'évolution du poids, détecter les anomali
 
 - **Application déployée :** https://samirelhassani1998-suivi-v1-suivi-v1-knzeqy.streamlit.app/
 - **Entrée principale :** `Suivi_V1.py`
-- **Pages** : `pages/1_Analyse.py`, `pages/2_Modeles.py`, `pages/3_Predictions.py`
+- **Architecture** : `app/pages/` contient les modules de page (`Analyse`, `Modeles`, `Predictions`).
+- **Navigation** : Gérée via `st.navigation` dans `Suivi_V1.py`.
 
+## Accès Sécurisé
+
+L'application est protégée par un mot de passe (défini dans `secrets.toml` ou par défaut).
 
 ## Prérequis
 
 - Python 3.10 ou 3.11
-- Accès réseau sortant vers Google Sheets (pour le jeu de données distant)
-- `git` pour récupérer le dépôt
+- Accès réseau sortant vers Google Sheets.
 
 ## Installation locale
 
-```bash
-git clone https://github.com/samirelhassani1998/Suivi_V1.git
-cd Suivi_V1
-python -m venv .venv
-# Activer l'environnement virtuel :
-# Windows :
-.venv\Scripts\activate
-# Mac/Linux :
-source .venv/bin/activate
+1.  **Cloner le dépôt** :
+    ```bash
+    git clone https://github.com/samirelhassani1998/Suivi_V1.git
+    cd Suivi_V1
+    ```
 
-pip install --upgrade pip
-pip install -r requirements.txt
-```
+2.  **Installer les dépendances** :
+    ```bash
+    pip install -r requirements.txt
+    ```
 
-### Secrets (optionnel)
+3.  **Configurer les secrets** :
+    - Copiez `.streamlit/secrets.toml.example` vers `.streamlit/secrets.toml`.
+    - Modifiez-le avec votre URL et mot de passe.
 
-L'application peut lire une URL de données alternative ou des clés API via `.streamlit/secrets.toml`. Inspirez-vous de [`.streamlit/secrets.example.toml`](.streamlit/secrets.example.toml).
-
-## Lancement de l'application
+## Lancement
 
 ```bash
 streamlit run Suivi_V1.py
 ```
 
-La commande démarre un serveur local sur http://localhost:8501.
+## Déploiement
 
-## Déploiement sur Streamlit Cloud
+1. Poussez sur GitHub.
+2. Déployez sur Streamlit Cloud en pointant sur `Suivi_V1.py`.
+3. Ajoutez vos secrets dans la configuration de l'application Cloud.
 
-1. Pousser la branche sur GitHub/GitLab.
-2. Créer une application Streamlit Cloud en pointant vers `Suivi_V1.py`.
-3. Définir les secrets éventuels directement dans l'interface Streamlit Cloud (onglet **Secrets**).
-4. Déployer. Les dépendances sont contrôlées par `requirements.txt` (versions épinglées pour la stabilité).
+## Qualité & Robustesse
 
-## Tests et qualité
-
-- **Authentification** : Un module `app/auth.py` gère la sécurité.
-- **Données** : Le chargement est mis en cache (`st.cache_data`) et gère les erreurs réseau.
-- **Dépendances** : `requirements.txt` contient des versions strictes pour éviter les conflits.
+- **Navigation** : Centralisée et robuste (pas de conflits `pages/`).
+- **Données** : Gestion des erreurs et chargement résilient.
+- **Sécurité** : Pas de secrets en dur (utilisation de `st.secrets`).
 
 ## Troubleshooting
 

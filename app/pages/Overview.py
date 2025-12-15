@@ -94,11 +94,29 @@ def render_summary(df):
     progress_percent = (weight_lost / total_weight_to_lose) * 100
     current_bmi = current_weight / (height_m ** 2)
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Poids Actuel", f"{current_weight:.2f} Kgs")
-    col2.metric("Objectif Final", f"{target_weights[-1]:.2f} Kgs")
-    col3.metric("Progrès (%)", f"{progress_percent:.2f} %")
-    col4.metric("IMC Actuel", f"{current_bmi:.2f}")
+    # Calcul des variations
+    def get_variation(days_ago: int) -> float | None:
+        target_date = df["Date"].iloc[-1] - pd.Timedelta(days=days_ago)
+        # Trouver la date la plus proche
+        closest_idx = (df["Date"] - target_date).abs().idxmin()
+        closest_date = df["Date"].iloc[closest_idx]
+        
+        # Si la date est trop éloignée (> 2 jours d'écart), on ignore
+        if abs((closest_date - target_date).days) > 2:
+            return None
+            
+        old_weight = df["Poids (Kgs)"].iloc[closest_idx]
+        return current_weight - old_weight
+
+    var_7d = get_variation(7)
+    var_30d = get_variation(30)
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("Poids Actuel", f"{current_weight:.2f} kg", f"{current_weight - df['Poids (Kgs)'].iloc[-2]:.2f} kg" if len(df) > 1 else None, delta_color="inverse")
+    col2.metric("Objectif", f"{target_weights[-1]:.2f} kg")
+    col3.metric("7 Jours", f"{var_7d:+.2f} kg" if var_7d is not None else "N/A", delta_color="inverse")
+    col4.metric("30 Jours", f"{var_30d:+.2f} kg" if var_30d is not None else "N/A", delta_color="inverse")
+    col5.metric("IMC", f"{current_bmi:.2f}")
 
     st.progress(min(max(progress_percent / 100, 0.0), 1.0))
     st.caption(f"Avancement vers l'objectif final : {progress_percent:.1f}%")
