@@ -15,6 +15,7 @@ from app.utils import (
     detect_anomalies,
     DATA_URL,
     load_data,
+    show_deployment_info,
 )
 
 # ALWAYS show page proof (non-conditional)
@@ -58,8 +59,7 @@ def _get_data():
             df = load_data(data_url)
         except Exception as error:
             st.error(f"Erreur critique lors du chargement : {error}")
-            if st.secrets.get("debug_mode", False):
-                st.exception(error)
+            st.exception(error)
                 
             _render_empty_state(
                 "Impossible de charger les données.",
@@ -306,6 +306,16 @@ def main():
     if df is None:
         return
 
+    # Data Health Check
+    st.subheader("📊 Données Chargées")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Lignes", df.shape[0])
+    col2.metric("Première Date", df["Date"].min().strftime("%d/%m/%Y") if not df.empty else "N/A")
+    col3.metric("Dernière Date", df["Date"].max().strftime("%d/%m/%Y") if not df.empty else "N/A")
+    
+    with st.expander("Aperçu des données brutes"):
+        st.dataframe(df.tail(10))
+
     expected_columns = {"Date", "Poids (Kgs)"}
     missing_columns = expected_columns - set(df.columns)
     if missing_columns:
@@ -324,16 +334,6 @@ def main():
         )
         return
 
-    # Data Health Check
-    st.subheader("📊 Données Chargées")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Lignes", df.shape[0])
-    col2.metric("Première Date", df["Date"].min().strftime("%d/%m/%Y") if not df.empty else "N/A")
-    col3.metric("Dernière Date", df["Date"].max().strftime("%d/%m/%Y") if not df.empty else "N/A")
-    
-    with st.expander("Aperçu des données brutes"):
-        st.dataframe(df.tail(10))
-
     render_summary(df)
     render_graphs(df)
     render_anomalies(df)
@@ -341,5 +341,8 @@ def main():
     render_download(df)
 
 
+
 if __name__ == "__main__":
     main()
+main()
+show_deployment_info()
