@@ -6,6 +6,7 @@ from typing import Iterable, Tuple
 
 import numpy as np
 import pandas as pd
+from pandas.errors import EmptyDataError, ParserError
 import plotly.graph_objects as go
 import streamlit as st
 

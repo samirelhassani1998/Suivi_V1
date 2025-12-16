@@ -1,6 +1,7 @@
 """Analyse page for the multipage Streamlit application."""
 
 
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
@@ -13,6 +14,7 @@ from app.utils import (
     calculate_moving_average,
     convert_df_to_csv,
     DATA_URL,
+    detect_anomalies,
     load_data,
 )
 from app.deploy import show_deployment_info
