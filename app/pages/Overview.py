@@ -1,6 +1,7 @@
 """Analyse page for the multipage Streamlit application."""
 
 
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
@@ -12,11 +13,11 @@ from app.utils import (
     apply_theme,
     calculate_moving_average,
     convert_df_to_csv,
-    detect_anomalies,
     DATA_URL,
+    detect_anomalies,
     load_data,
-    show_deployment_info,
 )
+from app.deploy import show_deployment_info
 
 # ALWAYS show page proof (non-conditional)
 st.caption(f"PAGE={__file__}")

@@ -6,31 +6,12 @@ from typing import Iterable, Tuple
 
 import numpy as np
 import pandas as pd
+from pandas.errors import EmptyDataError, ParserError
 import plotly.graph_objects as go
 import streamlit as st
-import subprocess
-import streamlit as st
-from pandas.errors import EmptyDataError, ParserError
 
-def get_commit_sha() -> str:
-    """Get the short commit SHA for version tracking."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        return result.stdout.strip() or "unknown"
-    except Exception:
-        return "unknown"
-
-def show_deployment_info():
-    """Show deployment info (footer)."""
-    st.divider()
-    st.caption(f"Streamlit v{st.__version__} | Commit: {get_commit_sha()}")
 from scipy import stats
-from sklearn.ensemble import IsolationForest
+from sklearn.ensemble import IsolationForest 
 
 DATA_URL = "https://docs.google.com/spreadsheets/d/1qPhLKvm4BREErQrm0L38DcZFG4a-K0msSzARVIG_T_U/export?format=csv"
 
