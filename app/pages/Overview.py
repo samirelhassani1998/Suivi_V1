@@ -1,6 +1,8 @@
 """Analyse page for the multipage Streamlit application."""
 
 
+from typing import Optional
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -101,7 +103,7 @@ def render_summary(df):
     current_bmi = current_weight / (height_m ** 2)
 
     # Calcul des variations
-    def get_variation(days_ago: int) -> float | None:
+    def get_variation(days_ago: int) -> Optional[float]:
         target_date = df["Date"].iloc[-1] - pd.Timedelta(days=days_ago)
         # Trouver la date la plus proche
         closest_idx = (df["Date"] - target_date).abs().idxmin()
