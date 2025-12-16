@@ -1,5 +1,6 @@
 """Analyse page for the multipage Streamlit application."""
 
+from __future__ import annotations
 
 from typing import Optional
 
