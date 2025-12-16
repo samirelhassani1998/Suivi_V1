@@ -22,8 +22,9 @@ from app.utils import (
 )
 from app.deploy import show_deployment_info
 
-# ALWAYS show page proof (non-conditional)
-st.caption(f"PAGE={__file__}")
+# Debug: show page path only if debug_mode is enabled
+if st.secrets.get("debug_mode", False):
+    st.caption(f"PAGE={__file__}")
 
 
 def _reset_data_cache() -> None:
@@ -95,40 +96,70 @@ def render_summary(df):
     initial_weight = df["Poids (Kgs)"].iloc[0]
     current_weight = df["Poids (Kgs)"].iloc[-1]
     weight_lost = initial_weight - current_weight
-    total_weight_to_lose = (
-        initial_weight - target_weights[-1]
-        if initial_weight > target_weights[-1]
-        else 1.0
-    )
-    progress_percent = (weight_lost / total_weight_to_lose) * 100
+    
+    # Progress calculation with proper bounds
+    final_target = target_weights[-1]
+    if initial_weight > final_target:
+        # Weight loss goal
+        total_to_lose = initial_weight - final_target
+        progress_percent = (weight_lost / total_to_lose) * 100 if total_to_lose > 0 else 0
+    else:
+        # Weight gain goal or already at target
+        total_to_gain = final_target - initial_weight
+        weight_gained = current_weight - initial_weight
+        progress_percent = (weight_gained / total_to_gain) * 100 if total_to_gain > 0 else 100
+    
+    # Bound progress to [0, 100]%
+    progress_percent = max(0.0, min(100.0, progress_percent))
     current_bmi = current_weight / (height_m ** 2)
 
-    # Calcul des variations
-    def get_variation(days_ago: int) -> Optional[float]:
-        target_date = df["Date"].iloc[-1] - pd.Timedelta(days=days_ago)
-        # Trouver la date la plus proche
-        closest_idx = (df["Date"] - target_date).abs().idxmin()
-        closest_date = df["Date"].iloc[closest_idx]
+    # Calcul des variations avec logging
+    def get_variation(days_ago: int) -> tuple[Optional[float], str]:
+        """Calculate weight variation from days_ago. Returns (variation, info_message)."""
+        last_date = df["Date"].iloc[-1]
+        target_date = last_date - pd.Timedelta(days=days_ago)
         
-        # Si la date est trop éloignée (> 2 jours d'écart), on ignore
-        if abs((closest_date - target_date).days) > 2:
-            return None
+        # Find nearest date using proper index access
+        date_diffs = (df["Date"] - target_date).abs()
+        closest_idx = date_diffs.idxmin()
+        closest_date = df.loc[closest_idx, "Date"]
+        
+        # Calculate actual days difference
+        days_diff = abs((closest_date - target_date).days)
+        
+        # Tolerance: allow up to 3 days difference
+        if days_diff > 3:
+            return None, f"Pas de mesure dans les {days_ago}j (±3j)"
             
-        old_weight = df["Poids (Kgs)"].iloc[closest_idx]
-        return current_weight - old_weight
+        old_weight = df.loc[closest_idx, "Poids (Kgs)"]
+        variation = current_weight - old_weight
+        info = f"Comparé au {closest_date.strftime('%d/%m')} ({days_diff}j d'écart)"
+        return variation, info
 
-    var_7d = get_variation(7)
-    var_30d = get_variation(30)
+    var_7d, info_7d = get_variation(7)
+    var_30d, info_30d = get_variation(30)
 
     col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Poids Actuel", f"{current_weight:.2f} kg", f"{current_weight - df['Poids (Kgs)'].iloc[-2]:.2f} kg" if len(df) > 1 else None, delta_color="inverse")
-    col2.metric("Objectif", f"{target_weights[-1]:.2f} kg")
-    col3.metric("7 Jours", f"{var_7d:+.2f} kg" if var_7d is not None else "N/A", delta_color="inverse")
-    col4.metric("30 Jours", f"{var_30d:+.2f} kg" if var_30d is not None else "N/A", delta_color="inverse")
+    col2.metric("Objectif", f"{final_target:.2f} kg")
+    col3.metric("7 Jours", f"{var_7d:+.2f} kg" if var_7d is not None else "N/A", delta_color="inverse", help=info_7d)
+    col4.metric("30 Jours", f"{var_30d:+.2f} kg" if var_30d is not None else "N/A", delta_color="inverse", help=info_30d)
     col5.metric("IMC", f"{current_bmi:.2f}")
 
-    st.progress(min(max(progress_percent / 100, 0.0), 1.0))
+    st.progress(progress_percent / 100)
     st.caption(f"Avancement vers l'objectif final : {progress_percent:.1f}%")
+    
+    # Help expander explaining the calculation logic
+    with st.expander("ℹ️ Comment sont calculées les variations ?"):
+        st.markdown("""
+        **Variation 7j/30j** : Compare le poids actuel au poids mesuré le plus proche de J-7 ou J-30.
+        - Tolérance : ±3 jours maximum
+        - Si aucune mesure n'est trouvée dans cette plage, "N/A" est affiché
+        
+        **Avancement** : Pourcentage de progression vers l'objectif final.
+        - Borné entre 0% et 100%
+        - Poids initial : {:.2f} kg | Objectif : {:.2f} kg
+        """.format(initial_weight, final_target))
 
     with st.expander("Afficher les Statistiques Descriptives"):
         st.dataframe(df["Poids (Kgs)"].describe())
