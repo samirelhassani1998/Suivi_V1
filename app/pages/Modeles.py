@@ -19,8 +19,9 @@ from sklearn.model_selection import TimeSeriesSplit, cross_val_score
 from app.utils import apply_theme, load_data
 from app.deploy import show_deployment_info
 
-# ALWAYS show page proof (non-conditional)
-st.caption(f"PAGE={__file__}")
+# Debug: show page path only if debug_mode is enabled
+if st.secrets.get("debug_mode", False):
+    st.caption(f"PAGE={__file__}")
 def _get_data():
     df = st.session_state.get("filtered_data")
     if df is None:
