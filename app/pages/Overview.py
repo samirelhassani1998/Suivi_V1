@@ -138,6 +138,29 @@ def render_summary(df):
 
     var_7d, info_7d = get_variation(7)
     var_30d, info_30d = get_variation(30)
+    
+    # QW-AI-1: Rolling statistics with trend indicator
+    def get_trend_indicator(df_col: pd.Series, window: int = 7) -> tuple[str, str, float]:
+        """Calculate trend from rolling mean. Returns (icon, description, trend_value)."""
+        if len(df_col) < window + 1:
+            return "➖", "Données insuffisantes", 0.0
+        rolling = df_col.rolling(window).mean()
+        if rolling.isna().all():
+            return "➖", "Données insuffisantes", 0.0
+        # Compare last 2 rolling values
+        recent = rolling.dropna()
+        if len(recent) < 2:
+            return "➖", "Données insuffisantes", 0.0
+        trend = recent.iloc[-1] - recent.iloc[-2]
+        if trend < -0.1:
+            return "📉", "Tendance à la baisse", trend
+        elif trend > 0.1:
+            return "📈", "Tendance à la hausse", trend
+        else:
+            return "➡️", "Stable", trend
+    
+    trend_7d_icon, trend_7d_desc, trend_7d_val = get_trend_indicator(df["Poids (Kgs)"], 7)
+    trend_30d_icon, trend_30d_desc, trend_30d_val = get_trend_indicator(df["Poids (Kgs)"], 30)
 
     col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Poids Actuel", f"{current_weight:.2f} kg", f"{current_weight - df['Poids (Kgs)'].iloc[-2]:.2f} kg" if len(df) > 1 else None, delta_color="inverse")
@@ -149,12 +172,78 @@ def render_summary(df):
     st.progress(progress_percent / 100)
     st.caption(f"Avancement vers l'objectif final : {progress_percent:.1f}%")
     
+    # QW-AI-1: Display trend indicators
+    st.markdown("---")
+    st.subheader("📊 Tendances")
+    tcol1, tcol2 = st.columns(2)
+    with tcol1:
+        st.metric(
+            "Tendance 7 jours", 
+            f"{trend_7d_icon} {trend_7d_val:+.2f} kg" if trend_7d_val != 0 else f"{trend_7d_icon} Stable",
+            help=trend_7d_desc
+        )
+    with tcol2:
+        st.metric(
+            "Tendance 30 jours", 
+            f"{trend_30d_icon} {trend_30d_val:+.2f} kg" if trend_30d_val != 0 else f"{trend_30d_icon} Stable",
+            help=trend_30d_desc
+        )
+    
+    # QW-AI-2: Week-over-week comparison
+    st.markdown("---")
+    st.subheader("📅 Comparaison Hebdomadaire")
+    
+    def get_week_stats(df: pd.DataFrame, weeks_ago: int = 0) -> tuple[Optional[float], Optional[float], int]:
+        """Get mean weight and std for a specific week. Returns (mean, std, count)."""
+        last_date = df["Date"].max()
+        week_end = last_date - pd.Timedelta(weeks=weeks_ago)
+        week_start = week_end - pd.Timedelta(days=6)
+        week_data = df[(df["Date"] >= week_start) & (df["Date"] <= week_end)]["Poids (Kgs)"]
+        if week_data.empty:
+            return None, None, 0
+        return week_data.mean(), week_data.std(), len(week_data)
+    
+    this_week_mean, this_week_std, this_week_n = get_week_stats(df, 0)
+    last_week_mean, last_week_std, last_week_n = get_week_stats(df, 1)
+    
+    wcol1, wcol2, wcol3 = st.columns(3)
+    with wcol1:
+        if this_week_mean is not None:
+            st.metric("Cette semaine", f"{this_week_mean:.2f} kg", help=f"{this_week_n} mesures")
+        else:
+            st.metric("Cette semaine", "N/A", help="Aucune mesure cette semaine")
+    with wcol2:
+        if last_week_mean is not None:
+            st.metric("Semaine précédente", f"{last_week_mean:.2f} kg", help=f"{last_week_n} mesures")
+        else:
+            st.metric("Semaine précédente", "N/A", help="Aucune mesure semaine précédente")
+    with wcol3:
+        if this_week_mean is not None and last_week_mean is not None:
+            week_diff = this_week_mean - last_week_mean
+            week_pct = (week_diff / last_week_mean) * 100 if last_week_mean > 0 else 0
+            delta_icon = "📉" if week_diff < -0.1 else ("📈" if week_diff > 0.1 else "➡️")
+            st.metric(
+                "Évolution", 
+                f"{delta_icon} {week_diff:+.2f} kg",
+                f"{week_pct:+.1f}%",
+                delta_color="inverse"
+            )
+        else:
+            st.metric("Évolution", "N/A", help="Données insuffisantes pour comparer")
+    
     # Help expander explaining the calculation logic
     with st.expander("ℹ️ Comment sont calculées les variations ?"):
         st.markdown("""
         **Variation 7j/30j** : Compare le poids actuel au poids mesuré le plus proche de J-7 ou J-30.
         - Tolérance : ±3 jours maximum
         - Si aucune mesure n'est trouvée dans cette plage, "N/A" est affiché
+        
+        **Tendances** : Basées sur la moyenne mobile (rolling mean).
+        - 📉 Baisse : variation > 0.1 kg en moyenne
+        - 📈 Hausse : variation > 0.1 kg en moyenne  
+        - ➡️ Stable : variation ≤ 0.1 kg
+        
+        **Comparaison Hebdomadaire** : Moyenne du poids sur 7 jours vs les 7 jours précédents.
         
         **Avancement** : Pourcentage de progression vers l'objectif final.
         - Borné entre 0% et 100%

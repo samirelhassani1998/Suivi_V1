@@ -21,8 +21,9 @@ from statsmodels.tsa.stattools import acf, pacf
 from app.utils import apply_theme, load_data
 from app.deploy import show_deployment_info
 
-# ALWAYS show page proof (non-conditional)
-st.caption(f"PAGE={__file__}")
+# Debug: show page path only if debug_mode is enabled
+if st.secrets.get("debug_mode", False):
+    st.caption(f"PAGE={__file__}")
 def _get_data():
     df = st.session_state.get("filtered_data")
     if df is None:
@@ -108,6 +109,37 @@ def render_linear_regression(df):
     )
     fig_reg = apply_theme(fig_reg, theme)
     st.plotly_chart(fig_reg, use_container_width=True)
+    
+    # MID-AI-1: Model Confidence Metrics
+    from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
+    r2 = r2_score(y, predictions)
+    mae = mean_absolute_error(y, predictions)
+    rmse = np.sqrt(mean_squared_error(y, predictions))
+    
+    st.subheader("📊 Métriques de Confiance du Modèle")
+    mcol1, mcol2, mcol3, mcol4 = st.columns(4)
+    with mcol1:
+        st.metric("R²", f"{r2:.3f}", help="Coefficient de détermination (1.0 = parfait)")
+    with mcol2:
+        st.metric("MAE", f"{mae:.2f} kg", help="Erreur absolue moyenne")
+    with mcol3:
+        st.metric("RMSE", f"{rmse:.2f} kg", help="Racine de l'erreur quadratique moyenne")
+    with mcol4:
+        # Confidence level based on R²
+        if r2 >= 0.8:
+            confidence = "🟢 Haute"
+            conf_help = "R² ≥ 0.8 : Le modèle explique bien les données"
+        elif r2 >= 0.5:
+            confidence = "🟡 Moyenne"
+            conf_help = "0.5 ≤ R² < 0.8 : Précision modérée"
+        else:
+            confidence = "🔴 Faible"
+            conf_help = "R² < 0.5 : Prédictions peu fiables"
+        st.metric("Confiance", confidence, help=conf_help)
+    
+    # Width of confidence interval as percentage
+    ic_width = (pred_upper - pred_lower).mean()
+    st.caption(f"Largeur moyenne de l'intervalle de confiance : ±{ic_width/2:.2f} kg")
 
     target_weight = st.session_state.get("target_weights", (95.0, 90.0, 85.0, 80.0))[-1]
     try:
@@ -180,9 +212,10 @@ def render_stl_and_sarima(df):
 
     st.subheader("Prédictions SARIMA")
     try:
-        sarima_model = SARIMAX(df["Poids (Kgs)"], order=(1, 1, 1), seasonal_order=(1, 1, 1, period))
-        sarima_results = sarima_model.fit(disp=False)
-        df["SARIMA_Predictions"] = sarima_results.predict(start=0, end=len(df) - 1, dynamic=False)
+        with st.spinner("🔄 Calcul du modèle SARIMA en cours..."):
+            sarima_model = SARIMAX(df["Poids (Kgs)"], order=(1, 1, 1), seasonal_order=(1, 1, 1, period))
+            sarima_results = sarima_model.fit(disp=False)
+            df["SARIMA_Predictions"] = sarima_results.predict(start=0, end=len(df) - 1, dynamic=False)
         fig_sarima = px.scatter(df, x="Date", y="Poids (Kgs)", title="SARIMA")
         fig_sarima.add_trace(
             go.Scatter(
@@ -258,13 +291,14 @@ def render_auto_arima(df):
         key="arima_days",
     )
     try:
-        arima_model = auto_arima(
-            df["Poids (Kgs)"],
-            seasonal=True,
-            m=7,
-            suppress_warnings=True,
-        )
-        arima_forecast = arima_model.predict(n_periods=future_arima_days)
+        with st.spinner("🔄 Calcul Auto-ARIMA en cours (peut prendre quelques secondes)..."):
+            arima_model = auto_arima(
+                df["Poids (Kgs)"],
+                seasonal=True,
+                m=7,
+                suppress_warnings=True,
+            )
+            arima_forecast = arima_model.predict(n_periods=future_arima_days)
     except Exception as error:  # pmdarima renvoie divers types d'erreurs
         st.warning(f"Le modèle Auto-ARIMA n'a pas pu être ajusté : {error}")
         return

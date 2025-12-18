@@ -28,6 +28,8 @@ Application Streamlit interactive pour le **suivi, l'analyse et la prédiction d
 - **Graphiques interactifs** : Évolution du poids avec moyennes mobiles (simple ou exponentielle)
 - **Détection d'anomalies** : Identification des valeurs atypiques via Z-score ou IsolationForest
 - **Export CSV** : Téléchargement des données filtrées
+- **📊 Tendances** *(NEW)* : Indicateurs visuels de tendance (📉/📈/➡️) basés sur la moyenne mobile 7j/30j
+- **📅 Comparaison Hebdomadaire** *(NEW)* : Moyenne cette semaine vs semaine précédente avec évolution en %
 
 ### 🤖 Modèles (Modeles)
 - **Comparaison de modèles ML** : Régression Linéaire vs Random Forest avec validation croisée temporelle
@@ -38,9 +40,10 @@ Application Streamlit interactive pour le **suivi, l'analyse et la prédiction d
 
 ### 📈 Prédictions
 - **Régression linéaire** : Prévision avec intervalle de confiance configurable
+- **📊 Métriques de Confiance** *(NEW)* : R², MAE, RMSE avec indicateur de confiance (🟢 Haute / 🟡 Moyenne / 🔴 Faible)
 - **Décomposition STL** : Séparation tendance, saisonnalité et résidus
-- **SARIMA** : Modèle de prévision avec composantes saisonnières
-- **Auto-ARIMA** : Sélection automatique des meilleurs paramètres avec `pmdarima`
+- **SARIMA** : Modèle de prévision avec composantes saisonnières (avec spinner de chargement)
+- **Auto-ARIMA** : Sélection automatique des meilleurs paramètres avec `pmdarima` (avec spinner de chargement)
 - **Autocorrélation** : Visualisation ACF/PACF pour l'analyse des séries temporelles
 
 ---
@@ -62,6 +65,10 @@ Suivi_V1/
 ├── .streamlit/
 │   ├── config.toml          # Configuration Streamlit (thème, etc.)
 │   └── secrets.toml.example # Exemple de configuration des secrets
+├── tests/                   # Tests unitaires
+│   └── test_utils.py        # Tests de non-régression
+├── docs/                    # Documentation
+│   └── MODEL_CARD.md        # Carte de modèle ML (gouvernance)
 ├── requirements.txt         # Dépendances Python
 ├── runtime.txt              # Version Python pour le déploiement
 ├── TECH_REPORT.md           # Rapport technique détaillé
