@@ -48,7 +48,8 @@ def check_password() -> bool:
 
     def password_entered():
         """Checks whether a password entered by the user is correct."""
-        if hmac.compare_digest(st.session_state["password"], correct_password):
+        entered_password = str(st.session_state.get("password", ""))
+        if hmac.compare_digest(entered_password, correct_password):
             st.session_state["password_correct"] = True
             st.session_state.pop("password", None)
         else:
