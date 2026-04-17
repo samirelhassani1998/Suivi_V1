@@ -10,17 +10,15 @@ import plotly.graph_objects as go
 import numpy as np
 import streamlit as st
 
-
-
-from app.utils import (
-    apply_theme,
-    calculate_moving_average,
-    convert_df_to_csv,
-    DATA_URL,
-    detect_anomalies,
-    load_data,
-)
+from app import utils as app_utils
 from app.deploy import show_deployment_info
+
+apply_theme = app_utils.apply_theme
+calculate_moving_average = app_utils.calculate_moving_average
+convert_df_to_csv = app_utils.convert_df_to_csv
+DATA_URL = app_utils.DATA_URL
+detect_anomalies = app_utils.detect_anomalies
+load_data = app_utils.load_data
 
 # Debug: show page path only if debug_mode is enabled
 if st.secrets.get("debug_mode", False):
@@ -62,6 +60,9 @@ def _get_data():
     with st.spinner("Chargement des données de poids..."):
         try:
             df = load_data(data_url)
+            diagnostics_loader = getattr(app_utils, "get_data_diagnostics", None)
+            if callable(diagnostics_loader):
+                st.session_state["data_diagnostics"] = diagnostics_loader(data_url)
         except Exception as error:
             st.error(f"Erreur critique lors du chargement : {error}")
             st.exception(error)
@@ -436,6 +437,17 @@ def main():
     col1.metric("Lignes", df.shape[0])
     col2.metric("Première Date", df["Date"].min().strftime("%d/%m/%Y") if not df.empty else "N/A")
     col3.metric("Dernière Date", df["Date"].max().strftime("%d/%m/%Y") if not df.empty else "N/A")
+
+    diagnostics = st.session_state.get("data_diagnostics")
+    if diagnostics:
+        st.caption(
+            "Pipeline CSV → mémoire: "
+            f"brut={diagnostics.get('raw_rows', 0)} | "
+            f"valides={diagnostics.get('valid_rows', 0)} | "
+            f"conservées={diagnostics.get('final_rows', 0)} | "
+            f"invalides ignorées={diagnostics.get('dropped_invalid_rows', 0)} | "
+            f"dates dupliquées détectées={diagnostics.get('duplicate_date_rows', 0)}"
+        )
     
     with st.expander("Aperçu des données brutes"):
         st.dataframe(df.tail(10))
