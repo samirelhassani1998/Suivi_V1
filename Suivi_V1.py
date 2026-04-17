@@ -56,9 +56,6 @@ def _load_dataset() -> None:
     with st.spinner("Chargement des données de poids..."):
         try:
             df = load_data(st.session_state["data_url"])
-            diagnostics_loader = getattr(app_utils, "get_data_diagnostics", None)
-            if callable(diagnostics_loader):
-                st.session_state["data_diagnostics"] = diagnostics_loader(st.session_state["data_url"])
         except Exception as error:
             st.error(f"Erreur de chargement : {error}")
             st.exception(error)
@@ -76,6 +73,24 @@ def _load_dataset() -> None:
 
     st.session_state["raw_data"] = df
     st.session_state["filtered_data"] = df
+
+    diagnostics_loader = getattr(app_utils, "get_data_diagnostics", None)
+    if callable(diagnostics_loader):
+        try:
+            st.session_state["data_diagnostics"] = diagnostics_loader(st.session_state["data_url"])
+        except Exception as diagnostics_error:
+            st.warning(
+                "Données chargées, mais les diagnostics sont indisponibles. "
+                "Réessayez avec « Recharger les données »."
+            )
+            st.session_state["data_diagnostics"] = {
+                "raw_rows": int(len(df)),
+                "valid_rows": int(len(df)),
+                "final_rows": int(len(df)),
+                "dropped_invalid_rows": 0,
+                "duplicate_date_rows": int(df.duplicated(subset=["Date"]).sum()) if "Date" in df.columns else 0,
+                "error": str(diagnostics_error),
+            }
 
 
 def _configure_sidebar() -> None:
