@@ -89,8 +89,8 @@ def _load_dataset() -> None:
                 "final_rows": int(len(df)),
                 "dropped_invalid_rows": 0,
                 "duplicate_date_rows": int(df.duplicated(subset=["Date"]).sum()) if "Date" in df.columns else 0,
-                "error": str(diagnostics_error),
             }
+            st.session_state["data_diagnostics_error"] = str(diagnostics_error)
 
 
 def _configure_sidebar() -> None:
