@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Iterable, Tuple
+import importlib
 
 import numpy as np
 import pandas as pd
 from pandas.errors import EmptyDataError, ParserError
 import plotly.graph_objects as go
 import streamlit as st
-
-from scipy import stats
-from sklearn.ensemble import IsolationForest 
 
 DATA_URL = "https://docs.google.com/spreadsheets/d/1qPhLKvm4BREErQrm0L38DcZFG4a-K0msSzARVIG_T_U/export?format=csv"
 
@@ -181,11 +179,32 @@ def detect_anomalies(
         return df
 
     if method == "IsolationForest":
-        model = IsolationForest(contamination=contamination, random_state=42)
-        df["Anomalies"] = model.fit_predict(df[["Poids (Kgs)"]]) == -1
-    else:
-        df["Z_score"] = np.abs(stats.zscore(df["Poids (Kgs)"]))
+        sklearn_spec = importlib.util.find_spec("sklearn.ensemble")
+        if sklearn_spec is None:
+            # Graceful fallback when scikit-learn is not available at runtime
+            # (e.g., partial installs on constrained environments).
+            method = "Z-score"
+        else:
+            sklearn_ensemble = importlib.import_module("sklearn.ensemble")
+            model = sklearn_ensemble.IsolationForest(
+                contamination=contamination,
+                random_state=42,
+            )
+            df["Anomalies"] = model.fit_predict(df[["Poids (Kgs)"]]) == -1
+            return df
+
+    if method == "Z-score":
+        series = pd.to_numeric(df["Poids (Kgs)"], errors="coerce")
+        std = float(series.std(ddof=0))
+        if std == 0 or np.isnan(std):
+            df["Z_score"] = 0.0
+        else:
+            mean = float(series.mean())
+            df["Z_score"] = ((series - mean) / std).abs()
         df["Anomalies"] = df["Z_score"] > z_threshold
+    else:
+        # Unknown method: default to no anomalies rather than raising.
+        df["Anomalies"] = False
     return df
 
 
