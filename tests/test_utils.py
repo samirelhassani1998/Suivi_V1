@@ -198,6 +198,44 @@ class TestLoadDataPipeline:
         assert stats["final_rows"] == 1
         assert stats["dropped_invalid_rows"] == 2
 
+    def test_load_data_accepts_mixed_date_formats(self, monkeypatch):
+        """Mixed DD/MM and MM/DD formats should both be parsed."""
+        csv_df = pd.DataFrame(
+            {
+                "Date": ["17/04/2026", "04/18/2026"],
+                "Poids (Kgs)": ["80,2", "80,0"],
+            }
+        )
+
+        def fake_read_csv(*args, **kwargs):
+            return csv_df.copy()
+
+        monkeypatch.setattr("app.utils.pd.read_csv", fake_read_csv)
+        load_data.clear()
+        out = load_data("fake://csv")
+
+        assert len(out) == 2
+        assert out["Date"].isna().sum() == 0
+
+    def test_load_data_accepts_excel_serial_dates(self, monkeypatch):
+        """Excel serial date values should not be dropped when valid."""
+        csv_df = pd.DataFrame(
+            {
+                "Date": ["46000", "17/04/2026"],
+                "Poids (Kgs)": ["80,2", "80,0"],
+            }
+        )
+
+        def fake_read_csv(*args, **kwargs):
+            return csv_df.copy()
+
+        monkeypatch.setattr("app.utils.pd.read_csv", fake_read_csv)
+        load_data.clear()
+        out = load_data("fake://csv")
+
+        assert len(out) == 2
+        assert out["Date"].isna().sum() == 0
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
