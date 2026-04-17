@@ -9,6 +9,7 @@ import streamlit as st
 from app.utils import (
     DATA_URL,
     filter_by_dates,
+    get_data_diagnostics,
     get_date_range,
     load_data,
 )
@@ -56,12 +57,20 @@ def _load_dataset() -> None:
     with st.spinner("Chargement des données de poids..."):
         try:
             df = load_data(st.session_state["data_url"])
+            st.session_state["data_diagnostics"] = get_data_diagnostics(st.session_state["data_url"])
         except Exception as error:
             st.error(f"Erreur de chargement : {error}")
             st.exception(error)
             empty_df = pd.DataFrame(columns=["Date", "Poids (Kgs)"])
             st.session_state["raw_data"] = empty_df
             st.session_state["filtered_data"] = empty_df
+            st.session_state["data_diagnostics"] = {
+                "raw_rows": 0,
+                "valid_rows": 0,
+                "final_rows": 0,
+                "dropped_invalid_rows": 0,
+                "duplicate_date_rows": 0,
+            }
             return  # Don't st.stop() - let the page handle empty data
 
     st.session_state["raw_data"] = df
