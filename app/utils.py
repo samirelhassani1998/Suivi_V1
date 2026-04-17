@@ -65,6 +65,53 @@ def _normalise_expected_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns=normalised_cols)
 
 
+def _parse_dates_robust(date_series: pd.Series) -> pd.Series:
+    """Parse dates with multiple strategies to avoid dropping valid rows."""
+    raw_dates = (
+        date_series.astype(str)
+        .str.replace("\ufeff", "", regex=False)
+        .str.strip()
+        .str.replace("'", "", regex=False)
+    )
+
+    parsed_dates = pd.Series(pd.NaT, index=raw_dates.index, dtype="datetime64[ns]")
+
+    text_like_mask = raw_dates.str.contains(r"[/-]", regex=True)
+    if text_like_mask.any():
+        parsed_dates.loc[text_like_mask] = pd.to_datetime(
+            raw_dates.loc[text_like_mask],
+            dayfirst=True,
+            errors="coerce",
+        )
+
+    # Fallback for mixed locale formats (e.g., MM/DD/YYYY mixed into DD/MM/YYYY)
+    missing_mask = parsed_dates.isna()
+    if missing_mask.any():
+        parsed_dates.loc[missing_mask] = pd.to_datetime(
+            raw_dates.loc[missing_mask],
+            dayfirst=False,
+            errors="coerce",
+        )
+
+    # Fallback for Excel serial dates occasionally found in Sheets exports
+    missing_mask = parsed_dates.isna()
+    if missing_mask.any():
+        serial_candidates = pd.to_numeric(
+            raw_dates.loc[missing_mask].str.replace(",", ".", regex=False),
+            errors="coerce",
+        )
+        serial_candidates = serial_candidates[serial_candidates.between(20000, 80000)]
+        if not serial_candidates.empty:
+            parsed_dates.loc[serial_candidates.index] = pd.to_datetime(
+                serial_candidates,
+                unit="D",
+                origin="1899-12-30",
+                errors="coerce",
+            )
+
+    return parsed_dates
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def load_data(url: str = DATA_URL) -> pd.DataFrame:
     """Load and clean the dataset from the provided URL.
@@ -100,7 +147,7 @@ def load_data(url: str = DATA_URL) -> pd.DataFrame:
         .str.strip()
     )
     df["Poids (Kgs)"] = pd.to_numeric(df["Poids (Kgs)"], errors="coerce")
-    df["Date"] = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce")
+    df["Date"] = _parse_dates_robust(df["Date"])
 
     df = (
         df.dropna(subset=["Poids (Kgs)", "Date"])
@@ -135,7 +182,7 @@ def get_data_diagnostics(url: str = DATA_URL) -> Dict[str, Any]:
         df_work["Poids (Kgs)"].astype(str).str.replace(",", ".").str.strip()
     )
     df_work["Poids (Kgs)"] = pd.to_numeric(df_work["Poids (Kgs)"], errors="coerce")
-    df_work["Date"] = pd.to_datetime(df_work["Date"], dayfirst=True, errors="coerce")
+    df_work["Date"] = _parse_dates_robust(df_work["Date"])
     valid_df = df_work.dropna(subset=["Poids (Kgs)", "Date"])
     final_df = valid_df.sort_values("Date", ascending=True).reset_index(drop=True)
     return {
