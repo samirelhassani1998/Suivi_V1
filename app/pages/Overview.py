@@ -18,6 +18,7 @@ from app.utils import (
     convert_df_to_csv,
     DATA_URL,
     detect_anomalies,
+    get_data_diagnostics,
     load_data,
 )
 from app.deploy import show_deployment_info
@@ -62,6 +63,7 @@ def _get_data():
     with st.spinner("Chargement des données de poids..."):
         try:
             df = load_data(data_url)
+            st.session_state["data_diagnostics"] = get_data_diagnostics(data_url)
         except Exception as error:
             st.error(f"Erreur critique lors du chargement : {error}")
             st.exception(error)
@@ -436,6 +438,17 @@ def main():
     col1.metric("Lignes", df.shape[0])
     col2.metric("Première Date", df["Date"].min().strftime("%d/%m/%Y") if not df.empty else "N/A")
     col3.metric("Dernière Date", df["Date"].max().strftime("%d/%m/%Y") if not df.empty else "N/A")
+
+    diagnostics = st.session_state.get("data_diagnostics")
+    if diagnostics:
+        st.caption(
+            "Pipeline CSV → mémoire: "
+            f"brut={diagnostics.get('raw_rows', 0)} | "
+            f"valides={diagnostics.get('valid_rows', 0)} | "
+            f"conservées={diagnostics.get('final_rows', 0)} | "
+            f"invalides ignorées={diagnostics.get('dropped_invalid_rows', 0)} | "
+            f"dates dupliquées détectées={diagnostics.get('duplicate_date_rows', 0)}"
+        )
     
     with st.expander("Aperçu des données brutes"):
         st.dataframe(df.tail(10))

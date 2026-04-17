@@ -18,6 +18,8 @@ from app.utils import (
     detect_anomalies,
     filter_by_dates,
     get_date_range,
+    get_data_diagnostics,
+    load_data,
 )
 
 
@@ -151,6 +153,50 @@ class TestGetDateRange:
         df = pd.DataFrame(columns=["Date", "Poids (Kgs)"])
         with pytest.raises(ValueError, match="DataFrame is empty"):
             get_date_range(df)
+
+
+class TestLoadDataPipeline:
+    """Tests around CSV loading and row conservation."""
+
+    def test_load_data_keeps_multiple_rows_same_date(self, monkeypatch):
+        """Rows sharing the same date must not be deduplicated."""
+        csv_df = pd.DataFrame(
+            {
+                "Date": ["01/01/2026", "01/01/2026", "02/01/2026"],
+                "Poids (Kgs)": ["80,1", "80,4", "80,0"],
+            }
+        )
+
+        def fake_read_csv(*args, **kwargs):
+            return csv_df.copy()
+
+        monkeypatch.setattr("app.utils.pd.read_csv", fake_read_csv)
+        load_data.clear()
+        out = load_data("fake://csv")
+
+        assert len(out) == 3
+        assert out["Date"].nunique() == 2
+
+    def test_data_diagnostics_counts_invalid_rows(self, monkeypatch):
+        """Diagnostics should expose dropped invalid rows and totals."""
+        csv_df = pd.DataFrame(
+            {
+                "Date": ["01/01/2026", "bad-date", "03/01/2026"],
+                "Poids (Kgs)": ["80,2", "81,0", ""],
+            }
+        )
+
+        def fake_read_csv(*args, **kwargs):
+            return csv_df.copy()
+
+        monkeypatch.setattr("app.utils.pd.read_csv", fake_read_csv)
+        get_data_diagnostics.clear()
+        stats = get_data_diagnostics("fake://csv")
+
+        assert stats["raw_rows"] == 3
+        assert stats["valid_rows"] == 1
+        assert stats["final_rows"] == 1
+        assert stats["dropped_invalid_rows"] == 2
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable, Tuple
+from typing import Any, Dict, Iterable, Tuple
 
 import numpy as np
 import pandas as pd
@@ -23,6 +23,50 @@ PLOTLY_TEMPLATES = {
 }
 
 
+def _resolve_data_url(default_url: str) -> str:
+    """Resolve data URL from secrets when available, fallback otherwise."""
+    try:
+        return st.secrets.get("data_url", default_url)
+    except Exception:
+        return default_url
+
+
+def _read_csv_with_fallbacks(url: str) -> pd.DataFrame:
+    """Read CSV using resilient separator/encoding fallbacks."""
+    read_attempts = [
+        {"sep": None, "engine": "python", "decimal": ","},
+        {"sep": ",", "decimal": ","},
+        {"sep": ";", "decimal": ","},
+        {"sep": "\t", "decimal": ","},
+    ]
+    errors: list[str] = []
+    for options in read_attempts:
+        for encoding in ("utf-8", "utf-8-sig", "latin-1"):
+            try:
+                return pd.read_csv(url, encoding=encoding, **options)
+            except Exception as error:  # pragma: no cover - diagnostic fallback
+                errors.append(f"{encoding}/{options}: {type(error).__name__}")
+    raise RuntimeError(
+        "Impossible de parser le CSV (séparateur/encodage). "
+        f"Tentatives: {', '.join(errors[:5])}"
+    )
+
+
+def _normalise_expected_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalise common CSV header variants for required columns."""
+    normalised_cols = {}
+    for col in df.columns:
+        clean = str(col).replace("\ufeff", "").strip()
+        lowered = clean.lower()
+        if lowered in {"date", "dates"}:
+            normalised_cols[col] = "Date"
+        elif lowered in {"poids (kgs)", "poids", "poids(kg)", "poids (kg)"}:
+            normalised_cols[col] = "Poids (Kgs)"
+        else:
+            normalised_cols[col] = clean
+    return df.rename(columns=normalised_cols)
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def load_data(url: str = DATA_URL) -> pd.DataFrame:
     """Load and clean the dataset from the provided URL.
@@ -33,17 +77,19 @@ def load_data(url: str = DATA_URL) -> pd.DataFrame:
     caller can display a helpful message instead of crashing the Streamlit app.
     """
 
-    url = st.secrets.get("data_url", url)
+    url = _resolve_data_url(url)
 
     try:
-        df = pd.read_csv(url, decimal=",")
+        df = _read_csv_with_fallbacks(url)
     except (EmptyDataError, ParserError, ValueError) as error:
         raise RuntimeError("Le fichier de données est vide ou invalide.") from error
     except Exception as error:  # pragma: no cover
-        raise RuntimeError("Impossible de télécharger les données distantes.") from error
+        raise RuntimeError("Impossible de télécharger ou parser les données distantes.") from error
 
     if df.empty:
         raise RuntimeError("Aucune donnée disponible dans la source distante.")
+
+    df = _normalise_expected_columns(df)
 
     # Robust column cleaning
     if "Poids (Kgs)" not in df.columns or "Date" not in df.columns:
@@ -60,7 +106,6 @@ def load_data(url: str = DATA_URL) -> pd.DataFrame:
 
     df = (
         df.dropna(subset=["Poids (Kgs)", "Date"])
-        .drop_duplicates(subset=["Date"], keep="last")
         .sort_values("Date", ascending=True)
         .reset_index(drop=True)
     )
@@ -69,6 +114,39 @@ def load_data(url: str = DATA_URL) -> pd.DataFrame:
         raise RuntimeError("Les données récupérées ne contiennent aucune date/valeur valide.")
 
     return df
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_data_diagnostics(url: str = DATA_URL) -> Dict[str, Any]:
+    """Return row counts through the CSV -> DataFrame preparation pipeline."""
+    url = _resolve_data_url(url)
+    df_raw = _normalise_expected_columns(_read_csv_with_fallbacks(url))
+    raw_rows = int(df_raw.shape[0])
+
+    if "Poids (Kgs)" not in df_raw.columns or "Date" not in df_raw.columns:
+        return {
+            "raw_rows": raw_rows,
+            "valid_rows": 0,
+            "final_rows": 0,
+            "dropped_invalid_rows": raw_rows,
+            "duplicate_date_rows": 0,
+        }
+
+    df_work = df_raw.copy()
+    df_work["Poids (Kgs)"] = (
+        df_work["Poids (Kgs)"].astype(str).str.replace(",", ".").str.strip()
+    )
+    df_work["Poids (Kgs)"] = pd.to_numeric(df_work["Poids (Kgs)"], errors="coerce")
+    df_work["Date"] = pd.to_datetime(df_work["Date"], dayfirst=True, errors="coerce")
+    valid_df = df_work.dropna(subset=["Poids (Kgs)", "Date"])
+    final_df = valid_df.sort_values("Date", ascending=True).reset_index(drop=True)
+    return {
+        "raw_rows": raw_rows,
+        "valid_rows": int(valid_df.shape[0]),
+        "final_rows": int(final_df.shape[0]),
+        "dropped_invalid_rows": int(raw_rows - valid_df.shape[0]),
+        "duplicate_date_rows": int(valid_df.duplicated(subset=["Date"]).sum()),
+    }
 
 
 def apply_theme(fig: go.Figure, theme_name: str) -> go.Figure:
@@ -177,4 +255,3 @@ def predict_future_linear(
     
     predictions = model.predict(future_numeric.values.reshape(-1, 1))
     return pd.DataFrame({date_col: future_dates, "Prediction": predictions})
-
