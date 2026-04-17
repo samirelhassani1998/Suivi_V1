@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from app.config import ALL_COLUMNS, REQUIRED_COLUMNS
+from app.config import OPTIONAL_COLUMNS, REQUIRED_COLUMNS
 
 
 @dataclass
@@ -41,10 +41,18 @@ def _parse_dates(values: pd.Series) -> pd.Series:
     return dt
 
 
-def clean_weight_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """Nettoie un dataframe en format standard sans mutation in-place."""
+def _ordered_columns(df: pd.DataFrame) -> list[str]:
+    mandatory = [c for c in REQUIRED_COLUMNS if c in df.columns]
+    known_optional = [c for c in OPTIONAL_COLUMNS if c in df.columns and c not in mandatory]
+    extras = [c for c in df.columns if c not in mandatory and c not in known_optional]
+    return mandatory + known_optional + extras
+
+
+def clean_weight_dataframe(df: pd.DataFrame, drop_invalid: bool = True) -> pd.DataFrame:
+    """Nettoie un dataframe sans perdre les colonnes additionnelles utilisateur."""
     out = _normalize_columns(df.copy())
-    for col in ALL_COLUMNS:
+
+    for col in REQUIRED_COLUMNS:
         if col not in out.columns:
             out[col] = np.nan
 
@@ -53,8 +61,12 @@ def clean_weight_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         errors="coerce",
     )
     out["Date"] = _parse_dates(out["Date"])
-    out = out.dropna(subset=["Date", "Poids (Kgs)"]).sort_values("Date").reset_index(drop=True)
-    return out[list(ALL_COLUMNS)]
+
+    if drop_invalid:
+        out = out.dropna(subset=["Date", "Poids (Kgs)"])
+
+    out = out.sort_values("Date").reset_index(drop=True)
+    return out[_ordered_columns(out)]
 
 
 def validate_journal(df: pd.DataFrame) -> ValidationResult:
@@ -66,7 +78,16 @@ def validate_journal(df: pd.DataFrame) -> ValidationResult:
         if col not in normalized.columns:
             errors.append(f"Colonne obligatoire absente: {col}")
 
-    cleaned = clean_weight_dataframe(normalized) if not errors else pd.DataFrame(columns=ALL_COLUMNS)
+    if errors:
+        return ValidationResult(errors=errors, warnings=warnings, cleaned=normalized)
+
+    preview = clean_weight_dataframe(normalized, drop_invalid=False)
+    invalid_mask = preview["Date"].isna() | preview["Poids (Kgs)"].isna()
+    if invalid_mask.any():
+        idx = ", ".join(str(i + 1) for i in preview.index[invalid_mask][:10])
+        warnings.append(f"Lignes ignorées (Date/Poids invalide): {idx}")
+
+    cleaned = clean_weight_dataframe(normalized, drop_invalid=True)
     if not cleaned.empty:
         invalid_weight = int((cleaned["Poids (Kgs)"] <= 0).sum())
         if invalid_weight:
@@ -93,14 +114,16 @@ def resolve_duplicates(df: pd.DataFrame, strategy: str) -> pd.DataFrame:
         return data
 
     if strategy == "garder_la_derniere":
-        return data.sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
-    numeric_cols = data.select_dtypes(include=["number"]).columns.tolist()
+        return data.sort_values("Date").drop_duplicates(subset=["Date"], keep="last").reset_index(drop=True)
+
+    numeric_cols = [c for c in data.select_dtypes(include=["number"]).columns if c != "Date"]
     agg = "mean" if strategy == "moyenne_journaliere" else "median"
-    grouped_num = data.groupby("Date", as_index=False)[numeric_cols].agg(agg)
+
+    grouped_num = data.groupby("Date", as_index=False)[numeric_cols].agg(agg) if numeric_cols else pd.DataFrame({"Date": data["Date"].drop_duplicates()})
     others = data.sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
-    for c in numeric_cols:
-        others[c] = grouped_num.set_index("Date")[c].reindex(others["Date"]).values
-    return others.sort_values("Date").reset_index(drop=True)
+    merged = others.drop(columns=numeric_cols, errors="ignore").merge(grouped_num, on="Date", how="left")
+    merged = merged.sort_values("Date").reset_index(drop=True)
+    return merged[_ordered_columns(merged)]
 
 
 def data_quality_report(df: pd.DataFrame) -> dict[str, Any]:
