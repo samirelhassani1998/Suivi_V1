@@ -8,9 +8,14 @@ from sklearn.ensemble import IsolationForest
 
 
 def detect_plateau(df: pd.DataFrame, window: int = 14) -> dict[str, float | str]:
-    if len(df) < window:
+    """Détecte un plateau sur les `window` derniers jours calendaires."""
+    if len(df) < 3:
         return {"status": "données insuffisantes", "slope": 0.0, "volatility": 0.0}
-    recent = df.sort_values("Date").tail(window)
+    data = df.sort_values("Date")
+    cutoff = data["Date"].max() - pd.Timedelta(days=window)
+    recent = data[data["Date"] >= cutoff]
+    if len(recent) < 3:
+        return {"status": "données insuffisantes", "slope": 0.0, "volatility": 0.0}
     x = np.arange(len(recent))
     slope = float(np.polyfit(x, recent["Poids (Kgs)"], 1)[0])
     vol = float(recent["Poids (Kgs)"].std())
@@ -22,7 +27,7 @@ def detect_plateau(df: pd.DataFrame, window: int = 14) -> dict[str, float | str]
         status = "reprise de poids probable"
     else:
         status = "signal mixte"
-    return {"status": status, "slope": slope, "volatility": vol}
+    return {"status": status, "slope": slope, "volatility": vol, "nb_mesures": len(recent)}
 
 
 def detect_anomalies_robust(df: pd.DataFrame, use_iforest: bool = False) -> pd.DataFrame:
@@ -58,10 +63,11 @@ def estimate_target_eta(df: pd.DataFrame, target_weight: float) -> dict[str, obj
         return {"credible": True, "message": "Objectif déjà atteint !", "eta": last_date,
                 "eta_min": last_date, "eta_max": last_date, "confidence": 1.0, "scenarios": {}}
 
-    # Multi-scenario ETA based on different windows
+    # Multi-scenario ETA based on different calendar-day windows
     scenarios = {}
     for name, window in [("optimiste", 7), ("réaliste", 30), ("pessimiste", 90)]:
-        subset = data.tail(min(window, len(data)))
+        cutoff = last_date - pd.Timedelta(days=window)
+        subset = data[data["Date"] >= cutoff]
         if len(subset) < 3:
             continue
         x = np.arange(len(subset))
@@ -81,8 +87,11 @@ def estimate_target_eta(df: pd.DataFrame, target_weight: float) -> dict[str, obj
             "kg_per_week": round(slope * 7, 3),
         }
 
-    # Primary estimate from 30-day trend
-    recent = data.tail(30)
+    # Primary estimate from last 30 calendar days
+    cutoff_30 = last_date - pd.Timedelta(days=30)
+    recent = data[data["Date"] >= cutoff_30]
+    if len(recent) < 3:
+        recent = data.tail(10)  # fallback si très peu de données dans 30j
     x = np.arange(len(recent))
     slope, intercept = np.polyfit(x, recent["Poids (Kgs)"], 1)
     if slope >= -0.005:

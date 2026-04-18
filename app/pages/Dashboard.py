@@ -100,7 +100,7 @@ def main() -> None:
     # ── Détection plateau (existant) ────────────────────────────────────
     plateau = detect_plateau(df, window=14)
     if plateau["status"] == "plateau probable":
-        alert_banner("Plateau probable détecté sur 14 jours.", "warning")
+        alert_banner("Plateau probable détecté sur les 14 derniers jours.", "warning")
 
     confidence = "élevée" if quality["score"] > 80 else "moyenne" if quality["score"] > 60 else "faible"
     confidence_badge("Confiance signal", confidence)
@@ -132,19 +132,20 @@ def main() -> None:
     st.plotly_chart(fig, use_container_width=True)
 
     # ── Graphique multi-MA (NOUVEAU) ────────────────────────────────────
-    with st.expander("📊 Moyennes mobiles multiples (7/14/30j)", expanded=False):
+    with st.expander("📊 Moyennes mobiles multiples (7/14/30 mesures)", expanded=False):
         df_ma = multi_rolling_averages(df, windows=(7, 14, 30))
         fig_ma = go.Figure()
         fig_ma.add_scatter(x=df_ma["Date"], y=df_ma["Poids (Kgs)"], mode="markers", name="Mesures", opacity=0.4, marker=dict(size=4))
-        colors = {"MA_7j": "#2E7BCF", "MA_14j": "#E67E22", "MA_30j": "#27AE60"}
+        colors = {"MA_7m": "#2E7BCF", "MA_14m": "#E67E22", "MA_30m": "#27AE60"}
+        labels = {"MA_7m": "MA 7 mesures", "MA_14m": "MA 14 mesures", "MA_30m": "MA 30 mesures"}
         for col, color in colors.items():
             if col in df_ma.columns:
-                fig_ma.add_scatter(x=df_ma["Date"], y=df_ma[col], mode="lines", name=col, line=dict(color=color, width=2))
+                fig_ma.add_scatter(x=df_ma["Date"], y=df_ma[col], mode="lines", name=labels.get(col, col), line=dict(color=color, width=2))
         for idx, target in enumerate(targets, start=1):
             fig_ma.add_hline(y=float(target), line_dash="dash", annotation_text=f"Obj. {idx}")
         fig_ma.update_layout(title="Moyennes mobiles (glissantes sur N mesures consécutives)", hovermode="x unified")
         st.plotly_chart(fig_ma, use_container_width=True)
-        st.caption("ℹ️ Les moyennes mobiles sont calculées sur N mesures consécutives, pas sur N jours calendaires.")
+        st.caption("ℹ️ Les moyennes mobiles glissent sur N mesures consécutives, pas sur N jours calendaires.")
 
     # ── Comparaison hebdo (corrigé : dates calendaires) ─────────────────
     wk_data = df[df["Date"] >= last_date - pd.Timedelta(days=7)]["Poids (Kgs)"]
@@ -157,7 +158,7 @@ def main() -> None:
 
     # ── Volatilité (NOUVEAU) ────────────────────────────────────────────
     vol = weight_volatility(df, window=14)
-    st.caption(f"📊 Volatilité 14j : {vol['interpretation']} (σ={vol['std']:.2f} kg, amplitude={vol['range']:.1f} kg)")
+    st.caption(f"📊 Volatilité (14 derniers jours) : {vol['interpretation']} (σ={vol['std']:.2f} kg, amplitude={vol['range']:.1f} kg, {vol.get('nb_mesures', '?')} mesures)")
 
     # ── Distribution et IMC (existant) ──────────────────────────────────
     with st.expander("Distribution et évolution IMC"):

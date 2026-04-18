@@ -67,10 +67,13 @@ def weight_velocity(df: pd.DataFrame, windows: tuple[int, ...] = (7, 14, 30, 90)
 # ---------------------------------------------------------------------------
 
 def multi_rolling_averages(df: pd.DataFrame, windows: tuple[int, ...] = (7, 14, 30)) -> pd.DataFrame:
-    """Ajoute plusieurs colonnes de moyenne mobile au DataFrame."""
+    """Ajoute plusieurs colonnes de moyenne mobile au DataFrame.
+
+    Note : les moyennes glissent sur N mesures consécutives, pas N jours calendaires.
+    """
     data = df.sort_values("Date").copy()
     for w in windows:
-        data[f"MA_{w}j"] = data["Poids (Kgs)"].rolling(w, min_periods=1).mean()
+        data[f"MA_{w}m"] = data["Poids (Kgs)"].rolling(w, min_periods=1).mean()
     return data
 
 
@@ -79,10 +82,14 @@ def multi_rolling_averages(df: pd.DataFrame, windows: tuple[int, ...] = (7, 14, 
 # ---------------------------------------------------------------------------
 
 def weight_volatility(df: pd.DataFrame, window: int = 14) -> dict[str, float]:
-    """Mesure la volatilité du poids sur une fenêtre (écart-type + coeff. variation)."""
+    """Mesure la volatilité du poids sur les `window` derniers jours calendaires."""
     if len(df) < 3:
-        return {"std": 0.0, "cv": 0.0, "range": 0.0, "interpretation": "données insuffisantes"}
-    recent = df.sort_values("Date").tail(window)["Poids (Kgs)"]
+        return {"std": 0.0, "cv": 0.0, "range": 0.0, "interpretation": "données insuffisantes", "nb_mesures": 0}
+    data = df.sort_values("Date")
+    cutoff = data["Date"].max() - pd.Timedelta(days=window)
+    recent = data[data["Date"] >= cutoff]["Poids (Kgs)"]
+    if len(recent) < 2:
+        return {"std": 0.0, "cv": 0.0, "range": 0.0, "interpretation": "données insuffisantes", "nb_mesures": len(recent)}
     std = float(recent.std())
     mean = float(recent.mean())
     cv = std / mean * 100 if mean > 0 else 0.0
@@ -95,7 +102,7 @@ def weight_volatility(df: pd.DataFrame, window: int = 14) -> dict[str, float]:
         interp = "modéré"
     else:
         interp = "volatil"
-    return {"std": round(std, 3), "cv": round(cv, 2), "range": round(rng, 2), "interpretation": interp}
+    return {"std": round(std, 3), "cv": round(cv, 2), "range": round(rng, 2), "interpretation": interp, "nb_mesures": len(recent)}
 
 
 # ---------------------------------------------------------------------------

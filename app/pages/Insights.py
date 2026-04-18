@@ -65,10 +65,12 @@ def main() -> None:
     p_cols = st.columns(2)
     with p_cols[0]:
         p14_icon = "🟠" if plateau14["status"] == "plateau probable" else "🟢" if "baisse" in plateau14["status"] else "🔴" if "reprise" in plateau14["status"] else "⚪"
-        st.metric("Plateau 14j", f"{p14_icon} {plateau14['status']}", f"Pente: {plateau14['slope']:.3f}")
+        nb14 = plateau14.get("nb_mesures", "?")
+        st.metric("Plateau (14 derniers jours)", f"{p14_icon} {plateau14['status']}", f"Pente: {plateau14['slope']:.3f} ({nb14} mesures)")
     with p_cols[1]:
         p30_icon = "🟠" if plateau30["status"] == "plateau probable" else "🟢" if "baisse" in plateau30["status"] else "🔴" if "reprise" in plateau30["status"] else "⚪"
-        st.metric("Plateau 30j", f"{p30_icon} {plateau30['status']}", f"Pente: {plateau30['slope']:.3f}")
+        nb30 = plateau30.get("nb_mesures", "?")
+        st.metric("Plateau (30 derniers jours)", f"{p30_icon} {plateau30['status']}", f"Pente: {plateau30['slope']:.3f} ({nb30} mesures)")
 
     # ══════════════════════════════════════════════════════════════════════
     # Section 2 : Scores avancés (NOUVEAU)
@@ -99,10 +101,11 @@ def main() -> None:
         st.progress(cons["score"] / 100)
     with sc_cols[2]:
         v_color = "🟢" if vol["cv"] < 1 else "🟡" if vol["cv"] < 2 else "🔴"
+        nb_vol = vol.get("nb_mesures", "?")
         st.metric(
-            "📊 Volatilité (14j)",
+            "📊 Volatilité (14 derniers jours)",
             f"{v_color} {vol['interpretation'].title()}",
-            help=f"CV={vol['cv']:.2f}% · σ={vol['std']:.2f} kg · Amplitude: {vol['range']:.1f} kg",
+            help=f"CV={vol['cv']:.2f}% · σ={vol['std']:.2f} kg · Amplitude: {vol['range']:.1f} kg · {nb_vol} mesures",
         )
 
     # ══════════════════════════════════════════════════════════════════════

@@ -61,9 +61,9 @@ class TestWeightVelocity:
 class TestMultiRollingAverages:
     def test_adds_ma_columns(self, sample_df):
         result = multi_rolling_averages(sample_df)
-        assert "MA_7j" in result.columns
-        assert "MA_14j" in result.columns
-        assert "MA_30j" in result.columns
+        assert "MA_7m" in result.columns
+        assert "MA_14m" in result.columns
+        assert "MA_30m" in result.columns
         assert len(result) == len(sample_df)
 
 
