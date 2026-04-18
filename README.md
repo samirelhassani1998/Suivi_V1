@@ -123,9 +123,9 @@ Google Sheets CSV ──► load_remote_csv() ──► clean_weight_dataframe()
 - **Insights automatiques** : textes générés en français (vitesse, volatilité, discipline, objectif...)
 - Indicateur d'accélération (perte accélère/ralentit)
 - **Graphique principal** : courbe poids + moyenne mobile + 4 lignes d'objectifs + moyenne globale
-- **Multi-MA chart** : MA 7/14/30 mesures superposées
+- **Multi-MA chart** : MA 7/14/30 mesures consécutives superposées
 - Comparaison hebdo (7 jours calendaires vs 7 jours précédents)
-- Volatilité 14 mesures
+- Volatilité (14 derniers jours calendaires) + nombre de mesures dans la fenêtre
 - Distribution poids + évolution IMC
 - Détail score de progression (4 composantes)
 
@@ -153,8 +153,8 @@ Google Sheets CSV ──► load_remote_csv() ──► clean_weight_dataframe()
 **Autres sections** :
 - **Leaderboard baselines** : walk-forward backtest (dernière valeur, MA7, MA14, tendance linéaire)
 - **ML Quantile** : Quantile Regression P10/P50/P90 avec features engineerées
-- **ETA objectif multi-scénario** : date estimée par fenêtre (7j/30j/90j)
-- **Vitesses de variation** : kg/semaine sur 4 fenêtres (7/14/30/90j)
+- **ETA objectif multi-scénario** : date estimée par fenêtre calendaire (7/30/90 derniers jours)
+- **Vitesses de variation** : kg/semaine sur 4 fenêtres calendaires (7/14/30/90 jours)
 - **Graphique de projection** : courbes à 90 jours pour 3 scénarios
 
 ### 4. Insights (`app/pages/Insights.py`)
@@ -163,8 +163,8 @@ Google Sheets CSV ──► load_remote_csv() ──► clean_weight_dataframe()
 
 | Section | Description |
 |---------|-------------|
-| Qualité & Plateau | Score qualité en cards visuelles + plateau 14j/30j |
-| Scores & Discipline | Discipline (0-100), cohérence (0-100), volatilité — avec progress bars |
+| Qualité & Plateau | Score qualité en cards visuelles + plateau 14/30 derniers jours calendaires |
+| Scores & Discipline | Discipline (0-100), cohérence (0-100), volatilité (14 derniers jours) — avec progress bars |
 | Phases du parcours | Segmentation en phases (perte/plateau/reprise) + timeline visuelle |
 | Ruptures de tendance | Détection CUSUM des changements structurels |
 | Meilleures/Pires semaines | Top 5 meilleures et pires semaines par variation |
@@ -193,8 +193,8 @@ Google Sheets CSV ──► load_remote_csv() ──► clean_weight_dataframe()
 | Fonction | Input | Output | Description |
 |----------|-------|--------|-------------|
 | `weight_velocity()` | df, fenêtres | `{7: -0.5, 14: -0.3, ...}` | kg/semaine basé sur dates réelles |
-| `multi_rolling_averages()` | df, fenêtres | DataFrame + colonnes MA | MA glissantes sur N mesures |
-| `weight_volatility()` | df, window | `{std, cv, range, interpretation}` | Stabilité du poids |
+| `multi_rolling_averages()` | df, fenêtres | DataFrame + colonnes `MA_Nm` | MA glissantes sur N **mesures** consécutives |
+| `weight_volatility()` | df, window | `{std, cv, range, interpretation, nb_mesures}` | Stabilité sur les N derniers **jours calendaires** |
 | `discipline_score()` | df, window_days | `{score, rate, interpretation}` | Régularité de saisie 0-100 |
 | `consistency_score()` | df, n_weeks | `{score, avg_weekly_std}` | Cohérence intra-semaine |
 | `detect_trend_breaks()` | df, threshold | `[{date, type, description}]` | CUSUM simplifié |
@@ -210,10 +210,14 @@ Google Sheets CSV ──► load_remote_csv() ──► clean_weight_dataframe()
 
 ### Distinction mesures vs jours calendaires
 
-> **Important** : l'application distingue clairement :
-> - **Jours calendaires** : utilisés pour les KPIs "Moy. 7 derniers jours" et "Moy. 30 derniers jours" (filtre par `Date >= J-N`)
-> - **Mesures consécutives** : utilisées pour les rolling averages et les streaks (`.rolling(N)` et comptage d'entrées)
-> - **Dates réelles** : utilisées pour `weight_velocity()` qui calcule la vraie durée entre deux mesures
+> **Important** : l'application distingue rigoureusement deux types de fenêtres temporelles.
+> Chaque métrique affiche le nombre de mesures réelles dans la fenêtre.
+
+| Type de fenêtre | Logique | Fonctions concernées |
+|---|---|---|
+| **Jours calendaires** (`Date >= J-N`) | Filtre par vraies dates — si tu mesures 3 fois en 14 jours, tu obtiens 3 points | `weight_velocity()`, `weight_volatility()`, `detect_plateau()`, `estimate_target_eta()`, `discipline_score()`, `period_comparison()`, KPIs Dashboard (Moy. 7/30j), comparaison hebdo |
+| **Mesures consécutives** (`.rolling(N)`, `.tail(N)`) | Compte les N dernières entrées, indépendamment des dates | `multi_rolling_averages()` (colonnes `MA_7m`, `MA_14m`, `MA_30m`), `streak_analysis()`, baselines MA7/MA14 (backtest interne) |
+| **Dates réelles inter-mesures** | Calcule la vraie durée entre deux points de mesure | `weight_velocity()` (vitesse en kg/semaine) |
 
 ---
 
