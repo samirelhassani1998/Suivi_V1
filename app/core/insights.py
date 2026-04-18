@@ -50,18 +50,57 @@ def detect_anomalies_robust(df: pd.DataFrame, use_iforest: bool = False) -> pd.D
 def estimate_target_eta(df: pd.DataFrame, target_weight: float) -> dict[str, object]:
     if len(df) < 7:
         return {"credible": False, "message": "Données insuffisantes"}
-    recent = df.sort_values("Date").tail(30)
+    data = df.sort_values("Date")
+    current = float(data["Poids (Kgs)"].iloc[-1])
+    last_date = data["Date"].max()
+
+    if current <= target_weight:
+        return {"credible": True, "message": "Objectif déjà atteint !", "eta": last_date,
+                "eta_min": last_date, "eta_max": last_date, "confidence": 1.0, "scenarios": {}}
+
+    # Multi-scenario ETA based on different windows
+    scenarios = {}
+    for name, window in [("optimiste", 7), ("réaliste", 30), ("pessimiste", 90)]:
+        subset = data.tail(min(window, len(data)))
+        if len(subset) < 3:
+            continue
+        x = np.arange(len(subset))
+        slope, intercept = np.polyfit(x, subset["Poids (Kgs)"], 1)
+        if slope >= -0.005:
+            scenarios[name] = {"slope": round(slope, 4), "credible": False,
+                               "message": "Tendance insuffisante sur cette fenêtre"}
+            continue
+        remaining = current - target_weight
+        days_needed = int(remaining / abs(slope))
+        eta = last_date + pd.Timedelta(days=max(days_needed, 0))
+        scenarios[name] = {
+            "slope": round(slope, 4),
+            "credible": True,
+            "eta": eta,
+            "days_remaining": days_needed,
+            "kg_per_week": round(slope * 7, 3),
+        }
+
+    # Primary estimate from 30-day trend
+    recent = data.tail(30)
     x = np.arange(len(recent))
     slope, intercept = np.polyfit(x, recent["Poids (Kgs)"], 1)
-    if slope >= -0.01:
-        return {"credible": False, "message": "La tendance actuelle ne permet pas d'estimation crédible"}
-    days = int((target_weight - intercept) / slope)
-    start = recent["Date"].iloc[0]
-    eta = start + pd.Timedelta(days=max(days, 0))
+    if slope >= -0.005:
+        return {
+            "credible": False,
+            "message": f"La tendance 30j est de {slope*7:+.3f} kg/sem — insuffisante pour une estimation fiable.",
+            "slope_30d": round(slope, 4),
+            "scenarios": scenarios,
+        }
+    remaining = current - target_weight
+    days = int(remaining / abs(slope))
+    eta = last_date + pd.Timedelta(days=max(days, 0))
     return {
         "credible": True,
         "eta": eta,
         "eta_min": eta - pd.Timedelta(days=14),
         "eta_max": eta + pd.Timedelta(days=21),
         "confidence": 0.6,
+        "slope_30d": round(slope, 4),
+        "scenarios": scenarios,
     }

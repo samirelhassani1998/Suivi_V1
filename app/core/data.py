@@ -132,6 +132,7 @@ def data_quality_report(df: pd.DataFrame) -> dict[str, Any]:
             "score": 0,
             "duplicates": 0,
             "missing_days": 0,
+            "coverage_pct": 0.0,
             "weekly_measurements": 0.0,
             "irregularity": 1.0,
             "last_entry": None,
@@ -143,6 +144,7 @@ def data_quality_report(df: pd.DataFrame) -> dict[str, Any]:
     expected_days = span + 1
     unique_days = int(series["Date"].nunique())
     missing_days = max(expected_days - unique_days, 0)
+    coverage_pct = unique_days / expected_days * 100
     weekly = unique_days / max(span / 7, 1)
     deltas = series["Date"].diff().dt.days.dropna()
     irregularity = float(deltas.std() / (deltas.mean() + 1e-9)) if not deltas.empty else 1.0
@@ -150,12 +152,17 @@ def data_quality_report(df: pd.DataFrame) -> dict[str, Any]:
     robust_z = np.abs((series["Poids (Kgs)"] - series["Poids (Kgs)"].median()) / (1.4826 * mad))
     anomalies = int((robust_z > 3.5).sum())
 
-    penalties = duplicates * 2 + missing_days * 0.1 + anomalies * 2 + irregularity * 10
-    score = int(max(0, min(100, 100 - penalties)))
+    # Rate-based scoring (works for both short and long datasets)
+    coverage_score = min(50, coverage_pct * 0.5)  # 0-50 pts for coverage
+    regularity_score = max(0, 25 - irregularity * 8)  # 0-25 pts for regularity
+    anomaly_penalty = min(15, anomalies * 3)  # 0-15 pts penalty for anomalies
+    dup_penalty = min(10, duplicates * 2)  # 0-10 pts penalty for duplicates
+    score = int(max(0, min(100, coverage_score + regularity_score + 25 - anomaly_penalty - dup_penalty)))
     return {
         "score": score,
         "duplicates": duplicates,
         "missing_days": missing_days,
+        "coverage_pct": round(coverage_pct, 1),
         "weekly_measurements": round(float(weekly), 2),
         "irregularity": round(irregularity, 3),
         "last_entry": series["Date"].max(),

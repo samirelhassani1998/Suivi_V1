@@ -12,11 +12,12 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
 from statsmodels.tsa.seasonal import STL
 
+from app.core.analytics import prospective_scenarios, weight_velocity
 from app.core.evaluation import evaluate_baselines
 from app.core.features import build_features
 from app.core.forecasting import forecast_with_ml, forecast_with_sarimax
 from app.core.insights import estimate_target_eta
-from app.ui.components import alert_banner, empty_state
+from app.ui.components import alert_banner, empty_state, kpi_card
 
 warnings.filterwarnings("ignore")
 
@@ -68,9 +69,12 @@ def _sarima_block(df: pd.DataFrame, horizon: int) -> None:
             return
         fig = go.Figure()
         fig.add_scatter(x=df["Date"], y=df["Poids (Kgs)"], name="Historique")
-        fig.add_scatter(x=pred["Date"], y=pred["prevision"], name="Prévision SARIMAX")
-        fig.add_scatter(x=pred["Date"], y=pred["borne_basse"], name="Borne basse", line=dict(dash="dot"))
-        fig.add_scatter(x=pred["Date"], y=pred["borne_haute"], name="Borne haute", line=dict(dash="dot"))
+        fig.add_scatter(x=pred["Date"], y=pred["prevision"], name="Prévision SARIMAX", line=dict(color="#E67E22"))
+        # Fill area for confidence interval (NOUVEAU)
+        fig.add_scatter(x=pred["Date"], y=pred["borne_haute"], name="Borne haute", line=dict(width=0), showlegend=False)
+        fig.add_scatter(x=pred["Date"], y=pred["borne_basse"], name="Intervalle de confiance",
+                        fill="tonexty", fillcolor="rgba(230,126,34,0.15)", line=dict(width=0))
+        fig.update_layout(title="Prévision SARIMAX avec intervalle de confiance", hovermode="x unified")
         st.plotly_chart(fig, use_container_width=True)
     except Exception as exc:
         alert_banner(f"Bloc SARIMAX en erreur: {exc}", "warning")
@@ -87,9 +91,12 @@ def _auto_arima_block(df: pd.DataFrame, horizon: int) -> None:
         out = pd.DataFrame({"Date": dates, "prevision": fc, "borne_basse": conf[:, 0], "borne_haute": conf[:, 1]})
         fig = go.Figure()
         fig.add_scatter(x=df["Date"], y=df["Poids (Kgs)"], name="Historique")
-        fig.add_scatter(x=out["Date"], y=out["prevision"], name="Auto-ARIMA")
-        fig.add_scatter(x=out["Date"], y=out["borne_basse"], name="Basse", line=dict(dash="dot"))
-        fig.add_scatter(x=out["Date"], y=out["borne_haute"], name="Haute", line=dict(dash="dot"))
+        fig.add_scatter(x=out["Date"], y=out["prevision"], name="Auto-ARIMA", line=dict(color="#8E44AD"))
+        # Fill area for confidence interval (NOUVEAU)
+        fig.add_scatter(x=out["Date"], y=out["borne_haute"], name="Borne haute", line=dict(width=0), showlegend=False)
+        fig.add_scatter(x=out["Date"], y=out["borne_basse"], name="Intervalle de confiance",
+                        fill="tonexty", fillcolor="rgba(142,68,173,0.15)", line=dict(width=0))
+        fig.update_layout(title="Prévision Auto-ARIMA avec intervalle de confiance", hovermode="x unified")
         st.plotly_chart(fig, use_container_width=True)
     except Exception as exc:
         alert_banner(f"Auto-ARIMA indisponible: {exc}", "warning")
@@ -104,9 +111,12 @@ def _ml_quantile_block(df: pd.DataFrame, horizon: int) -> None:
             return
         fig = go.Figure()
         fig.add_scatter(x=df["Date"], y=df["Poids (Kgs)"], name="Historique")
-        fig.add_scatter(x=pred["Date"], y=pred["prevision"], name="Prévision ML")
-        fig.add_scatter(x=pred["Date"], y=pred["borne_basse"], name="Basse", line=dict(dash="dot"))
-        fig.add_scatter(x=pred["Date"], y=pred["borne_haute"], name="Haute", line=dict(dash="dot"))
+        fig.add_scatter(x=pred["Date"], y=pred["prevision"], name="Prévision ML", line=dict(color="#2E7BCF"))
+        # Fill area for confidence interval (NOUVEAU)
+        fig.add_scatter(x=pred["Date"], y=pred["borne_haute"], name="Borne haute (P90)", line=dict(width=0), showlegend=False)
+        fig.add_scatter(x=pred["Date"], y=pred["borne_basse"], name="Intervalle P10-P90",
+                        fill="tonexty", fillcolor="rgba(46,123,207,0.15)", line=dict(width=0))
+        fig.update_layout(title="Prévision ML Quantile (P10 / P50 / P90)", hovermode="x unified")
         st.plotly_chart(fig, use_container_width=True)
     except Exception as exc:
         alert_banner(f"Bloc ML en erreur: {exc}", "warning")
@@ -136,6 +146,53 @@ def _stl_acf_pacf_block(df: pd.DataFrame) -> None:
         alert_banner(f"Bloc STL/ACF/PACF en erreur: {exc}", "warning")
 
 
+def _scenarios_block(df: pd.DataFrame) -> None:
+    """Scénarios prospectifs (NOUVEAU)."""
+    st.subheader("🔮 Scénarios prospectifs")
+
+    target_weight = st.session_state.get("target_weight", 80.0)
+    scenarios = prospective_scenarios(df, target_weight)
+
+    if not scenarios:
+        st.info("Pas assez de données pour calculer les scénarios.")
+        return
+
+    scenario_icons = {"optimiste": "🟢", "réaliste": "🟡", "pessimiste": "🔴"}
+    scenario_cols = st.columns(len(scenarios))
+
+    for i, (name, data) in enumerate(scenarios.items()):
+        with scenario_cols[i]:
+            icon = scenario_icons.get(name, "⚪")
+            st.markdown(f"### {icon} {name.title()}")
+            st.metric("Vitesse", f"{data['velocity_kg_week']:+.2f} kg/sem")
+            st.caption(f"Dans 30j : **{data['proj_30j']:.1f} kg**")
+            st.caption(f"Dans 60j : **{data['proj_60j']:.1f} kg**")
+            st.caption(f"Dans 90j : **{data['proj_90j']:.1f} kg**")
+            if data.get("eta_date"):
+                st.success(f"Objectif ({target_weight} kg) : **{data['eta_date'].strftime('%d/%m/%Y')}** ({data['eta_days']}j)")
+            elif data.get("eta_days") == 0:
+                st.success("🎉 Objectif déjà atteint !")
+            else:
+                st.warning("Objectif non atteignable à ce rythme")
+
+    # Graphique de projection (NOUVEAU)
+    fig_proj = go.Figure()
+    fig_proj.add_scatter(x=df["Date"], y=df["Poids (Kgs)"], name="Historique", line=dict(color="#333"))
+
+    colors = {"optimiste": "#27AE60", "réaliste": "#F39C12", "pessimiste": "#E74C3C"}
+    last_date = df["Date"].max()
+    current = float(df["Poids (Kgs)"].iloc[-1])
+
+    for name, data in scenarios.items():
+        dates = [last_date, last_date + pd.Timedelta(days=30), last_date + pd.Timedelta(days=60), last_date + pd.Timedelta(days=90)]
+        values = [current, data["proj_30j"], data["proj_60j"], data["proj_90j"]]
+        fig_proj.add_scatter(x=dates, y=values, name=f"{name.title()}", line=dict(color=colors.get(name, "#999"), dash="dash", width=2))
+
+    fig_proj.add_hline(y=target_weight, line_dash="dot", line_color="green", annotation_text=f"Objectif: {target_weight} kg")
+    fig_proj.update_layout(title="Projections à 90 jours", hovermode="x unified")
+    st.plotly_chart(fig_proj, use_container_width=True)
+
+
 def main() -> None:
     st.title("Prévisions")
     df = _df()
@@ -146,11 +203,13 @@ def main() -> None:
     df = df.sort_values("Date")
     horizon = st.slider("Horizon (jours)", 7, 90, 30)
 
+    # ── Baselines backtest (existant) ───────────────────────────────────
     st.subheader("Leaderboard baselines (backtest walk-forward)")
     baseline_df = evaluate_baselines(df["Poids (Kgs)"])
     st.dataframe(baseline_df.sort_values("mae"), use_container_width=True)
 
-    t1, t2, t3, t4 = st.tabs(["Comparaison modèles", "SARIMA", "Auto-ARIMA", "STL / ACF-PACF"])
+    # ── Tabs modèles (existant) ─────────────────────────────────────────
+    t1, t2, t3, t4, t5 = st.tabs(["Comparaison modèles", "SARIMA", "Auto-ARIMA", "STL / ACF-PACF", "🔮 Scénarios"])
     fast_mode = st.session_state.get("fast_mode", False)
     with t1:
         _model_comparison(df)
@@ -167,14 +226,48 @@ def main() -> None:
             st.warning("STL/ACF/PACF sauté en mode rapide (tests).")
         else:
             _stl_acf_pacf_block(df)
+    with t5:
+        _scenarios_block(df)
 
-    eta = estimate_target_eta(df, st.session_state.get("target_weight", 80.0))
-    st.subheader("Estimation de date objectif")
+    # ── ETA objectif amélioré (existant + enrichi) ──────────────────────
+    st.markdown("---")
+    target_weight = st.session_state.get("target_weight", 80.0)
+    eta = estimate_target_eta(df, target_weight)
+    st.subheader("🎯 Estimation de date objectif")
     if eta.get("credible"):
-        st.write(f"Date cible estimée : **{eta['eta'].date()}**")
-        st.caption(f"Plage plausible: {eta['eta_min'].date()} → {eta['eta_max'].date()} | Confiance {eta['confidence']:.0%}")
+        eta_date = eta.get("eta")
+        if eta_date:
+            st.write(f"Date cible estimée : **{eta_date.date()}**")
+            eta_min = eta.get("eta_min")
+            eta_max = eta.get("eta_max")
+            if eta_min and eta_max:
+                st.caption(f"Plage plausible: {eta_min.date()} → {eta_max.date()} | Confiance {eta.get('confidence', 0):.0%}")
     else:
         alert_banner(str(eta.get("message", "Estimation indisponible")), "warning")
+
+    # Multi-scenario ETA (NOUVEAU)
+    scenarios = eta.get("scenarios", {})
+    if scenarios:
+        st.markdown("**Détail par scénario :**")
+        for name, sc in scenarios.items():
+            icon = {"optimiste": "🟢", "réaliste": "🟡", "pessimiste": "🔴"}.get(name, "⚪")
+            if sc.get("credible"):
+                st.caption(f"{icon} **{name.title()}** : objectif le {sc['eta'].strftime('%d/%m/%Y')} ({sc['days_remaining']}j) — rythme: {sc['kg_per_week']:+.3f} kg/sem")
+            else:
+                st.caption(f"{icon} **{name.title()}** : {sc.get('message', 'N/A')} (pente: {sc.get('slope', 0):+.4f})")
+
+    # ── Vitesse actuelle récap (NOUVEAU) ────────────────────────────────
+    st.markdown("---")
+    st.subheader("📊 Vitesses de variation")
+    vel = weight_velocity(df, windows=(7, 14, 30, 90))
+    vel_cols = st.columns(4)
+    for i, (w, v) in enumerate(vel.items()):
+        with vel_cols[i]:
+            if v is not None:
+                color = "inverse"
+                kpi_card(f"Vitesse {w}j", f"{v:+.2f} kg/sem")
+            else:
+                kpi_card(f"Vitesse {w}j", "N/A")
 
 
 main()

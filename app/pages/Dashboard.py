@@ -5,6 +5,16 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from app.core.analytics import (
+    discipline_score,
+    generate_insights_text,
+    multi_rolling_averages,
+    progression_score,
+    streak_analysis,
+    weight_acceleration,
+    weight_velocity,
+    weight_volatility,
+)
 from app.core.data import data_quality_report
 from app.core.insights import detect_plateau
 from app.ui.components import alert_banner, confidence_badge, empty_state, help_box, kpi_card
@@ -36,7 +46,9 @@ def main() -> None:
     height_m = st.session_state.get("height_m", 1.82)
     imc = current / (height_m**2)
     targets = st.session_state.get("target_weights", (95.0, 90.0, 85.0, 80.0))
+    target_weight = st.session_state.get("target_weight", 80.0)
 
+    # ── KPIs principaux (existants + enrichis) ──────────────────────────
     c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
         kpi_card("Poids actuel", f"{current:.2f} kg", f"{current-prev:+.2f}")
@@ -50,6 +62,27 @@ def main() -> None:
         quality = data_quality_report(df)
         kpi_card("Qualité des données", f"{quality['score']}/100")
 
+    # ── KPIs avancés (NOUVEAU) ──────────────────────────────────────────
+    vel = weight_velocity(df, windows=(7, 14, 30))
+    disc = discipline_score(df, window_days=30)
+    prog = progression_score(df, target_weight)
+    streaks = streak_analysis(df)
+
+    c6, c7, c8, c9 = st.columns(4)
+    with c6:
+        v7 = vel.get(7)
+        v_display = f"{v7:+.2f} kg/sem" if v7 is not None else "N/A"
+        kpi_card("Vitesse 7j", v_display, help_text="Variation de poids en kg par semaine sur les 7 derniers jours")
+    with c7:
+        kpi_card("Discipline", f"{disc['score']}/100", help_text=f"{disc['interpretation'].title()} — {disc['measured_days']}/{disc['expected_days']} jours mesurés")
+    with c8:
+        kpi_card("Score global", f"{prog['score']}/100 ({prog['grade']})", help_text="Score composite : progression, vitesse, discipline, cohérence")
+    with c9:
+        streak_icon = "🔥" if streaks["current_type"] == "perte" else "📈" if streaks["current_type"] == "gain" else "➡️"
+        streak_txt = f"{streak_icon} {streaks['current_streak']}j {streaks['current_type']}"
+        kpi_card("Série en cours", streak_txt, help_text=f"Record perte : {streaks['longest_loss']}j · Record gain : {streaks['longest_gain']}j")
+
+    # ── Barre de progression (existant) ─────────────────────────────────
     initial = df["Poids (Kgs)"].iloc[0]
     final_target = targets[-1]
     total = initial - final_target
@@ -58,6 +91,7 @@ def main() -> None:
     st.progress(progress / 100)
     st.caption(f"Progression vers l'objectif final ({final_target:.1f} kg): {progress:.1f}%")
 
+    # ── Détection plateau (existant) ────────────────────────────────────
     plateau = detect_plateau(df, window=14)
     if plateau["status"] == "plateau probable":
         alert_banner("Plateau probable détecté sur 14 jours.", "warning")
@@ -65,6 +99,20 @@ def main() -> None:
     confidence = "élevée" if quality["score"] > 80 else "moyenne" if quality["score"] > 60 else "faible"
     confidence_badge("Confiance signal", confidence)
 
+    # ── Insights automatiques textuels (NOUVEAU) ────────────────────────
+    st.markdown("---")
+    st.subheader("💡 Insights automatiques")
+    insights = generate_insights_text(df, target_weight)
+    for insight in insights:
+        st.markdown(f"> {insight}")
+
+    # Accélération (NOUVEAU)
+    acc = weight_acceleration(df)
+    if acc["interpretation"] != "données insuffisantes":
+        st.caption(f"📐 Accélération : {acc['interpretation']}")
+
+    # ── Graphique principal avec MA (existant) ──────────────────────────
+    st.markdown("---")
     ma_type = st.session_state.get("ma_type", "Simple")
     window_size = int(st.session_state.get("window_size", 7))
     df["Poids_MA"] = _moving_average(df["Poids (Kgs)"], window_size, ma_type)
@@ -77,17 +125,50 @@ def main() -> None:
         fig.add_hline(y=float(target), line_dash="dash", annotation_text=f"Objectif {idx}: {target:.1f} kg")
     st.plotly_chart(fig, use_container_width=True)
 
+    # ── Graphique multi-MA (NOUVEAU) ────────────────────────────────────
+    with st.expander("📊 Moyennes mobiles multiples (7/14/30j)", expanded=False):
+        df_ma = multi_rolling_averages(df, windows=(7, 14, 30))
+        fig_ma = go.Figure()
+        fig_ma.add_scatter(x=df_ma["Date"], y=df_ma["Poids (Kgs)"], mode="markers", name="Mesures", opacity=0.4, marker=dict(size=4))
+        colors = {"MA_7j": "#2E7BCF", "MA_14j": "#E67E22", "MA_30j": "#27AE60"}
+        for col, color in colors.items():
+            if col in df_ma.columns:
+                fig_ma.add_scatter(x=df_ma["Date"], y=df_ma[col], mode="lines", name=col, line=dict(color=color, width=2))
+        for idx, target in enumerate(targets, start=1):
+            fig_ma.add_hline(y=float(target), line_dash="dash", annotation_text=f"Obj. {idx}")
+        fig_ma.update_layout(title="Moyennes mobiles 7/14/30 jours", hovermode="x unified")
+        st.plotly_chart(fig_ma, use_container_width=True)
+
+    # ── Comparaison hebdo (existant) ────────────────────────────────────
     wk = df["Poids (Kgs)"].tail(7).mean()
     prev_wk = df["Poids (Kgs)"].iloc[-14:-7].mean() if len(df) >= 14 else wk
     delta_wk = wk - prev_wk
     st.metric("Comparaison hebdo", f"{wk:.2f} kg", f"{delta_wk:+.2f} kg", delta_color="inverse")
 
+    # ── Volatilité (NOUVEAU) ────────────────────────────────────────────
+    vol = weight_volatility(df, window=14)
+    st.caption(f"📊 Volatilité 14j : {vol['interpretation']} (σ={vol['std']:.2f} kg, amplitude={vol['range']:.1f} kg)")
+
+    # ── Distribution et IMC (existant) ──────────────────────────────────
     with st.expander("Distribution et évolution IMC"):
         hist = px.histogram(df, x="Poids (Kgs)", nbins=25, title="Distribution du poids")
         st.plotly_chart(hist, use_container_width=True)
         df["IMC"] = df["Poids (Kgs)"] / (height_m**2)
         bmi_line = px.line(df, x="Date", y="IMC", title="Évolution de l'IMC")
         st.plotly_chart(bmi_line, use_container_width=True)
+
+    # ── Score de progression détaillé (NOUVEAU) ─────────────────────────
+    with st.expander("🏆 Détail du score de progression"):
+        components = prog.get("components", {})
+        if components:
+            comp_cols = st.columns(4)
+            labels = {"progression": "Progression", "vitesse": "Vitesse", "discipline": "Discipline", "cohérence": "Cohérence"}
+            max_pts = {"progression": 40, "vitesse": 25, "discipline": 20, "cohérence": 15}
+            for i, (key, label) in enumerate(labels.items()):
+                with comp_cols[i]:
+                    val = components.get(key, 0)
+                    mx = max_pts[key]
+                    st.metric(label, f"{val:.0f}/{mx}")
 
     help_box("Résumé hebdo", "Cette vue est analytique et informative; elle ne remplace pas un avis médical.")
 
