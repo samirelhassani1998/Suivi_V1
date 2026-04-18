@@ -40,8 +40,14 @@ def main() -> None:
     df = df.sort_values("Date").copy()
     current = df["Poids (Kgs)"].iloc[-1]
     prev = df["Poids (Kgs)"].iloc[-2] if len(df) > 1 else current
-    short = df["Poids (Kgs)"].tail(7).mean()
-    long = df["Poids (Kgs)"].tail(30).mean() if len(df) >= 30 else df["Poids (Kgs)"].mean()
+    last_date = df["Date"].max()
+    # Filtrage par dates calendaires réelles (pas par nombre d'entrées)
+    short_data = df[df["Date"] >= last_date - pd.Timedelta(days=7)]["Poids (Kgs)"]
+    short = float(short_data.mean()) if not short_data.empty else current
+    short_n = len(short_data)
+    long_data = df[df["Date"] >= last_date - pd.Timedelta(days=30)]["Poids (Kgs)"]
+    long = float(long_data.mean()) if not long_data.empty else df["Poids (Kgs)"].mean()
+    long_n = len(long_data)
 
     height_m = st.session_state.get("height_m", 1.82)
     imc = current / (height_m**2)
@@ -53,9 +59,9 @@ def main() -> None:
     with c1:
         kpi_card("Poids actuel", f"{current:.2f} kg", f"{current-prev:+.2f}")
     with c2:
-        kpi_card("Tendance 7j", f"{short:.2f} kg")
+        kpi_card("Moy. 7 derniers jours", f"{short:.2f} kg", help_text=f"Basé sur {short_n} mesure(s) des 7 derniers jours calendaires")
     with c3:
-        kpi_card("Tendance 30j", f"{long:.2f} kg")
+        kpi_card("Moy. 30 derniers jours", f"{long:.2f} kg", help_text=f"Basé sur {long_n} mesure(s) des 30 derniers jours calendaires")
     with c4:
         kpi_card("IMC", f"{imc:.2f}")
     with c5:
@@ -136,14 +142,18 @@ def main() -> None:
                 fig_ma.add_scatter(x=df_ma["Date"], y=df_ma[col], mode="lines", name=col, line=dict(color=color, width=2))
         for idx, target in enumerate(targets, start=1):
             fig_ma.add_hline(y=float(target), line_dash="dash", annotation_text=f"Obj. {idx}")
-        fig_ma.update_layout(title="Moyennes mobiles 7/14/30 jours", hovermode="x unified")
+        fig_ma.update_layout(title="Moyennes mobiles (glissantes sur N mesures consécutives)", hovermode="x unified")
         st.plotly_chart(fig_ma, use_container_width=True)
+        st.caption("ℹ️ Les moyennes mobiles sont calculées sur N mesures consécutives, pas sur N jours calendaires.")
 
-    # ── Comparaison hebdo (existant) ────────────────────────────────────
-    wk = df["Poids (Kgs)"].tail(7).mean()
-    prev_wk = df["Poids (Kgs)"].iloc[-14:-7].mean() if len(df) >= 14 else wk
+    # ── Comparaison hebdo (corrigé : dates calendaires) ─────────────────
+    wk_data = df[df["Date"] >= last_date - pd.Timedelta(days=7)]["Poids (Kgs)"]
+    prev_wk_data = df[(df["Date"] >= last_date - pd.Timedelta(days=14)) & (df["Date"] < last_date - pd.Timedelta(days=7))]["Poids (Kgs)"]
+    wk = float(wk_data.mean()) if not wk_data.empty else current
+    prev_wk = float(prev_wk_data.mean()) if not prev_wk_data.empty else wk
     delta_wk = wk - prev_wk
-    st.metric("Comparaison hebdo", f"{wk:.2f} kg", f"{delta_wk:+.2f} kg", delta_color="inverse")
+    st.metric("Comparaison hebdo (7j calendaires)", f"{wk:.2f} kg", f"{delta_wk:+.2f} kg", delta_color="inverse",
+             help=f"Semaine courante: {len(wk_data)} mesure(s) · Semaine précédente: {len(prev_wk_data)} mesure(s)")
 
     # ── Volatilité (NOUVEAU) ────────────────────────────────────────────
     vol = weight_volatility(df, window=14)
