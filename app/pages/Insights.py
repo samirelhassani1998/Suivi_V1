@@ -243,11 +243,11 @@ def main() -> None:
     sk_cols = st.columns(4)
     with sk_cols[0]:
         icon = "🔥" if streaks["current_type"] == "perte" else "📈" if streaks["current_type"] == "gain" else "➡️"
-        st.metric("Série actuelle", f"{icon} {streaks['current_streak']}j", streaks["current_type"])
+        st.metric("Série actuelle", f"{icon} {streaks['current_streak']} mesures", streaks["current_type"])
     with sk_cols[1]:
-        st.metric("Record perte", f"📉 {streaks['longest_loss']}j")
+        st.metric("Record perte", f"📉 {streaks['longest_loss']} mesures")
     with sk_cols[2]:
-        st.metric("Record gain", f"📈 {streaks['longest_gain']}j")
+        st.metric("Record gain", f"📈 {streaks['longest_gain']} mesures")
     with sk_cols[3]:
         vel = weight_velocity(df, windows=(7,))
         v7 = vel.get(7)

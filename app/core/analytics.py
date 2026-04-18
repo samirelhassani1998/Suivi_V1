@@ -615,13 +615,15 @@ def generate_insights_text(df: pd.DataFrame, target_weight: float) -> list[str]:
     data = df.sort_values("Date")
     current = float(data["Poids (Kgs)"].iloc[-1])
     initial = float(data["Poids (Kgs)"].iloc[0])
+    first_date = data["Date"].iloc[0].strftime("%d/%m/%Y")
+    last_date = data["Date"].iloc[-1].strftime("%d/%m/%Y")
 
     # Progression globale
     total_lost = initial - current
     if total_lost > 0:
-        insights.append(f"📉 Vous avez perdu **{total_lost:.1f} kg** depuis le début du suivi.")
+        insights.append(f"📉 Vous avez perdu **{total_lost:.1f} kg** depuis le {first_date} ({initial:.1f} → {current:.1f} kg).")
     elif total_lost < 0:
-        insights.append(f"📈 Vous avez pris **{abs(total_lost):.1f} kg** depuis le début du suivi.")
+        insights.append(f"📈 Vous avez pris **{abs(total_lost):.1f} kg** depuis le {first_date} ({initial:.1f} → {current:.1f} kg).")
 
     # Vitesse
     vel = weight_velocity(df, windows=(7, 14))
@@ -638,7 +640,7 @@ def generate_insights_text(df: pd.DataFrame, target_weight: float) -> list[str]:
     # Volatilité
     vol = weight_volatility(df, window=14)
     if vol["cv"] > 1.5:
-        insights.append(f"📊 Poids assez volatil ces 14 derniers jours (variation de {vol['range']:.1f} kg).")
+        insights.append(f"📊 Poids assez volatil sur les 14 dernières mesures (amplitude de {vol['range']:.1f} kg).")
     elif vol["cv"] < 0.5:
         insights.append("✅ Poids très stable récemment.")
 
@@ -649,19 +651,12 @@ def generate_insights_text(df: pd.DataFrame, target_weight: float) -> list[str]:
     elif disc["score"] < 50:
         insights.append(f"📝 Pensez à mesurer plus régulièrement ({disc['measured_days']}/{disc['expected_days']} jours ce mois).")
 
-    # Streaks
+    # Streaks (mesures consécutives, pas jours calendaires)
     streaks = streak_analysis(df)
     if streaks["current_streak"] >= 3 and streaks["current_type"] == "perte":
-        insights.append(f"🔥 Série en cours : **{streaks['current_streak']} jours** consécutifs de perte !")
+        insights.append(f"🔥 Série en cours : **{streaks['current_streak']} mesures** consécutives en baisse !")
     if streaks["longest_loss"] >= 5:
-        insights.append(f"🏆 Record de série de perte : {streaks['longest_loss']} jours consécutifs.")
-
-    # Accélération
-    acc = weight_acceleration(df)
-    if acc["acceleration"] < -0.2:
-        insights.append("🚀 " + acc["interpretation"])
-    elif acc["acceleration"] > 0.2:
-        insights.append("⚠️ " + acc["interpretation"])
+        insights.append(f"🏆 Record de série de perte : {streaks['longest_loss']} mesures consécutives en baisse.")
 
     # Proximité objectif
     remaining = current - target_weight

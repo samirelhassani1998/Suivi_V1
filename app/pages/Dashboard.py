@@ -85,8 +85,8 @@ def main() -> None:
         kpi_card("Score global", f"{prog['score']}/100 ({prog['grade']})", help_text="Score composite : progression, vitesse, discipline, cohérence")
     with c9:
         streak_icon = "🔥" if streaks["current_type"] == "perte" else "📈" if streaks["current_type"] == "gain" else "➡️"
-        streak_txt = f"{streak_icon} {streaks['current_streak']}j {streaks['current_type']}"
-        kpi_card("Série en cours", streak_txt, help_text=f"Record perte : {streaks['longest_loss']}j · Record gain : {streaks['longest_gain']}j")
+        streak_txt = f"{streak_icon} {streaks['current_streak']} mesures en {streaks['current_type']}"
+        kpi_card("Série en cours", streak_txt, help_text=f"Record perte : {streaks['longest_loss']} mesures · Record gain : {streaks['longest_gain']} mesures")
 
     # ── Barre de progression (existant) ─────────────────────────────────
     initial = df["Poids (Kgs)"].iloc[0]
