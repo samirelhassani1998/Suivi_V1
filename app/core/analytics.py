@@ -610,69 +610,243 @@ def weight_acceleration(df: pd.DataFrame) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# 15. Interprétation textuelle intelligente
+# 15. Détection de la période d'effort actuelle
+# ---------------------------------------------------------------------------
+
+def detect_current_effort(df: pd.DataFrame, gap_threshold_days: int = 21) -> dict[str, Any]:
+    """Détecte la période d'effort actuelle en cherchant le dernier 'trou' significatif.
+
+    Un trou > gap_threshold_days est interprété comme un arrêt du suivi.
+    Retourne un dict avec le sous-DataFrame de la période d'effort, la date de début,
+    le nombre de jours et de mesures.
+    """
+    if df.empty:
+        return {"effort_df": df, "start_date": None, "days": 0, "measurements": 0, "is_subset": False}
+
+    data = df.sort_values("Date").copy()
+    if len(data) < 2:
+        return {
+            "effort_df": data,
+            "start_date": data["Date"].iloc[0],
+            "days": 1,
+            "measurements": 1,
+            "is_subset": False,
+        }
+
+    # Parcourir en ordre inverse pour trouver le dernier trou
+    dates = data["Date"].values
+    gap_idx = None
+    for i in range(len(dates) - 1, 0, -1):
+        gap = (pd.Timestamp(dates[i]) - pd.Timestamp(dates[i - 1])).days
+        if gap > gap_threshold_days:
+            gap_idx = i
+            break
+
+    if gap_idx is not None:
+        effort_df = data.iloc[gap_idx:].copy().reset_index(drop=True)
+        is_subset = True
+    else:
+        effort_df = data.copy()
+        is_subset = False
+
+    start_date = effort_df["Date"].iloc[0]
+    end_date = effort_df["Date"].iloc[-1]
+    duration_days = (end_date - start_date).days + 1
+
+    return {
+        "effort_df": effort_df,
+        "start_date": start_date,
+        "days": duration_days,
+        "measurements": len(effort_df),
+        "is_subset": is_subset,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 16. Tendance robuste EMA
+# ---------------------------------------------------------------------------
+
+def compute_trend_ema(df: pd.DataFrame, span: int = 7) -> pd.DataFrame:
+    """Calcule une tendance EMA (Exponential Moving Average) robuste.
+
+    Fonctionne correctement même avec des données éparses car EWM
+    s'adapte naturellement aux intervalles irréguliers.
+    """
+    data = df.sort_values("Date").copy()
+    data["Tendance_EMA"] = data["Poids (Kgs)"].ewm(span=max(span, 2), adjust=False).mean()
+    return data
+
+
+# ---------------------------------------------------------------------------
+# 17. Comparaison rythme actuel vs rythme nécessaire
+# ---------------------------------------------------------------------------
+
+def pace_comparison(df: pd.DataFrame, target_weight: float, target_date: pd.Timestamp | None = None) -> dict[str, Any]:
+    """Compare le rythme actuel de perte avec le rythme nécessaire pour atteindre l'objectif.
+
+    Si target_date n'est pas fourni, on utilise 6 mois par défaut.
+    """
+    if len(df) < 3:
+        return {"current_pace": None, "required_pace": None, "interpretation": "données insuffisantes"}
+
+    data = df.sort_values("Date")
+    current = float(data["Poids (Kgs)"].iloc[-1])
+    last_date = data["Date"].max()
+
+    if current <= target_weight:
+        return {
+            "current_pace": 0.0,
+            "required_pace": 0.0,
+            "interpretation": "Objectif déjà atteint !",
+            "ratio": 1.0,
+        }
+
+    # Rythme actuel : vitesse sur 14j (ou toute la période d'effort si < 14j)
+    vel = weight_velocity(df, windows=(14,))
+    current_pace = vel.get(14)  # kg/semaine (négatif = perte)
+
+    # Rythme nécessaire
+    remaining = current - target_weight
+    if target_date is None:
+        target_date = last_date + pd.Timedelta(days=180)  # 6 mois par défaut
+    days_left = max((target_date - last_date).days, 1)
+    weeks_left = days_left / 7
+    required_pace = -(remaining / weeks_left)  # négatif = perte nécessaire
+
+    # Interprétation
+    if current_pace is None:
+        interp = "Pas assez de données pour calculer le rythme actuel."
+        ratio = None
+    elif current_pace >= 0:
+        interp = f"Vous êtes actuellement en reprise (+{current_pace:.2f} kg/sem). Objectif : perdre {abs(required_pace):.2f} kg/sem."
+        ratio = 0.0
+    else:
+        ratio = abs(current_pace) / abs(required_pace) if abs(required_pace) > 0.001 else 999.0
+        if ratio >= 2.0:
+            interp = f"Excellent ! Vous perdez **{abs(current_pace):.2f} kg/sem**, soit {ratio:.1f}x le rythme nécessaire ({abs(required_pace):.2f} kg/sem)."
+        elif ratio >= 1.0:
+            interp = f"Bon rythme ! Vous perdez **{abs(current_pace):.2f} kg/sem**, aligné avec le rythme nécessaire ({abs(required_pace):.2f} kg/sem)."
+        elif ratio >= 0.5:
+            interp = f"Rythme un peu lent : **{abs(current_pace):.2f} kg/sem** vs {abs(required_pace):.2f} kg/sem nécessaire."
+        else:
+            interp = f"Rythme insuffisant : **{abs(current_pace):.2f} kg/sem** vs {abs(required_pace):.2f} kg/sem nécessaire."
+
+    return {
+        "current_pace": current_pace,
+        "required_pace": required_pace,
+        "remaining_kg": round(remaining, 1),
+        "days_left": days_left,
+        "interpretation": interp,
+        "ratio": ratio,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 18. Interprétation textuelle intelligente (contextuelle)
 # ---------------------------------------------------------------------------
 
 def generate_insights_text(df: pd.DataFrame, target_weight: float) -> list[str]:
-    """Génère des insights textuels en français à partir des données."""
-    if len(df) < 7:
+    """Génère des insights textuels en français, priorisés sur la période d'effort actuelle.
+
+    L'ordre est conçu pour être motivant :
+    1. D'abord ce qui se passe MAINTENANT (effort en cours)
+    2. Ensuite les signaux positifs
+    3. En dernier l'historique global (contexte)
+    """
+    if len(df) < 3:
         return ["📊 Continuez à enregistrer vos mesures pour obtenir des insights personnalisés."]
 
     insights: list[str] = []
     data = df.sort_values("Date")
     current = float(data["Poids (Kgs)"].iloc[-1])
-    initial = float(data["Poids (Kgs)"].iloc[0])
-    first_date = data["Date"].iloc[0].strftime("%d/%m/%Y")
-    last_date = data["Date"].iloc[-1].strftime("%d/%m/%Y")
+    initial_global = float(data["Poids (Kgs)"].iloc[0])
 
-    # Progression globale
-    total_lost = initial - current
-    if total_lost > 0:
-        insights.append(f"📉 Vous avez perdu **{total_lost:.1f} kg** depuis le {first_date} ({initial:.1f} → {current:.1f} kg).")
-    elif total_lost < 0:
-        insights.append(f"📈 Vous avez pris **{abs(total_lost):.1f} kg** depuis le {first_date} ({initial:.1f} → {current:.1f} kg).")
+    # Détection période d'effort
+    effort = detect_current_effort(df, gap_threshold_days=21)
+    effort_df = effort["effort_df"]
+    effort_start = effort["start_date"]
+    effort_measurements = effort["measurements"]
+    effort_days = effort["days"]
 
-    # Vitesse
-    vel = weight_velocity(df, windows=(7, 14))
-    v7 = vel.get(7)
-    v14 = vel.get(14)
-    if v7 is not None:
-        if v7 < -0.5:
-            insights.append(f"🏃 Excellente vitesse de perte ces 7 derniers jours : **{v7:.2f} kg/sem**.")
-        elif v7 < 0:
-            insights.append(f"👍 Perte progressive ces 7 derniers jours : **{v7:.2f} kg/sem**.")
-        elif v7 > 0.3:
-            insights.append(f"⚠️ Reprise de poids ces 7 derniers jours : **+{v7:.2f} kg/sem**.")
+    if effort["is_subset"] and len(effort_df) >= 2:
+        effort_initial = float(effort_df["Poids (Kgs)"].iloc[0])
+        effort_delta = effort_initial - current
+        start_str = effort_start.strftime("%d/%m/%Y")
 
-    # Volatilité
-    vol = weight_volatility(df, window=14)
-    if vol["cv"] > 1.5:
-        insights.append(f"📊 Poids assez volatil sur les 14 dernières mesures (amplitude de {vol['range']:.1f} kg).")
-    elif vol["cv"] < 0.5:
-        insights.append("✅ Poids très stable récemment.")
+        # -- PRIORITÉ 1 : Effort en cours --
+        if effort_delta > 0:
+            insights.append(
+                f"💪 Effort en cours : **-{effort_delta:.1f} kg** en {effort_days} jours "
+                f"depuis le {start_str} ({effort_initial:.1f} → {current:.1f} kg)."
+            )
+        elif effort_delta < 0:
+            insights.append(
+                f"📊 Depuis le {start_str} : **+{abs(effort_delta):.1f} kg** en {effort_days} jours "
+                f"({effort_initial:.1f} → {current:.1f} kg)."
+            )
+        else:
+            insights.append(f"➡️ Poids stable depuis le {start_str} ({effort_days} jours).")
 
-    # Discipline
-    disc = discipline_score(df, window_days=30)
-    if disc["score"] >= 85:
-        insights.append(f"🏅 Discipline exemplaire : {disc['measured_days']}/{disc['expected_days']} jours mesurés ce mois.")
-    elif disc["score"] < 50:
-        insights.append(f"📝 Pensez à mesurer plus régulièrement ({disc['measured_days']}/{disc['expected_days']} jours ce mois).")
+        insights.append(f"📅 Période de suivi actuelle : **{effort_measurements} mesures** sur {effort_days} jours.")
+    else:
+        effort_df = data  # pas de trou détecté, on utilise tout
 
-    # Streaks (mesures consécutives, pas jours calendaires)
-    streaks = streak_analysis(df)
-    if streaks["current_streak"] >= 3 and streaks["current_type"] == "perte":
+    # -- PRIORITÉ 2 : Signaux positifs récents --
+
+    # Streaks
+    streaks = streak_analysis(effort_df)
+    if streaks["current_streak"] >= 2 and streaks["current_type"] == "perte":
         insights.append(f"🔥 Série en cours : **{streaks['current_streak']} mesures** consécutives en baisse !")
     if streaks["longest_loss"] >= 5:
         insights.append(f"🏆 Record de série de perte : {streaks['longest_loss']} mesures consécutives en baisse.")
 
-    # Proximité objectif
+    # Vitesse sur l'effort
+    vel = weight_velocity(effort_df, windows=(7, 14))
+    v7 = vel.get(7)
+    if v7 is not None:
+        if v7 < -1.0:
+            insights.append(f"🚀 Perte rapide ces 7 derniers jours : **{v7:.2f} kg/sem**.")
+        elif v7 < -0.3:
+            insights.append(f"🏃 Bonne vitesse de perte : **{v7:.2f} kg/sem** sur 7 jours.")
+        elif v7 < 0:
+            insights.append(f"👍 Perte progressive : **{v7:.2f} kg/sem** sur 7 jours.")
+        elif v7 > 0.5:
+            insights.append(f"⚠️ Reprise notable ces 7 derniers jours : **+{v7:.2f} kg/sem**.")
+
+    # Volatilité
+    vol = weight_volatility(effort_df, window=14)
+    if vol["nb_mesures"] >= 3:
+        if vol["cv"] > 1.5:
+            insights.append(f"📊 Poids fluctuant (amplitude {vol['range']:.1f} kg sur 14j). C'est normal, la tendance compte plus.")
+        elif vol["cv"] < 0.5:
+            insights.append("✅ Poids très stable récemment.")
+
+    # -- PRIORITÉ 3 : Objectif --
     remaining = current - target_weight
     if remaining > 0:
         if remaining < 2:
             insights.append(f"🎯 Plus que **{remaining:.1f} kg** pour atteindre l'objectif ! Vous y êtes presque !")
-        elif remaining < 5:
+        else:
             insights.append(f"🎯 Il reste **{remaining:.1f} kg** pour atteindre l'objectif de {target_weight} kg.")
     elif remaining <= 0:
         insights.append("🎉 **Objectif atteint !** Félicitations !")
+
+    # -- PRIORITÉ 4 : Discipline (encourageante) --
+    disc = discipline_score(effort_df, window_days=min(effort_days, 30) if effort_days > 0 else 30)
+    if disc["score"] >= 85:
+        insights.append(f"🏅 Discipline exemplaire : {disc['measured_days']}/{disc['expected_days']} jours mesurés.")
+    elif disc["score"] >= 50:
+        insights.append(f"👍 Bonne régularité : {disc['measured_days']} mesures sur {disc['expected_days']} jours.")
+    elif effort_measurements >= 3:
+        insights.append(f"📝 Essayez de mesurer plus souvent pour des insights plus fiables ({disc['measured_days']}/{disc['expected_days']} jours).")
+
+    # -- CONTEXTE : Historique global (en dernier, si différent de l'effort) --
+    if effort["is_subset"]:
+        total_delta = initial_global - current
+        first_date = data["Date"].iloc[0].strftime("%d/%m/%Y")
+        if total_delta > 0:
+            insights.append(f"📜 Historique global : **-{total_delta:.1f} kg** depuis le {first_date}.")
+        elif total_delta < 0:
+            insights.append(f"📜 Historique global depuis le {first_date} : +{abs(total_delta):.1f} kg. L'important est la tendance actuelle.")
 
     return insights if insights else ["📊 Analyses en cours, continuez à saisir vos données."]

@@ -15,6 +15,14 @@ def _ensure_df() -> pd.DataFrame:
     return df
 
 
+def _format_dates_for_display(df: pd.DataFrame) -> pd.DataFrame:
+    """Crée une copie avec les dates formatées en dd/mm/yyyy pour l'affichage."""
+    display = df.copy()
+    if "Date" in display.columns and not display.empty:
+        display["Date"] = pd.to_datetime(display["Date"], errors="coerce").dt.strftime("%d/%m/%Y")
+    return display
+
+
 def main() -> None:
     st.title("Journal")
     df = _ensure_df()
@@ -30,7 +38,7 @@ def main() -> None:
             if isinstance(date_range, tuple) and len(date_range) == 2:
                 start, end = pd.Timestamp(date_range[0]), pd.Timestamp(date_range[1])
                 preview = df[(df["Date"] >= start) & (df["Date"] <= end)]
-                st.dataframe(preview.tail(20), use_container_width=True)
+                st.dataframe(_format_dates_for_display(preview.tail(20)), use_container_width=True)
 
     edited = st.data_editor(df, num_rows="dynamic", use_container_width=True, key="journal_editor")
     report = validate_journal(edited)
@@ -57,7 +65,8 @@ def main() -> None:
         )
 
     st.subheader("Aperçu des dernières lignes")
-    st.dataframe(edited.tail(10), use_container_width=True)
+    st.dataframe(_format_dates_for_display(edited.tail(10)), use_container_width=True)
 
 
 main()
+

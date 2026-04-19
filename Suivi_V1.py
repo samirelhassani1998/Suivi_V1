@@ -7,7 +7,7 @@ import streamlit as st
 
 from app.auth import check_password
 from app.config import DATA_URL
-from app.core.data import clean_weight_dataframe
+from app.core.data import clean_weight_dataframe, resolve_duplicates
 from app.core.session_state import ensure_session_defaults, reset_working_to_source, set_source_data
 from app.ui.theme import apply_global_theme
 
@@ -15,7 +15,9 @@ from app.ui.theme import apply_global_theme
 @st.cache_data(ttl=300)
 def load_remote_csv(url: str) -> pd.DataFrame:
     raw = pd.read_csv(url)
-    return clean_weight_dataframe(raw)
+    cleaned = clean_weight_dataframe(raw)
+    # Résoudre les doublons de date automatiquement (garder la dernière mesure du jour)
+    return resolve_duplicates(cleaned, "garder_la_derniere")
 
 
 def _load_from_source() -> None:
