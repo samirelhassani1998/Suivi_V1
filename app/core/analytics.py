@@ -625,6 +625,7 @@ def progression_score(df: pd.DataFrame, target_weight: float) -> dict[str, Any]:
     return {
         "score": total,
         "grade": grade,
+        "confidence": "solide",
         "components": {
             "progression": round(progress_pts, 1),
             "vitesse": round(speed_pts, 1),
