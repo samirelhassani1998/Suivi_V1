@@ -110,6 +110,8 @@ def estimate_target_eta(df: pd.DataFrame, target_weight: float, effort_df: pd.Da
 
     x = np.arange(len(primary_data))
     slope, intercept = np.polyfit(x, primary_data["Poids (Kgs)"], 1)
+
+    # Garde-fou 1 : tendance insuffisante
     if slope >= -0.005:
         return {
             "credible": False,
@@ -117,6 +119,37 @@ def estimate_target_eta(df: pd.DataFrame, target_weight: float, effort_df: pd.Da
             "slope_30d": round(slope, 4),
             "scenarios": scenarios,
         }
+
+    # Garde-fou 2 : si < 7 mesures dans l'effort, signal trop fragile
+    if effort_df is not None and len(effort_df) < 7:
+        return {
+            "credible": False,
+            "message": f"Phase de démarrage ({len(effort_df)} mesures) — l'ETA sera fiable à partir de 7 mesures.",
+            "slope_30d": round(slope, 4),
+            "source": primary_source,
+            "scenarios": scenarios,
+        }
+
+    # Garde-fou 3 : si pente > 2 kg/sem, c'est du bruit (perte hydrique)
+    kg_per_week = abs(slope * 7)
+    if kg_per_week > 2.0:
+        # Plafonner à 0.75 kg/sem pour un ETA réaliste
+        capped_slope = -0.75 / 7
+        remaining = current - target_weight
+        days = int(remaining / abs(capped_slope))
+        eta = last_date + pd.Timedelta(days=max(days, 0))
+        return {
+            "credible": True,
+            "eta": eta,
+            "eta_min": eta - pd.Timedelta(days=30),
+            "eta_max": eta + pd.Timedelta(days=60),
+            "confidence": 0.3,
+            "message": f"Vitesse actuelle ({kg_per_week:.1f} kg/sem) probablement temporaire. ETA basé sur un rythme réaliste de 0.75 kg/sem.",
+            "slope_30d": round(slope, 4),
+            "source": primary_source,
+            "scenarios": scenarios,
+        }
+
     remaining = current - target_weight
     days = int(remaining / abs(slope))
     eta = last_date + pd.Timedelta(days=max(days, 0))
@@ -130,4 +163,5 @@ def estimate_target_eta(df: pd.DataFrame, target_weight: float, effort_df: pd.Da
         "source": primary_source,
         "scenarios": scenarios,
     }
+
 

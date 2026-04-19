@@ -572,21 +572,22 @@ def progression_score(df: pd.DataFrame, target_weight: float) -> dict[str, Any]:
     current = float(data["Poids (Kgs)"].iloc[-1])
 
     if len(df) < 7:
-        # Fallback simplifié : direction (0-50) + discipline (0-50)
+        # Fallback simplifié : direction (0-30) + discipline (0-30), plafonné à 60
         direction_delta = initial - current  # positif = perte
         if direction_delta > 0:
-            direction_pts = min(50, direction_delta * 20)  # -2.5 kg = 50 pts
+            direction_pts = min(30, direction_delta * 12)  # -2.5 kg = 30 pts
         else:
             direction_pts = 0
 
         days_span = max((data["Date"].max() - data["Date"].min()).days, 1)
-        disc_pts = min(50, (len(df) / max(days_span, 1)) * 100 * 0.5)
+        disc_pts = min(30, (len(df) / max(days_span, 1)) * 100 * 0.3)
 
-        total = int(min(100, direction_pts + disc_pts))
+        total = int(min(60, direction_pts + disc_pts))  # plafonné à 60
         grade = _score_to_grade(total)
         return {
             "score": total,
             "grade": grade,
+            "confidence": "fragile",
             "components": {
                 "direction": round(direction_pts, 1),
                 "discipline": round(disc_pts, 1),
@@ -911,6 +912,119 @@ def generate_insights_text(df: pd.DataFrame, target_weight: float) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# 18b. Résumé actionnable : Situation / Interprétation / Action
+# ---------------------------------------------------------------------------
+
+def generate_action_summary(df: pd.DataFrame, target_weight: float) -> dict[str, str]:
+    """Génère un résumé structuré en 3 niveaux pour l'utilisateur.
+
+    Retourne un dict avec 'situation', 'interpretation', 'action'.
+    Contexte-aware : adapté à la phase de l'effort (démarrage, actif, établi).
+    """
+    if len(df) < 2:
+        return {
+            "situation": "Première mesure enregistrée. Bienvenue !",
+            "interpretation": "Les analyses se débloquent à partir de 3 mesures.",
+            "action": "Pesez-vous demain matin à jeun pour commencer le suivi.",
+        }
+
+    data = df.sort_values("Date")
+    current = float(data["Poids (Kgs)"].iloc[-1])
+    effort = detect_current_effort(df, gap_threshold_days=21)
+    effort_df = effort["effort_df"]
+    effort_days = effort["days"]
+    effort_measurements = effort["measurements"]
+    is_startup = effort_days < 7
+
+    if effort["is_subset"] and len(effort_df) >= 2:
+        effort_initial = float(effort_df["Poids (Kgs)"].iloc[0])
+        delta = effort_initial - current  # positif = perte
+        start_str = effort["start_date"].strftime("%d/%m/%Y")
+    else:
+        delta = float(data["Poids (Kgs)"].iloc[0]) - current
+        start_str = data["Date"].iloc[0].strftime("%d/%m/%Y")
+
+    # ── SITUATION (factuelle) ──
+    if effort["is_subset"]:
+        if delta > 0:
+            situation = f"Vous avez repris le suivi le {start_str} — **-{delta:.1f} kg** en {effort_days} jours ({effort_measurements} mesures)."
+        elif delta < 0:
+            situation = f"Vous avez repris le suivi le {start_str} — **+{abs(delta):.1f} kg** en {effort_days} jours ({effort_measurements} mesures)."
+        else:
+            situation = f"Vous avez repris le suivi le {start_str} — poids stable ({effort_measurements} mesures)."
+    else:
+        situation = f"Suivi continu depuis le {start_str} — {len(df)} mesures."
+
+    # ── INTERPRÉTATION (ce que ça veut dire) ──
+    if is_startup:
+        if delta > 1.5:
+            interpretation = (
+                f"Cette perte rapide ({delta:.1f} kg en {effort_days}j) est très probablement de l'eau "
+                f"et de la vidange digestive. **Ce n'est pas de la graisse.** "
+                f"La vraie tendance se vérifiera à partir du jour 7-10."
+            )
+        elif delta > 0:
+            interpretation = (
+                f"Bonne direction pour le début. "
+                f"C'est encore trop tôt pour extrapoler une tendance fiable (jour {effort_days}/7)."
+            )
+        elif delta < 0:
+            interpretation = (
+                f"Reprise de {abs(delta):.1f} kg en début de suivi. "
+                f"Les premiers jours sont souvent bruités — attendez le jour 7 pour évaluer."
+            )
+        else:
+            interpretation = "Poids stable en début de suivi. C'est normal, attendez quelques jours."
+    else:
+        # Effort établi (>= 7 jours)
+        vel = weight_velocity(effort_df, windows=(7,))
+        v7 = vel.get(7)
+        if v7 is not None and v7 < -1.0:
+            interpretation = f"Perte soutenue de **{v7:.2f} kg/sem** — rythme rapide mais tenable si bien encadré."
+        elif v7 is not None and v7 < -0.3:
+            interpretation = f"Perte régulière de **{v7:.2f} kg/sem** — c'est le rythme idéal pour une perte durable."
+        elif v7 is not None and v7 < 0:
+            interpretation = f"Perte lente ({v7:.2f} kg/sem) mais dans la bonne direction. La patience paie."
+        elif v7 is not None and v7 > 0.5:
+            interpretation = f"Reprise récente de **+{v7:.2f} kg/sem**. Vérifiez si c'est du bruit ou une tendance."
+        elif v7 is not None and v7 > 0:
+            interpretation = "Légère remontée récente — probablement des fluctuations naturelles."
+        else:
+            interpretation = "Tendance neutre. Continuez le suivi pour des insights plus précis."
+
+    # ── ACTION (quoi faire maintenant) ──
+    remaining = current - target_weight
+
+    if is_startup:
+        action = (
+            f"**Cette semaine** : pesez-vous chaque matin à jeun. "
+            f"L'objectif n'est pas la perte mais la régularité du suivi. "
+            f"Les analyses fiables arrivent au jour 7."
+        )
+    elif remaining > 20:
+        action = (
+            f"**Prochain objectif** : passer sous {int(current / 5) * 5} kg. "
+            f"Concentrez-vous sur la constance du suivi quotidien."
+        )
+    elif remaining > 5:
+        ms_target = int(current) if int(current) < current else int(current) - 1
+        action = (
+            f"**Prochain palier** : {ms_target} kg (reste {current - ms_target:.1f} kg). "
+            f"Maintenez le rythme actuel."
+        )
+    elif remaining > 0:
+        action = f"**Vous approchez de l'objectif** ({remaining:.1f} kg restants). Gardez le cap !"
+    else:
+        action = "**Objectif atteint !** Passez en mode maintien — l'enjeu est de rester stable."
+
+    return {
+        "situation": situation,
+        "interpretation": interpretation,
+        "action": action,
+    }
+
+
+# ---------------------------------------------------------------------------
 # 19. Analyse historique des efforts (détection yo-yo)
 # ---------------------------------------------------------------------------
 
@@ -1015,10 +1129,12 @@ def analyze_effort_history(df: pd.DataFrame, gap_threshold_days: int = 21) -> di
 # 20. Prochain milestone intelligent
 # ---------------------------------------------------------------------------
 
-def next_milestone(current_weight: float, targets: tuple[float, ...], velocity: float | None = None) -> dict[str, Any]:
+def next_milestone(current_weight: float, targets: tuple[float, ...], velocity: float | None = None, measurements: int = 0) -> dict[str, Any]:
     """Trouve le prochain palier atteignable pour la motivation.
 
     Cherche d'abord les objectifs configurés, sinon le prochain chiffre rond en dessous.
+    Ne retourne un ETA que si les données sont suffisantes (>= 7 mesures)
+    et la vitesse est physiologiquement plausible (<= 2 kg/sem).
     """
     # Chercher parmi les objectifs configurés
     reachable_targets = sorted([t for t in targets if t < current_weight], reverse=True)
@@ -1043,15 +1159,28 @@ def next_milestone(current_weight: float, targets: tuple[float, ...], velocity: 
             remaining = current_weight - next_target
             label = f"Palier intermédiaire {next_target:.0f} kg"
 
-    # ETA basé sur la vitesse actuelle
+    # ETA basé sur la vitesse actuelle — avec garde-fous
     eta_days = None
+    eta_confidence = None
     if velocity is not None and velocity < -0.01:
-        eta_days = int(remaining / abs(velocity) * 7)
+        # Garde-fou 1: pas d'ETA si < 7 mesures
+        if measurements < 7:
+            eta_confidence = "fragile"
+        # Garde-fou 2: si la vitesse implique > 2 kg/sem, c'est du bruit
+        elif abs(velocity) > 2.0:
+            eta_confidence = "optimiste"
+            # Utiliser une vitesse plafonnée réaliste de 0.75 kg/sem
+            eta_days = int(remaining / 0.75 * 7)
+        else:
+            eta_days = int(remaining / abs(velocity) * 7)
+            eta_confidence = "solide" if measurements >= 14 else "modérée"
 
     return {
         "target": next_target,
         "remaining": round(remaining, 1),
         "label": label,
         "eta_days": eta_days,
+        "eta_confidence": eta_confidence,
     }
+
 

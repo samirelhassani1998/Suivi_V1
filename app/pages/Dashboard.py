@@ -10,6 +10,7 @@ from app.core.analytics import (
     compute_trend_ema,
     detect_current_effort,
     discipline_score,
+    generate_action_summary,
     generate_insights_text,
     multi_rolling_averages,
     next_milestone,
@@ -54,6 +55,7 @@ def main() -> None:
     effort_days = effort["days"]
     effort_measurements = effort["measurements"]
     has_effort_period = effort["is_subset"] and len(effort_df) >= 2
+    is_startup = effort_days < 7  # C3: phase de démarrage = données fragiles
 
     # Filtrage par dates calendaires réelles
     short_data = df[df["Date"] >= last_date - pd.Timedelta(days=7)]["Poids (Kgs)"]
@@ -81,11 +83,17 @@ def main() -> None:
         )
 
     # ── KPIs principaux ─────────────────────────────────────────────────
+    # C4: Poids EMA lissé comme métrique de référence
+    df_ema_kpi = compute_trend_ema(df, span=7)
+    ema_current = float(df_ema_kpi["Tendance_EMA"].iloc[-1])
+    ema_prev = float(df_ema_kpi["Tendance_EMA"].iloc[-2]) if len(df_ema_kpi) > 1 else ema_current
+
     c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
         kpi_card("Poids actuel", f"{current:.2f} kg", f"{current-prev:+.2f}")
     with c2:
-        kpi_card("Moy. 7 derniers jours", f"{short:.2f} kg", help_text=f"Basé sur {short_n} mesure(s) des 7 derniers jours calendaires")
+        kpi_card("Tendance (EMA)", f"{ema_current:.2f} kg", f"{ema_current-ema_prev:+.2f}",
+                 help_text="Poids lissé — filtre les fluctuations quotidiennes. C'est votre vrai indicateur.")
     with c3:
         kpi_card("Moy. 30 derniers jours", f"{long:.2f} kg", help_text=f"Basé sur {long_n} mesure(s) des 30 derniers jours calendaires")
     with c4:
@@ -105,11 +113,19 @@ def main() -> None:
     with c6:
         v7 = vel.get(7)
         v_display = f"{v7:+.2f} kg/sem" if v7 is not None else "N/A"
-        kpi_card("Vitesse 7j", v_display, help_text="Variation de poids en kg par semaine sur les 7 derniers jours")
+        # C3: Flag fragile si phase de démarrage
+        v_help = "Variation de poids en kg par semaine sur les 7 derniers jours"
+        if is_startup:
+            v_display += " ⚠️"
+            v_help += " — signal fragile (< 7 jours de données)"
+        kpi_card("Vitesse 7j", v_display, help_text=v_help)
     with c7:
         kpi_card("Discipline", f"{disc['score']}/100", help_text=f"{disc['interpretation'].title()} — {disc['measured_days']}/{disc['expected_days']} jours mesurés")
     with c8:
-        kpi_card("Score global", f"{prog['score']}/100 ({prog['grade']})", help_text="Score composite : progression, vitesse, discipline, cohérence")
+        confidence_label = prog.get('confidence', 'solide')
+        conf_icon = "⚠️ " if confidence_label == 'fragile' else ""
+        kpi_card("Score global", f"{conf_icon}{prog['score']}/100 ({prog['grade']})",
+                 help_text=f"Score composite. {'Signal fragile (< 7 mesures)' if confidence_label == 'fragile' else 'Signal fiable'}")
     with c9:
         streak_icon = "🔥" if streaks["current_type"] == "perte" else "📈" if streaks["current_type"] == "gain" else "➡️"
         streak_txt = f"{streak_icon} {streaks['current_streak']} mesures en {streaks['current_type']}"
@@ -135,12 +151,16 @@ def main() -> None:
     st.progress(progress / 100)
     st.caption(f"{progress_label}: {progress:.1f}%")
 
-    # ── Prochain milestone intelligent (AN4 — NOUVEAU) ──────────────────
+    # ── Prochain milestone intelligent (AN4 — avec garde-fous C1/C3) ──
     v14 = vel.get(14)
-    milestone = next_milestone(current, targets, velocity=v14)
+    milestone = next_milestone(current, targets, velocity=v14, measurements=effort_measurements)
     ms_text = f"🎯 **Prochain palier** : {milestone['label']} (reste **{milestone['remaining']:.1f} kg**)"
     if milestone.get("eta_days") is not None:
-        ms_text += f" — ETA: **~{milestone['eta_days']} jours** au rythme actuel"
+        conf = milestone.get('eta_confidence', '')
+        conf_note = f" (confiance: {conf})" if conf else ""
+        ms_text += f" — ETA: **~{milestone['eta_days']} jours**{conf_note}"
+    elif milestone.get("eta_confidence") == "fragile":
+        ms_text += " — ETA: disponible après 7+ mesures"
     st.caption(ms_text)
 
     # ── Signal de tendance cohérent (A5) ────────────────────────────────
@@ -174,22 +194,32 @@ def main() -> None:
                 f"({best['start_date'].strftime('%d/%m/%Y')} → {best['end_date'].strftime('%d/%m/%Y')}, {best['measurements']} mesures)"
             )
 
-    # ── Insights automatiques textuels (A2) ─────────────────────────────
+    # ── C2: Résumé actionnable Situation / Interprétation / Action ──────
     st.markdown("---")
-    st.subheader("💡 Insights automatiques")
-    insights = generate_insights_text(df, target_weight)
-    for insight in insights:
-        st.markdown(f"> {insight}")
+    summary = generate_action_summary(df, target_weight)
+    st.subheader("🧭 Votre résumé")
+    st.markdown(f"📍 **Situation** : {summary['situation']}")
+    st.markdown(f"🔍 **Interprétation** : {summary['interpretation']}")
+    st.markdown(f"▶️ **Action** : {summary['action']}")
 
-    # Accélération
-    acc = weight_acceleration(analysis_df)
-    if acc["interpretation"] != "données insuffisantes":
-        st.caption(f"📐 Accélération : {acc['interpretation']}")
+    # ── Insights détaillés (dans un expander) ───────────────────────────
+    with st.expander("💡 Insights détaillés", expanded=False):
+        insights = generate_insights_text(df, target_weight)
+        for insight in insights:
+            st.markdown(f"> {insight}")
 
-    # Comparaison rythme actuel vs nécessaire (A7)
-    pace = pace_comparison(analysis_df, target_weight)
-    if pace.get("current_pace") is not None:
-        st.caption(f"🏎️ {pace['interpretation']}")
+        # Accélération
+        acc = weight_acceleration(analysis_df)
+        if acc["interpretation"] != "données insuffisantes":
+            st.caption(f"📐 Accélération : {acc['interpretation']}")
+
+        # Comparaison rythme actuel vs nécessaire (A7) — seulement si effort établi
+        if not is_startup:
+            pace = pace_comparison(analysis_df, target_weight)
+            if pace.get("current_pace") is not None:
+                st.caption(f"🏎️ {pace['interpretation']}")
+        else:
+            st.caption("🏎️ Comparaison de rythme : disponible après 7+ jours de suivi.")
 
     # ── Graphique principal avec MA + EMA + trajectoire cible (AN1 — NOUVEAU) ──
     st.markdown("---")
