@@ -1,8 +1,27 @@
 # 📊 Suivi V2 — Application de Suivi de Poids Intelligent
 
-Application Streamlit premium de suivi de poids avec analyses avancées, prévisions multi-modèles, détection d'anomalies, scores comportementaux et insights automatiques.
+Application Streamlit de suivi de poids avec analyses comportementales avancées, garde-fous anti-extrapolation, détection de patterns, résumé actionnable et prévisions multi-modèles.
 
 🔗 **[Application déployée](https://samirelhassani1998-suivi-v1-suivi-v1-knzeqy.streamlit.app/)**
+
+---
+
+## ✨ Fonctionnalités clés
+
+| Feature | Description |
+|---|---|
+| **Résumé actionnable** | Bloc Situation / Interprétation / Action adapté au contexte (phase de démarrage, effort établi) |
+| **Garde-fous V3** | Score plafonné à 60 si < 7 mesures, ETA refusé si données fragiles, vitesse plafonnée si > 2 kg/sem |
+| **Tendance EMA** | Poids lissé comme KPI principal (filtre les fluctuations quotidiennes) |
+| **Détection yo-yo** | Analyse factuelle des rebonds après chaque pause de suivi |
+| **Détection d'effort** | Identification automatique de la période d'effort actuelle (gap > 21j = nouveau départ) |
+| **Trajectoire cible** | Corridor ±1 kg autour d'une pente saine de -0.5 kg/sem |
+| **Phase de démarrage** | Les 7 premiers jours = "données fragiles", pas d'extrapolation |
+| **Milestone intelligent** | Prochain palier avec ETA réaliste (gardes-fous physiologiques) |
+| **Vue hebdomadaire** | Bar chart consolidé avec coloration baisse/hausse |
+| **Toggle effort/historique** | Analyse ciblée sur l'effort actuel ou l'historique complet |
+| **Prévisions multi-modèles** | SARIMAX, Auto-ARIMA, ML Quantile, scénarios prospectifs |
+| **59 tests unitaires** | Couverture core, analytics, garde-fous V3, smoke pages |
 
 ---
 
@@ -27,17 +46,17 @@ Suivi_V1/
 │   ├── utils.py                   # Utilitaires legacy (chargement CSV, thèmes Plotly)
 │   │
 │   ├── core/                      # ── Moteur analytique ──
-│   │   ├── analytics.py           # 17+ métriques avancées (vitesse, scores, phases, streaks...)
+│   │   ├── analytics.py           # 20+ fonctions pures (scores, phases, yo-yo, milestones...)
 │   │   ├── data.py                # Nettoyage, validation, qualité des données
 │   │   ├── evaluation.py          # Walk-forward backtest, métriques (MAE, RMSE, SMAPE, DA)
 │   │   ├── features.py            # Feature engineering (lags, rolling stats, IMC)
 │   │   ├── forecasting.py         # Prévisions SARIMAX + ML quantile (P10/P50/P90)
-│   │   ├── insights.py            # Plateau, anomalies robustes, ETA multi-scénario
+│   │   ├── insights.py            # Plateau, anomalies robustes, ETA avec garde-fous
 │   │   ├── models.py              # Définition modèles sklearn (régression, quantile)
 │   │   └── session_state.py       # Gestion cycle de vie données en session
 │   │
 │   ├── pages/                     # ── Pages Streamlit ──
-│   │   ├── Dashboard.py           # Dashboard principal (KPIs, charts, insights auto)
+│   │   ├── Dashboard.py           # Dashboard (KPIs, résumé actionnable, trajectoire, yo-yo)
 │   │   ├── Journal.py             # Édition des données + validation
 │   │   ├── Predictions.py         # Prévisions multi-modèles + scénarios prospectifs
 │   │   ├── Insights.py            # Analyses avancées (phases, scores, patterns)
@@ -49,10 +68,11 @@ Suivi_V1/
 │       ├── components.py          # KPI cards, badges, alertes, empty states
 │       └── theme.py               # CSS global (métriques stylisées)
 │
-├── tests/                         # ── Tests automatisés ──
+├── tests/                         # ── Tests automatisés (59 tests) ──
 │   ├── conftest.py                # Fixtures partagées (synthetic_df)
+│   ├── test_analytics.py          # Tests analytics (24 tests)
 │   ├── test_core_v2.py            # Tests core (data, forecasting, insights, evaluation)
-│   ├── test_analytics.py          # Tests analytics (17 fonctions, 24 tests)
+│   ├── test_v3_guardrails.py      # Tests garde-fous V3 (score, ETA, milestone, résumé)
 │   ├── test_streamlit_smoke.py    # Tests smoke des pages Streamlit
 │   └── test_utils.py              # Tests utilitaires (MA, anomalies, filters)
 │
@@ -107,27 +127,30 @@ Google Sheets CSV ──► load_remote_csv() ──► clean_weight_dataframe()
 | KPI | Source | Logique |
 |-----|--------|---------|
 | Poids actuel | Dernière entrée | `df["Poids (Kgs)"].iloc[-1]` |
-| Moy. 7 derniers jours | Dates calendaires | Filtre `Date >= J-7`, puis moyenne |
+| **Tendance (EMA)** | `compute_trend_ema()` | Poids lissé — filtre les fluctuations quotidiennes |
 | Moy. 30 derniers jours | Dates calendaires | Filtre `Date >= J-30`, puis moyenne |
 | IMC | Calcul | `poids / taille_m²` |
 | Qualité des données | `data_quality_report()` | Score 0-100 rate-based |
-| Vitesse 7j | `weight_velocity()` | kg/semaine basé sur dates réelles |
+| Vitesse 7j | `weight_velocity()` | kg/semaine basé sur dates réelles (⚠️ si < 7j) |
 | Discipline | `discipline_score()` | % jours mesurés sur 30j |
-| Score global | `progression_score()` | Composite progression+vitesse+discipline+cohérence |
+| Score global | `progression_score()` | Composite progression+vitesse+discipline+cohérence (⚠️ si fragile) |
 | Série en cours | `streak_analysis()` | N mesures consécutives en baisse/hausse |
 
 **Sections** :
-- Barre de progression vers l'objectif final
-- Détection de plateau (14 jours)
-- Badge de confiance signal
-- **Insights automatiques** : textes générés en français (vitesse, volatilité, discipline, objectif...)
-- Indicateur d'accélération (perte accélère/ralentit)
-- **Graphique principal** : courbe poids + moyenne mobile + 4 lignes d'objectifs + moyenne globale
-- **Multi-MA chart** : MA 7/14/30 mesures consécutives superposées
-- Comparaison hebdo (7 jours calendaires vs 7 jours précédents)
-- Volatilité (14 derniers jours calendaires) + nombre de mesures dans la fenêtre
-- Distribution poids + évolution IMC
-- Détail score de progression (4 composantes)
+- Bannière période d'effort actuelle (détection automatique)
+- Barre de progression vers l'objectif (recalibrée sur l'effort)
+- **Prochain palier** avec ETA intelligent (garde-fous : pas d'ETA si < 7 mesures)
+- Signal de tendance + badge de confiance
+- Alertes intelligentes (pas de mesure récente, série en cours, nouveau plus bas)
+- **Pattern yo-yo** : alerte factuelle si rebond détecté + meilleur effort passé
+- **🧭 Résumé actionnable** : Situation / Interprétation / Action (contextualisé)
+- 💡 Insights détaillés (expander)
+- **Graphique principal** : courbe poids + EMA + trajectoire cible (-0.5 kg/sem) + corridor ±1 kg
+- Vue hebdomadaire consolidée (expander)
+- Multi-MA chart (expander)
+- Comparaison hebdo + volatilité
+- Distribution + IMC (expander)
+- Score détaillé (expander)
 
 ### 2. Journal (`app/pages/Journal.py`)
 
@@ -153,19 +176,18 @@ Google Sheets CSV ──► load_remote_csv() ──► clean_weight_dataframe()
 **Autres sections** :
 - **Leaderboard baselines** : walk-forward backtest (dernière valeur, MA7, MA14, tendance linéaire)
 - **ML Quantile** : Quantile Regression P10/P50/P90 avec features engineerées
-- **ETA objectif multi-scénario** : date estimée par fenêtre calendaire (7/30/90 derniers jours)
+- **ETA objectif** : avec garde-fous V3 (refusé si < 7 mesures, plafonné si > 2 kg/sem)
 - **Vitesses de variation** : kg/semaine sur 4 fenêtres calendaires (7/14/30/90 jours)
-- **Graphique de projection** : courbes à 90 jours pour 3 scénarios
 
 ### 4. Insights (`app/pages/Insights.py`)
 
-**9 sections analytiques** :
+**9 sections analytiques** avec toggle effort actuel / historique complet :
 
 | Section | Description |
 |---------|-------------|
 | Qualité & Plateau | Score qualité en cards visuelles + plateau 14/30 derniers jours calendaires |
 | Scores & Discipline | Discipline (0-100), cohérence (0-100), volatilité (14 derniers jours) — avec progress bars |
-| Phases du parcours | Segmentation en phases (perte/plateau/reprise) + timeline visuelle |
+| Phases du parcours | Segmentation gap-aware en phases (perte/plateau/reprise) + timeline visuelle |
 | Ruptures de tendance | Détection CUSUM des changements structurels |
 | Meilleures/Pires semaines | Top 5 meilleures et pires semaines par variation |
 | Comparaison périodique | Semaine vs semaine précédente, mois vs mois précédent |
@@ -188,25 +210,41 @@ Google Sheets CSV ──► load_remote_csv() ──► clean_weight_dataframe()
 
 ## 🧠 Moteur analytique (`app/core/analytics.py`)
 
-17 fonctions pures, sans dépendance Streamlit :
+20+ fonctions pures, sans dépendance Streamlit :
 
-| Fonction | Input | Output | Description |
-|----------|-------|--------|-------------|
-| `weight_velocity()` | df, fenêtres | `{7: -0.5, 14: -0.3, ...}` | kg/semaine basé sur dates réelles |
-| `multi_rolling_averages()` | df, fenêtres | DataFrame + colonnes `MA_Nm` | MA glissantes sur N **mesures** consécutives |
-| `weight_volatility()` | df, window | `{std, cv, range, interpretation, nb_mesures}` | Stabilité sur les N derniers **jours calendaires** |
-| `discipline_score()` | df, window_days | `{score, rate, interpretation}` | Régularité de saisie 0-100 |
-| `consistency_score()` | df, n_weeks | `{score, avg_weekly_std}` | Cohérence intra-semaine |
-| `detect_trend_breaks()` | df, threshold | `[{date, type, description}]` | CUSUM simplifié |
-| `best_worst_weeks()` | df, n | `{best: DataFrame, worst: DataFrame}` | Top N par variation |
-| `segment_phases()` | df, min_days | `[Phase(start, end, type, slope)]` | Découpage perte/plateau/reprise |
-| `period_comparison()` | df | `{week: {delta, ...}, month: {delta, ...}}` | Comparaison calendaire |
-| `prospective_scenarios()` | df, target | `{optimiste, réaliste, pessimiste}` | Projections à 30/60/90j |
-| `streak_analysis()` | df | `{current_streak, longest_loss/gain}` | Séries consécutives |
-| `day_of_week_analysis()` | df | DataFrame par jour | Patterns hebdomadaires |
-| `progression_score()` | df, target | `{score, grade, components}` | Score composite A+ à D |
-| `weight_acceleration()` | df | `{acceleration, interpretation}` | Perte accélère/ralentit |
-| `generate_insights_text()` | df, target | `[str, ...]` | Insights textuels FR |
+| Fonction | Description |
+|----------|-------------|
+| `weight_velocity()` | Vitesse kg/semaine sur plusieurs fenêtres calendaires |
+| `multi_rolling_averages()` | MA glissantes sur N mesures consécutives |
+| `weight_volatility()` | Stabilité (std, CV, amplitude) sur N jours calendaires |
+| `discipline_score()` | Régularité de saisie 0-100 |
+| `consistency_score()` | Cohérence intra-semaine |
+| `detect_trend_breaks()` | Détection CUSUM des ruptures |
+| `best_worst_weeks()` | Top N meilleures/pires semaines |
+| `segment_phases()` | Segmentation gap-aware perte/plateau/reprise |
+| `period_comparison()` | Comparaison semaine/mois vs précédent |
+| `prospective_scenarios()` | Projections 30/60/90j (3 scénarios) |
+| `streak_analysis()` | Séries consécutives de perte/gain |
+| `day_of_week_analysis()` | Patterns par jour de la semaine |
+| `progression_score()` | Score composite 0-100 avec confidence (fragile/solide) |
+| `weight_acceleration()` | La perte accélère/ralentit |
+| `detect_current_effort()` | Période d'effort actuelle (gap > 21j) |
+| `compute_trend_ema()` | Tendance EMA robuste |
+| `pace_comparison()` | Rythme actuel vs rythme nécessaire |
+| `generate_insights_text()` | Insights textuels en français |
+| `generate_action_summary()` | Résumé Situation/Interprétation/Action |
+| `analyze_effort_history()` | Détection yo-yo (rebond moyen après pauses) |
+| `next_milestone()` | Prochain palier avec ETA et garde-fous |
+
+### Garde-fous V3 (honnêteté des sorties)
+
+| Garde-fou | Règle | Pourquoi |
+|---|---|---|
+| Score plafonné | ≤ 60/100 si < 7 mesures | Empêche les faux 100/100 avec 3 jours de données |
+| Champ `confidence` | `"fragile"` ou `"solide"` dans chaque score | L'utilisateur sait quand un chiffre est fiable |
+| ETA refusé | Pas d'ETA si < 7 mesures dans l'effort | Empêche "objectif dans 5 jours" après 3 mesures |
+| Vitesse plafonnée | ETA recalculé à 0.75 kg/sem si > 2 kg/sem | Empêche les projections basées sur la perte hydrique |
+| Phase de démarrage | Pas d'extrapolation les 7 premiers jours | "Cette perte est probablement de l'eau" |
 
 ### Distinction mesures vs jours calendaires
 
@@ -215,9 +253,9 @@ Google Sheets CSV ──► load_remote_csv() ──► clean_weight_dataframe()
 
 | Type de fenêtre | Logique | Fonctions concernées |
 |---|---|---|
-| **Jours calendaires** (`Date >= J-N`) | Filtre par vraies dates — si tu mesures 3 fois en 14 jours, tu obtiens 3 points | `weight_velocity()`, `weight_volatility()`, `detect_plateau()`, `estimate_target_eta()`, `discipline_score()`, `period_comparison()`, KPIs Dashboard (Moy. 7/30j), comparaison hebdo |
-| **Mesures consécutives** (`.rolling(N)`, `.tail(N)`) | Compte les N dernières entrées, indépendamment des dates | `multi_rolling_averages()` (colonnes `MA_7m`, `MA_14m`, `MA_30m`), `streak_analysis()`, baselines MA7/MA14 (backtest interne) |
-| **Dates réelles inter-mesures** | Calcule la vraie durée entre deux points de mesure | `weight_velocity()` (vitesse en kg/semaine) |
+| **Jours calendaires** (`Date >= J-N`) | Filtre par vraies dates | `weight_velocity()`, `weight_volatility()`, `detect_plateau()`, `estimate_target_eta()`, `discipline_score()`, `period_comparison()`, KPIs Dashboard |
+| **Mesures consécutives** (`.rolling(N)`) | Compte les N dernières entrées | `multi_rolling_averages()`, `streak_analysis()`, baselines backtest |
+| **Dates réelles inter-mesures** | Vraie durée entre deux points | `weight_velocity()` (kg/semaine), `detect_current_effort()` (gap > 21j) |
 
 ---
 
@@ -277,7 +315,7 @@ streamlit run Suivi_V1.py
 ### Tests
 ```bash
 python3 -m pytest tests/ -v
-# 53 tests couvrant : core, analytics, smoke pages, utilitaires
+# 59 tests couvrant : core, analytics, garde-fous V3, smoke pages, utilitaires
 ```
 
 ---
