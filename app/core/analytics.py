@@ -262,11 +262,41 @@ class Phase:
     duration_days: int
 
 
-def segment_phases(df: pd.DataFrame, min_days: int = 7) -> list[Phase]:
-    """Découpe l'historique en phases (perte, plateau, reprise) basées sur la pente locale."""
+def segment_phases(df: pd.DataFrame, min_days: int = 7, gap_threshold_days: int = 21) -> list[Phase]:
+    """Découpe l'historique en phases (perte, plateau, reprise) basées sur la pente locale.
+
+    Gap-aware: les données sont d'abord découpées aux trous > gap_threshold_days
+    puis chaque bloc continu est segmenté indépendamment.
+    """
     if len(df) < min_days * 2:
         return []
     data = df.sort_values("Date").reset_index(drop=True)
+
+    # Découper aux gaps > gap_threshold_days
+    blocks: list[pd.DataFrame] = []
+    block_start = 0
+    for i in range(1, len(data)):
+        gap = (data["Date"].iloc[i] - data["Date"].iloc[i - 1]).days
+        if gap > gap_threshold_days:
+            if i - block_start >= min_days:
+                blocks.append(data.iloc[block_start:i].reset_index(drop=True))
+            block_start = i
+    # Dernier bloc
+    if len(data) - block_start >= min_days:
+        blocks.append(data.iloc[block_start:].reset_index(drop=True))
+    elif not blocks and len(data) >= 3:
+        # Si aucun bloc assez grand, prendre tout
+        blocks.append(data)
+
+    all_phases: list[Phase] = []
+    for block in blocks:
+        all_phases.extend(_segment_block(block, min_days))
+
+    return _merge_consecutive_phases(all_phases)
+
+
+def _segment_block(data: pd.DataFrame, min_days: int = 7) -> list[Phase]:
+    """Segmente un bloc continu (sans gaps) en phases."""
     phases: list[Phase] = []
     window = max(min_days, 7)
     i = 0
@@ -304,7 +334,7 @@ def segment_phases(df: pd.DataFrame, min_days: int = 7) -> list[Phase]:
         ))
         i = end_idx
 
-    return _merge_consecutive_phases(phases)
+    return phases
 
 
 def _same_trend(s1: float, s2: float) -> bool:
@@ -530,14 +560,40 @@ def day_of_week_analysis(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def progression_score(df: pd.DataFrame, target_weight: float) -> dict[str, Any]:
-    """Score composite 0-100 combinant progression, vitesse, discipline, cohérence."""
-    if len(df) < 7:
+    """Score composite 0-100 combinant progression, vitesse, discipline, cohérence.
+
+    Fallback pour < 7 mesures: score simplifié basé sur direction + discipline.
+    """
+    if len(df) < 3:
         return {"score": 0, "grade": "N/A", "components": {}}
 
     data = df.sort_values("Date")
     initial = float(data["Poids (Kgs)"].iloc[0])
     current = float(data["Poids (Kgs)"].iloc[-1])
 
+    if len(df) < 7:
+        # Fallback simplifié : direction (0-50) + discipline (0-50)
+        direction_delta = initial - current  # positif = perte
+        if direction_delta > 0:
+            direction_pts = min(50, direction_delta * 20)  # -2.5 kg = 50 pts
+        else:
+            direction_pts = 0
+
+        days_span = max((data["Date"].max() - data["Date"].min()).days, 1)
+        disc_pts = min(50, (len(df) / max(days_span, 1)) * 100 * 0.5)
+
+        total = int(min(100, direction_pts + disc_pts))
+        grade = _score_to_grade(total)
+        return {
+            "score": total,
+            "grade": grade,
+            "components": {
+                "direction": round(direction_pts, 1),
+                "discipline": round(disc_pts, 1),
+            },
+        }
+
+    # Score complet (>= 7 mesures)
     # Composante progression (0-40 pts)
     total_to_lose = initial - target_weight
     if total_to_lose > 0:
@@ -563,17 +619,7 @@ def progression_score(df: pd.DataFrame, target_weight: float) -> dict[str, Any]:
     cons_pts = cons["score"] * 0.15
 
     total = int(min(100, progress_pts + speed_pts + disc_pts + cons_pts))
-
-    if total >= 85:
-        grade = "A+"
-    elif total >= 70:
-        grade = "A"
-    elif total >= 55:
-        grade = "B"
-    elif total >= 40:
-        grade = "C"
-    else:
-        grade = "D"
+    grade = _score_to_grade(total)
 
     return {
         "score": total,
@@ -585,6 +631,18 @@ def progression_score(df: pd.DataFrame, target_weight: float) -> dict[str, Any]:
             "cohérence": round(cons_pts, 1),
         },
     }
+
+
+def _score_to_grade(score: int) -> str:
+    if score >= 85:
+        return "A+"
+    if score >= 70:
+        return "A"
+    if score >= 55:
+        return "B"
+    if score >= 40:
+        return "C"
+    return "D"
 
 
 # ---------------------------------------------------------------------------
@@ -850,3 +908,150 @@ def generate_insights_text(df: pd.DataFrame, target_weight: float) -> list[str]:
             insights.append(f"📜 Historique global depuis le {first_date} : +{abs(total_delta):.1f} kg. L'important est la tendance actuelle.")
 
     return insights if insights else ["📊 Analyses en cours, continuez à saisir vos données."]
+
+
+# ---------------------------------------------------------------------------
+# 19. Analyse historique des efforts (détection yo-yo)
+# ---------------------------------------------------------------------------
+
+def analyze_effort_history(df: pd.DataFrame, gap_threshold_days: int = 21) -> dict[str, Any]:
+    """Analyse l'historique des périodes d'effort pour détecter le pattern yo-yo.
+
+    Retourne un résumé des efforts passés, le rebond moyen après chaque pause,
+    et un insight textuel sur le pattern global.
+    """
+    if len(df) < 5:
+        return {"efforts": [], "pattern": "données insuffisantes", "insight": None}
+
+    data = df.sort_values("Date").reset_index(drop=True)
+
+    # Découper en périodes d'effort (blocs séparés par gaps > threshold)
+    effort_starts = [0]
+    for i in range(1, len(data)):
+        gap = (data.iloc[i]["Date"] - data.iloc[i - 1]["Date"]).days
+        if gap > gap_threshold_days:
+            effort_starts.append(i)
+
+    efforts: list[dict[str, Any]] = []
+    for i, start_idx in enumerate(effort_starts):
+        end_idx = (effort_starts[i + 1] - 1) if (i + 1 < len(effort_starts)) else (len(data) - 1)
+        chunk = data.iloc[start_idx:end_idx + 1]
+        if len(chunk) < 2:
+            continue
+
+        start_w = float(chunk["Poids (Kgs)"].iloc[0])
+        end_w = float(chunk["Poids (Kgs)"].iloc[-1])
+        min_w = float(chunk["Poids (Kgs)"].min())
+        days = (chunk["Date"].iloc[-1] - chunk["Date"].iloc[0]).days + 1
+
+        efforts.append({
+            "start_date": chunk["Date"].iloc[0],
+            "end_date": chunk["Date"].iloc[-1],
+            "start_weight": start_w,
+            "end_weight": end_w,
+            "min_weight": min_w,
+            "delta": round(start_w - end_w, 1),  # positif = perte
+            "days": days,
+            "measurements": len(chunk),
+        })
+
+    if len(efforts) < 2:
+        return {"efforts": efforts, "pattern": "historique insuffisant", "insight": None}
+
+    # Calculer les rebonds : différence entre fin d'un effort et début du suivant
+    rebounds: list[float] = []
+    for i in range(len(efforts) - 1):
+        end_w_prev = efforts[i]["end_weight"]
+        start_w_next = efforts[i + 1]["start_weight"]
+        rebound = start_w_next - end_w_prev  # positif = reprise
+        rebounds.append(round(rebound, 1))
+
+    avg_rebound = float(np.mean(rebounds)) if rebounds else 0.0
+    positive_rebounds = [r for r in rebounds if r > 0]
+    pct_rebounds = len(positive_rebounds) / len(rebounds) * 100 if rebounds else 0
+
+    # Déterminer le pattern
+    if pct_rebounds >= 70 and avg_rebound > 2:
+        pattern = "yo-yo confirmé"
+        insight = (
+            f"⚠️ **Pattern yo-yo détecté** : après chaque pause de suivi, "
+            f"votre poids remonte en moyenne de **+{avg_rebound:.1f} kg** "
+            f"({len(positive_rebounds)}/{len(rebounds)} reprises). "
+            f"Le maintien du suivi régulier est votre plus grande arme contre ce cycle."
+        )
+    elif pct_rebounds >= 50:
+        pattern = "tendance au rebond"
+        insight = (
+            f"📊 Vos données montrent un rebond moyen de **+{avg_rebound:.1f} kg** "
+            f"après les pauses de suivi ({len(positive_rebounds)}/{len(rebounds)} cas). "
+            f"Maintenir la régularité est essentiel."
+        )
+    elif avg_rebound < 0:
+        pattern = "progression maintenue"
+        insight = (
+            f"✅ Bonne nouvelle : vous maintenez globalement vos acquis entre les périodes "
+            f"de suivi (variation moyenne : {avg_rebound:+.1f} kg)."
+        )
+    else:
+        pattern = "neutre"
+        insight = None
+
+    # Meilleur effort historique
+    best_effort = max(efforts, key=lambda e: e["delta"]) if efforts else None
+
+    return {
+        "efforts": efforts,
+        "rebounds": rebounds,
+        "avg_rebound": round(avg_rebound, 1),
+        "pct_rebounds": round(pct_rebounds, 0),
+        "pattern": pattern,
+        "insight": insight,
+        "best_effort": best_effort,
+        "total_efforts": len(efforts),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 20. Prochain milestone intelligent
+# ---------------------------------------------------------------------------
+
+def next_milestone(current_weight: float, targets: tuple[float, ...], velocity: float | None = None) -> dict[str, Any]:
+    """Trouve le prochain palier atteignable pour la motivation.
+
+    Cherche d'abord les objectifs configurés, sinon le prochain chiffre rond en dessous.
+    """
+    # Chercher parmi les objectifs configurés
+    reachable_targets = sorted([t for t in targets if t < current_weight], reverse=True)
+
+    if reachable_targets:
+        next_target = reachable_targets[0]
+        remaining = current_weight - next_target
+        label = f"Objectif {next_target:.0f} kg"
+    else:
+        # Prochain chiffre rond en dessous
+        next_target = float(int(current_weight))  # ex: 102.6 → 102
+        if next_target >= current_weight:
+            next_target -= 1
+        remaining = current_weight - next_target
+        label = f"Palier {next_target:.0f} kg"
+
+    # Si le prochain objectif est trop loin (> 10 kg), proposer un palier intermédiaire
+    if remaining > 10:
+        intermediate = float(int(current_weight / 5) * 5)  # arrondi au 5 inférieur
+        if intermediate < current_weight:
+            next_target = intermediate
+            remaining = current_weight - next_target
+            label = f"Palier intermédiaire {next_target:.0f} kg"
+
+    # ETA basé sur la vitesse actuelle
+    eta_days = None
+    if velocity is not None and velocity < -0.01:
+        eta_days = int(remaining / abs(velocity) * 7)
+
+    return {
+        "target": next_target,
+        "remaining": round(remaining, 1),
+        "label": label,
+        "eta_days": eta_days,
+    }
+

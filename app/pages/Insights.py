@@ -10,6 +10,7 @@ from app.core.analytics import (
     best_worst_weeks,
     consistency_score,
     day_of_week_analysis,
+    detect_current_effort,
     detect_trend_breaks,
     discipline_score,
     period_comparison,
@@ -36,11 +37,31 @@ def main() -> None:
 
     df = df.sort_values("Date").copy()
 
+    # ── Toggle effort / historique (UX1 — NOUVEAU) ──────────────────────
+    effort = detect_current_effort(df, gap_threshold_days=21)
+    has_effort = effort["is_subset"] and len(effort["effort_df"]) >= 2
+
+    if has_effort:
+        scope = st.radio(
+            "📊 Périmètre d'analyse",
+            ["Effort actuel", "Historique complet"],
+            horizontal=True,
+            help=f"Effort actuel : depuis le {effort['start_date'].strftime('%d/%m/%Y')} ({effort['measurements']} mesures, {effort['days']} jours)",
+        )
+        analysis_df = effort["effort_df"] if scope == "Effort actuel" else df
+        if scope == "Effort actuel":
+            st.info(
+                f"📅 Calculs sur la période d'effort : {effort['start_date'].strftime('%d/%m/%Y')} → "
+                f"{analysis_df['Date'].max().strftime('%d/%m/%Y')} ({effort['measurements']} mesures)"
+            )
+    else:
+        analysis_df = df
+
     # ══════════════════════════════════════════════════════════════════════
     # Section 1 : Qualité et Plateau (EXISTANT — amélioré visuellement)
     # ══════════════════════════════════════════════════════════════════════
     st.subheader("📊 Qualité des données & Plateau")
-    quality = data_quality_report(df)
+    quality = data_quality_report(analysis_df)
 
     # Remplacer le JSON brut par des cards visuelles
     q_cols = st.columns(4)
@@ -59,8 +80,8 @@ def main() -> None:
     with st.expander("📋 Détails qualité (JSON)", expanded=False):
         st.json(quality)
 
-    plateau14 = detect_plateau(df, 14)
-    plateau30 = detect_plateau(df, 30)
+    plateau14 = detect_plateau(analysis_df, 14)
+    plateau30 = detect_plateau(analysis_df, 30)
 
     p_cols = st.columns(2)
     with p_cols[0]:
@@ -78,9 +99,9 @@ def main() -> None:
     st.markdown("---")
     st.subheader("🎯 Scores & Discipline")
 
-    disc = discipline_score(df, window_days=30)
-    cons = consistency_score(df, n_weeks=4)
-    vol = weight_volatility(df, window=14)
+    disc = discipline_score(analysis_df, window_days=30)
+    cons = consistency_score(analysis_df, n_weeks=4)
+    vol = weight_volatility(analysis_df, window=14)
 
     sc_cols = st.columns(3)
     with sc_cols[0]:
@@ -114,7 +135,7 @@ def main() -> None:
     st.markdown("---")
     st.subheader("📈 Phases du parcours")
 
-    phases = segment_phases(df, min_days=7)
+    phases = segment_phases(analysis_df, min_days=7)
     if phases:
         phase_data = []
         phase_colors = {"perte": "#27AE60", "plateau": "#F39C12", "reprise": "#E74C3C"}
@@ -132,10 +153,10 @@ def main() -> None:
 
         # Timeline visuelle des phases
         fig_phases = go.Figure()
-        fig_phases.add_scatter(x=df["Date"], y=df["Poids (Kgs)"], mode="markers", name="Mesures", marker=dict(size=3, color="#999"), showlegend=False)
+        fig_phases.add_scatter(x=analysis_df["Date"], y=analysis_df["Poids (Kgs)"], mode="markers", name="Mesures", marker=dict(size=3, color="#999"), showlegend=False)
         for p in phases:
-            mask = (df["Date"] >= p.start) & (df["Date"] <= p.end)
-            phase_df = df[mask]
+            mask = (analysis_df["Date"] >= p.start) & (analysis_df["Date"] <= p.end)
+            phase_df = analysis_df[mask]
             if not phase_df.empty:
                 fig_phases.add_scatter(
                     x=phase_df["Date"], y=phase_df["Poids (Kgs)"],
@@ -153,7 +174,7 @@ def main() -> None:
     st.markdown("---")
     st.subheader("🔀 Ruptures de tendance")
 
-    breaks = detect_trend_breaks(df, threshold=2.0)
+    breaks = detect_trend_breaks(analysis_df, threshold=2.0)
     if breaks:
         for b in breaks:
             icon = "📈" if b["type"] == "reprise" else "🚀"
@@ -167,7 +188,7 @@ def main() -> None:
     st.markdown("---")
     st.subheader("🏆 Meilleures & Pires semaines")
 
-    bw = best_worst_weeks(df, n=5)
+    bw = best_worst_weeks(analysis_df, n=5)
     bw_cols = st.columns(2)
     with bw_cols[0]:
         st.markdown("**✅ Meilleures semaines** (plus grande perte)")
@@ -196,7 +217,7 @@ def main() -> None:
     st.markdown("---")
     st.subheader("📅 Comparaison périodique")
 
-    period = period_comparison(df)
+    period = period_comparison(analysis_df)
     cmp_cols = st.columns(2)
     with cmp_cols[0]:
         st.markdown("**Semaine courante vs précédente**")
@@ -225,7 +246,7 @@ def main() -> None:
     st.markdown("---")
     st.subheader("📆 Patterns par jour de la semaine")
 
-    dow = day_of_week_analysis(df)
+    dow = day_of_week_analysis(analysis_df)
     if not dow.empty:
         dow_display = dow.copy()
         dow_display["Poids moyen"] = dow_display["Poids moyen"].apply(lambda x: f"{x:.2f}")
@@ -242,7 +263,7 @@ def main() -> None:
     st.markdown("---")
     st.subheader("🔥 Séries consécutives (Streaks)")
 
-    streaks = streak_analysis(df)
+    streaks = streak_analysis(analysis_df)
     sk_cols = st.columns(4)
     with sk_cols[0]:
         icon = "🔥" if streaks["current_type"] == "perte" else "📈" if streaks["current_type"] == "gain" else "➡️"
@@ -252,7 +273,7 @@ def main() -> None:
     with sk_cols[2]:
         st.metric("Record gain", f"📈 {streaks['longest_gain']} mesures")
     with sk_cols[3]:
-        vel = weight_velocity(df, windows=(7,))
+        vel = weight_velocity(analysis_df, windows=(7,))
         v7 = vel.get(7)
         st.metric("Vitesse 7j", f"{v7:+.2f} kg/sem" if v7 is not None else "N/A")
 

@@ -52,7 +52,7 @@ def detect_anomalies_robust(df: pd.DataFrame, use_iforest: bool = False) -> pd.D
     return out
 
 
-def estimate_target_eta(df: pd.DataFrame, target_weight: float) -> dict[str, object]:
+def estimate_target_eta(df: pd.DataFrame, target_weight: float, effort_df: pd.DataFrame | None = None) -> dict[str, object]:
     if len(df) < 7:
         return {"credible": False, "message": "Données insuffisantes"}
     data = df.sort_values("Date")
@@ -87,17 +87,33 @@ def estimate_target_eta(df: pd.DataFrame, target_weight: float) -> dict[str, obj
             "kg_per_week": round(slope * 7, 3),
         }
 
-    # Primary estimate from last 30 calendar days
-    cutoff_30 = last_date - pd.Timedelta(days=30)
-    recent = data[data["Date"] >= cutoff_30]
-    if len(recent) < 3:
-        recent = data.tail(10)  # fallback si très peu de données dans 30j
-    x = np.arange(len(recent))
-    slope, intercept = np.polyfit(x, recent["Poids (Kgs)"], 1)
+    # Primary estimate: prefer effort period if available, else 30 calendar days
+    primary_data = None
+    primary_source = "30j"
+    if effort_df is not None and len(effort_df) >= 3:
+        primary_data = effort_df.sort_values("Date")
+        primary_source = "effort"
+    else:
+        cutoff_30 = last_date - pd.Timedelta(days=30)
+        recent = data[data["Date"] >= cutoff_30]
+        if len(recent) >= 3:
+            primary_data = recent
+        else:
+            primary_data = data.tail(10)  # fallback
+
+    if primary_data is None or len(primary_data) < 3:
+        return {
+            "credible": False,
+            "message": "Données insuffisantes pour l'estimation primaire.",
+            "scenarios": scenarios,
+        }
+
+    x = np.arange(len(primary_data))
+    slope, intercept = np.polyfit(x, primary_data["Poids (Kgs)"], 1)
     if slope >= -0.005:
         return {
             "credible": False,
-            "message": f"La tendance 30j est de {slope*7:+.3f} kg/sem — insuffisante pour une estimation fiable.",
+            "message": f"La tendance ({primary_source}) est de {slope*7:+.3f} kg/sem — insuffisante pour une estimation fiable.",
             "slope_30d": round(slope, 4),
             "scenarios": scenarios,
         }
@@ -111,5 +127,7 @@ def estimate_target_eta(df: pd.DataFrame, target_weight: float) -> dict[str, obj
         "eta_max": eta + pd.Timedelta(days=21),
         "confidence": 0.6,
         "slope_30d": round(slope, 4),
+        "source": primary_source,
         "scenarios": scenarios,
     }
+

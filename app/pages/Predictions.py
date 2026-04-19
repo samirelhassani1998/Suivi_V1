@@ -232,7 +232,13 @@ def main() -> None:
     # ── ETA objectif amélioré (existant + enrichi) ──────────────────────
     st.markdown("---")
     target_weight = st.session_state.get("target_weight", 80.0)
-    eta = estimate_target_eta(df, target_weight)
+
+    # QW3: Utiliser la période d'effort pour l'ETA
+    from app.core.analytics import detect_current_effort
+    effort = detect_current_effort(df)
+    effort_df = effort["effort_df"] if effort["is_subset"] and len(effort["effort_df"]) >= 3 else None
+    eta = estimate_target_eta(df, target_weight, effort_df=effort_df)
+
     st.subheader("🎯 Estimation de date objectif")
     if eta.get("credible"):
         eta_date = eta.get("eta")
