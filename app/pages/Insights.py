@@ -79,6 +79,7 @@ def main() -> None:
 
     with st.expander("📋 Détails qualité (JSON)", expanded=False):
         st.json(quality)
+    st.caption("ℹ️ Plateau calculé sur des fenêtres de jours calendaires (14j et 30j), pas sur un nombre fixe de mesures.")
 
     plateau14 = detect_plateau(analysis_df, 14)
     plateau30 = detect_plateau(analysis_df, 30)
@@ -229,6 +230,7 @@ def main() -> None:
                       f"{w['current_mean']:.1f} vs {w['previous_mean']:.1f} kg")
         else:
             st.info("Données insuffisantes")
+        st.caption("Base de calcul: moyennes hebdomadaires calendaires.")
     with cmp_cols[1]:
         st.markdown("**Mois courant vs précédent**")
         if period["month"]:
@@ -239,6 +241,7 @@ def main() -> None:
                       f"{m['current_mean']:.1f} vs {m['previous_mean']:.1f} kg")
         else:
             st.info("Données insuffisantes")
+        st.caption("Base de calcul: moyennes mensuelles calendaires.")
 
     # ══════════════════════════════════════════════════════════════════════
     # Section 7 : Patterns par jour de la semaine (NOUVEAU)
