@@ -9,10 +9,18 @@ from app.config import ALL_COLUMNS
 
 
 DEFAULT_TARGETS = (95.0, 90.0, 85.0, 80.0)
+DEFAULT_WEIGHT_COLUMNS = ["Date", "Poids (Kgs)"]
 
 
 def _empty_df() -> pd.DataFrame:
     return pd.DataFrame(columns=list(ALL_COLUMNS))
+
+
+def get_filtered_or_working_data() -> pd.DataFrame:
+    return st.session_state.get(
+        "filtered_data",
+        st.session_state.get("working_data", pd.DataFrame(columns=DEFAULT_WEIGHT_COLUMNS)),
+    )
 
 
 def ensure_session_defaults() -> None:

@@ -21,11 +21,12 @@ from app.core.analytics import (
 )
 from app.core.data import data_quality_report
 from app.core.insights import detect_anomalies_robust, detect_plateau
+from app.core.session_state import get_filtered_or_working_data
 from app.ui.components import empty_state, kpi_card
 
 
 def _df() -> pd.DataFrame:
-    return st.session_state.get("filtered_data", st.session_state.get("working_data", pd.DataFrame(columns=["Date", "Poids (Kgs)"])))
+    return get_filtered_or_working_data()
 
 
 def main() -> None:

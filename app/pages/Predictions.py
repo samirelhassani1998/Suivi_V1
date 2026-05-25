@@ -17,13 +17,14 @@ from app.core.evaluation import evaluate_baselines
 from app.core.features import build_features
 from app.core.forecasting import forecast_with_ml, forecast_with_sarimax
 from app.core.insights import estimate_target_eta
+from app.core.session_state import get_filtered_or_working_data
 from app.ui.components import alert_banner, empty_state, kpi_card
 
 warnings.filterwarnings("ignore")
 
 
 def _df() -> pd.DataFrame:
-    return st.session_state.get("filtered_data", st.session_state.get("working_data", pd.DataFrame(columns=["Date", "Poids (Kgs)"])))
+    return get_filtered_or_working_data()
 
 
 def _model_comparison(df: pd.DataFrame) -> None:
