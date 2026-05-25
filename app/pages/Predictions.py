@@ -58,6 +58,7 @@ def _model_comparison(df: pd.DataFrame) -> None:
         })
     scores = pd.DataFrame(rows).sort_values("MAE")
     st.dataframe(scores, use_container_width=True)
+    st.caption("ℹ️ Évaluation sur découpage chronologique 80/20 (pas de mélange aléatoire temporel).")
 
 
 def _sarima_block(df: pd.DataFrame, horizon: int) -> None:
@@ -149,6 +150,7 @@ def _stl_acf_pacf_block(df: pd.DataFrame) -> None:
 def _scenarios_block(df: pd.DataFrame) -> None:
     """Scénarios prospectifs (NOUVEAU)."""
     st.subheader("🔮 Scénarios prospectifs")
+    st.caption("Scénarios basés sur des rythmes observés (fenêtres 7/14/30j), à interpréter comme guidance et non certitude.")
 
     target_weight = st.session_state.get("target_weight", 80.0)
     scenarios = prospective_scenarios(df, target_weight)
@@ -250,6 +252,7 @@ def main() -> None:
                 st.caption(f"Plage plausible: {eta_min.date()} → {eta_max.date()} | Confiance {eta.get('confidence', 0):.0%}")
     else:
         alert_banner(str(eta.get("message", "Estimation indisponible")), "warning")
+        st.caption("⚠️ L'ETA est volontairement bloqué quand le signal est jugé fragile par les garde-fous.")
 
     # Multi-scenario ETA (NOUVEAU)
     scenarios = eta.get("scenarios", {})
@@ -266,6 +269,7 @@ def main() -> None:
     st.markdown("---")
     st.subheader("📊 Vitesses de variation")
     vel = weight_velocity(df, windows=(7, 14, 30, 90))
+    st.caption("Convention: valeur négative = perte de poids, positive = prise de poids (kg/sem).")
     vel_cols = st.columns(4)
     for i, (w, v) in enumerate(vel.items()):
         with vel_cols[i]:

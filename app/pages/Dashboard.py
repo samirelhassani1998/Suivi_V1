@@ -150,6 +150,7 @@ def main() -> None:
     progress = max(0.0, min(100.0, progress))
     st.progress(progress / 100)
     st.caption(f"{progress_label}: {progress:.1f}%")
+    st.caption("ℹ️ Les métriques marquées ⚠️ sont informatives, mais restent fragiles en phase de démarrage.")
 
     # ── Prochain milestone intelligent (AN4 — avec garde-fous C1/C3) ──
     v14 = vel.get(14)
@@ -286,7 +287,7 @@ def main() -> None:
             fig_ma.add_hline(y=float(target), line_dash="dash", annotation_text=f"Obj. {idx}")
         fig_ma.update_layout(title="Moyennes mobiles (glissantes sur N mesures consécutives)", hovermode="x unified")
         st.plotly_chart(fig_ma, use_container_width=True)
-        st.caption("ℹ️ Les moyennes mobiles glissent sur N mesures consécutives, pas sur N jours calendaires.")
+        st.caption("ℹ️ Les moyennes mobiles glissent sur N mesures consécutives (et non sur N jours calendaires).")
 
     # ── Comparaison hebdo (existant) ────────────────────────────────────
     wk_data = df[df["Date"] >= last_date - pd.Timedelta(days=7)]["Poids (Kgs)"]
@@ -296,6 +297,8 @@ def main() -> None:
     delta_wk = wk - prev_wk
     st.metric("Comparaison hebdo (7j calendaires)", f"{wk:.2f} kg", f"{delta_wk:+.2f} kg", delta_color="inverse",
              help=f"Semaine courante: {len(wk_data)} mesure(s) · Semaine précédente: {len(prev_wk_data)} mesure(s)")
+    if len(wk_data) < 3 or len(prev_wk_data) < 3:
+        st.caption("⚠️ Comparaison hebdo prudente: moins de 3 mesures sur au moins une des deux semaines.")
 
     # ── Volatilité (existant) ───────────────────────────────────────────
     vol = weight_volatility(analysis_df, window=14)
