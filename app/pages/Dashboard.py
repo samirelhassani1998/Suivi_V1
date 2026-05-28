@@ -241,10 +241,10 @@ def main() -> None:
     for idx, target in enumerate(targets, start=1):
         fig.add_hline(y=float(target), line_dash="dash", annotation_text=f"Objectif {idx}: {target:.1f} kg")
 
-    # AN1: Trajectoire cible depuis début de l'effort (pente saine = -0.5 kg/sem)
+    # AN1: Trajectoire cible depuis début de l'effort (pente cible = -2 kg/sem)
     if has_effort_period:
         effort_initial_w = float(effort_df["Poids (Kgs)"].iloc[0])
-        healthy_rate = -0.5 / 7  # kg/jour
+        healthy_rate = -2.0 / 7  # kg/jour
         # Tracer sur 180 jours max depuis début effort
         traj_dates = pd.date_range(effort_start, periods=min(180, max(effort_days * 3, 90)), freq="D")
         traj_values = [effort_initial_w + healthy_rate * i for i in range(len(traj_dates))]
@@ -252,7 +252,7 @@ def main() -> None:
         traj_values = [max(v, target_weight) for v in traj_values]
 
         fig.add_scatter(x=traj_dates, y=traj_values, mode="lines",
-                        name="Trajectoire cible (-0.5 kg/sem)",
+                        name="Trajectoire cible (-2 kg/sem)",
                         line=dict(color="#27AE60", width=2, dash="dashdot"))
 
         # Corridor ±1 kg
