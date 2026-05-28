@@ -15,7 +15,7 @@ Application Streamlit de suivi de poids avec analyses comportementales avancées
 | **Tendance EMA** | Poids lissé comme KPI principal (filtre les fluctuations quotidiennes) |
 | **Détection yo-yo** | Analyse factuelle des rebonds après chaque pause de suivi |
 | **Détection d'effort** | Identification automatique de la période d'effort actuelle (gap > 21j = nouveau départ) |
-| **Trajectoire cible** | Corridor ±1 kg autour d'une pente saine de -0.5 kg/sem |
+| **Trajectoire cible** | Corridor ±1 kg autour d'une pente cible de -2 kg/sem |
 | **Phase de démarrage** | Les 7 premiers jours = "données fragiles", pas d'extrapolation |
 | **Milestone intelligent** | Prochain palier avec ETA réaliste (gardes-fous physiologiques) |
 | **Vue hebdomadaire** | Bar chart consolidé avec coloration baisse/hausse |
@@ -145,7 +145,7 @@ Google Sheets CSV ──► load_remote_csv() ──► clean_weight_dataframe()
 - **Pattern yo-yo** : alerte factuelle si rebond détecté + meilleur effort passé
 - **🧭 Résumé actionnable** : Situation / Interprétation / Action (contextualisé)
 - 💡 Insights détaillés (expander)
-- **Graphique principal** : courbe poids + EMA + trajectoire cible (-0.5 kg/sem) + corridor ±1 kg
+- **Graphique principal** : courbe poids + EMA + trajectoire cible (-2 kg/sem) + corridor ±1 kg
 - Vue hebdomadaire consolidée (expander)
 - Multi-MA chart (expander)
 - Comparaison hebdo + volatilité
