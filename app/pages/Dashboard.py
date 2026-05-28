@@ -27,6 +27,12 @@ from app.core.session_state import get_filtered_or_working_data
 from app.ui.components import alert_banner, confidence_badge, empty_state, help_box, kpi_card
 
 
+TARGET_TRAJECTORY_KG_PER_WEEK = -2.0
+TARGET_TRAJECTORY_DAILY_RATE = TARGET_TRAJECTORY_KG_PER_WEEK / 7
+TARGET_TRAJECTORY_LABEL = "Trajectoire cible (-2 kg/sem)"
+TARGET_TRAJECTORY_CHART_KEY = "dashboard_weight_evolution_target_minus_2kg_week_v2"
+
+
 def _df() -> pd.DataFrame:
     return get_filtered_or_working_data()
 
@@ -241,19 +247,20 @@ def main() -> None:
     for idx, target in enumerate(targets, start=1):
         fig.add_hline(y=float(target), line_dash="dash", annotation_text=f"Objectif {idx}: {target:.1f} kg")
 
-    # AN1: Trajectoire cible depuis début de l'effort (pente saine = -0.5 kg/sem)
+    # AN1: Trajectoire cible depuis début de l'effort (pente cible = -2 kg/sem)
     if has_effort_period:
         effort_initial_w = float(effort_df["Poids (Kgs)"].iloc[0])
-        healthy_rate = -0.5 / 7  # kg/jour
+        target_daily_rate = TARGET_TRAJECTORY_DAILY_RATE  # kg/jour
         # Tracer sur 180 jours max depuis début effort
         traj_dates = pd.date_range(effort_start, periods=min(180, max(effort_days * 3, 90)), freq="D")
-        traj_values = [effort_initial_w + healthy_rate * i for i in range(len(traj_dates))]
+        traj_values = [effort_initial_w + target_daily_rate * i for i in range(len(traj_dates))]
         # Ne pas descendre en dessous de l'objectif final
         traj_values = [max(v, target_weight) for v in traj_values]
 
         fig.add_scatter(x=traj_dates, y=traj_values, mode="lines",
-                        name="Trajectoire cible (-0.5 kg/sem)",
-                        line=dict(color="#27AE60", width=2, dash="dashdot"))
+                        name=TARGET_TRAJECTORY_LABEL,
+                        line=dict(color="#27AE60", width=2, dash="dashdot"),
+                        hovertemplate="Cible -2 kg/semaine<br>%{x|%d/%m/%Y}: %{y:.1f} kg<extra></extra>")
 
         # Corridor ±1 kg
         traj_upper = [v + 1.0 for v in traj_values]
@@ -268,7 +275,8 @@ def main() -> None:
         fig.add_vrect(x0=effort_start, x1=last_date, fillcolor="rgba(39,174,96,0.05)",
                       annotation_text="Effort actuel", line_width=0)
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.caption("🎯 Trajectoire cible du graphique : **-2 kg/semaine**.")
+    st.plotly_chart(fig, use_container_width=True, key=TARGET_TRAJECTORY_CHART_KEY)
 
     # ── Vue hebdomadaire consolidée (AN3 — NOUVEAU) ─────────────────────
     with st.expander("📊 Vue hebdomadaire consolidée", expanded=False):
