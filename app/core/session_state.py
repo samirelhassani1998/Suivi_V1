@@ -8,7 +8,7 @@ import streamlit as st
 from app.config import ALL_COLUMNS
 
 
-DEFAULT_TARGETS = (95.0, 90.0, 85.0, 80.0)
+DEFAULT_TARGETS = (100.0, 95.0, 90.0, 85.0, 90.0)
 DEFAULT_WEIGHT_COLUMNS = ["Date", "Poids (Kgs)"]
 
 
@@ -30,6 +30,7 @@ def ensure_session_defaults() -> None:
     st.session_state.setdefault("filtered_data", _empty_df())
 
     st.session_state.setdefault("target_weights", DEFAULT_TARGETS)
+    st.session_state.setdefault("target_weight", DEFAULT_TARGETS[-1])
     st.session_state.setdefault("ma_type", "Simple")
     st.session_state.setdefault("window_size", 7)
     st.session_state.setdefault("theme", "plotly")

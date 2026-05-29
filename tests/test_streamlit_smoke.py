@@ -16,7 +16,7 @@ def _state(at: AppTest) -> None:
     at.session_state["working_data"] = df.copy()
     at.session_state["filtered_data"] = df.copy()
     at.session_state["raw_data"] = df.copy()
-    at.session_state["target_weights"] = (93.0, 90.0, 87.0, 84.0)
+    at.session_state["target_weights"] = (100.0, 95.0, 90.0, 85.0, 90.0)
     at.session_state["fast_mode"] = True
 
 
@@ -67,7 +67,7 @@ def test_predictions_render_multiple_sections_even_if_submodel_fails():
     assert any("Auto-ARIMA" in t for t in tab_labels)
 
 
-def test_settings_exposes_four_goals():
+def test_settings_exposes_five_goals():
     at = AppTest.from_file("app/pages/Settings.py")
     _state(at)
     at.run(timeout=10)
@@ -77,3 +77,4 @@ def test_settings_exposes_four_goals():
     assert "Objectif 2 (kg)" in labels
     assert "Objectif 3 (kg)" in labels
     assert "Objectif 4 (kg)" in labels
+    assert "Objectif 5 (kg)" in labels
