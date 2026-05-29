@@ -24,6 +24,7 @@ from app.core.analytics import (
 from app.core.data import data_quality_report
 from app.core.insights import detect_plateau
 from app.core.session_state import get_filtered_or_working_data
+from app.core.weight_summary import moving_average_by_days, summarize_weight_journey
 from app.core.targets import get_target_weights, normalise_target_weights
 from app.ui.components import alert_banner, confidence_badge, empty_state, help_box, kpi_card
 
@@ -101,8 +102,102 @@ def _targets_caption(targets: tuple[float, ...]) -> str:
     return f"🎯 Objectifs affichés : {goals}."
 
 
+def _format_delta(value: float | None, suffix: str = " kg") -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:+.2f}{suffix}"
+
+
+def _format_value(value: float | None, suffix: str = " kg") -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:.2f}{suffix}"
+
+
+def _metric_help_for_period(period) -> str:
+    if period.value is None:
+        return period.reason or "Données insuffisantes pour cette période."
+    date = period.reference_date.strftime("%d/%m/%Y") if period.reference_date is not None else "n/a"
+    return f"Comparaison avec la première mesure disponible depuis le {date} ({period.measurements} mesure(s))."
+
+
+def _render_daily_overview(summary: dict, target_weight: float) -> None:
+    st.markdown("### Vue rapide")
+    st.caption("Les indicateurs ci-dessous comparent la dernière mesure aux repères utiles, avec prudence quand l'historique est court.")
+
+    delta_7 = summary["delta_7"]
+    delta_30 = summary["delta_30"]
+    cols = st.columns(6)
+    with cols[0]:
+        kpi_card("Poids actuel", _format_value(summary["current"]), _format_delta(summary["previous_delta"]), "Dernière mesure vs mesure précédente.")
+    with cols[1]:
+        kpi_card("Depuis le début", _format_delta(summary["delta_start"]), help_text="Variation entre la première et la dernière mesure valides.")
+    with cols[2]:
+        kpi_card("Variation 7 jours", _format_delta(delta_7.value), help_text=_metric_help_for_period(delta_7))
+    with cols[3]:
+        kpi_card("Variation 30 jours", _format_delta(delta_30.value), help_text=_metric_help_for_period(delta_30))
+    with cols[4]:
+        kpi_card("Moy. mobile 7j", _format_value(summary["ma_7_current"]), help_text="Moyenne mobile calendaire sur les 7 derniers jours disponibles.")
+    with cols[5]:
+        trend_icon = {"Baisse": "📉", "Hausse": "📈", "Stable": "➡️"}.get(summary["trend_label"], "🔎")
+        kpi_card("Tendance", f"{trend_icon} {summary['trend_label']}", help_text=summary["trend_explanation"])
+
+    cols2 = st.columns(4)
+    with cols2[0]:
+        kpi_card("Poids minimum", _format_value(summary["min_weight"]), help_text="Meilleur poids mesuré dans l'historique affiché.")
+    with cols2[1]:
+        kpi_card("Poids maximum", _format_value(summary["max_weight"]), help_text="Poids le plus élevé dans l'historique affiché.")
+    with cols2[2]:
+        pace = summary["weekly_pace"]
+        kpi_card("Rythme moyen", _format_delta(pace, " kg/sem") if pace is not None else "N/A", help_text="Rythme moyen depuis le début du suivi. N/A si moins de 7 jours.")
+    with cols2[3]:
+        kpi_card("Écart objectif", _format_delta(summary["target_gap"]), help_text=f"Écart entre le poids actuel et l'objectif final ({target_weight:.1f} kg).")
+
+    projection = summary["projection"]
+    if projection.get("available") and not projection.get("reached"):
+        eta = projection["eta"].strftime("%d/%m/%Y")
+        st.info(
+            f"📍 Projection prudente : objectif vers le **{eta}** (~{projection['days_needed']} jours) "
+            f"si le rythme récent ({projection['pace_kg_week']:+.2f} kg/sem) se maintient. Ce n'est pas une promesse."
+        )
+    elif projection.get("available") and projection.get("reached"):
+        st.success(f"🎯 {projection['message']}")
+    else:
+        st.caption(f"📍 {projection.get('message', 'Projection non disponible pour le moment.')}")
+
+
+def _render_simple_insights(summary: dict) -> None:
+    st.markdown("### Insights automatiques")
+    for insight in summary.get("insights", []):
+        st.markdown(f"- {insight}")
+
+
+def _render_objective_gap_chart(df: pd.DataFrame, target_weight: float) -> None:
+    if df.empty:
+        return
+    gap_df = df[["Date", "Poids (Kgs)"]].copy()
+    gap_df["Écart objectif (kg)"] = gap_df["Poids (Kgs)"] - target_weight
+    fig_gap = go.Figure()
+    fig_gap.add_scatter(
+        x=gap_df["Date"],
+        y=gap_df["Écart objectif (kg)"],
+        mode="lines+markers",
+        name="Écart à l'objectif",
+        line=dict(color="#8E44AD", width=2),
+    )
+    fig_gap.add_hline(y=0, line_dash="dash", line_color="#27AE60", annotation_text="Objectif")
+    fig_gap.update_layout(
+        title="Écart par rapport à l'objectif final",
+        xaxis_title="Date",
+        yaxis_title="Écart (kg)",
+        hovermode="x unified",
+        height=320,
+        margin=dict(l=10, r=10, t=55, b=10),
+    )
+    st.plotly_chart(fig_gap, use_container_width=True)
+
+
 def main() -> None:
-    st.title("Dashboard")
     df = _df()
     if df.empty:
         empty_state("Aucune donnée disponible. Utilisez Journal ou import CSV.")
@@ -134,6 +229,20 @@ def main() -> None:
     imc = current / (height_m**2)
     targets = get_target_weights(st.session_state)
     target_weight = float(targets[-1])
+    daily_summary = summarize_weight_journey(df, target_weight)
+
+    st.title("Dashboard")
+    st.markdown(
+        "<div class='suivi-hero'><div><span class='suivi-eyebrow'>Suivi de poids</span>"
+        "<p>Une vue simple pour comprendre l'évolution, la tendance et l'écart à l'objectif sans surcharger l'analyse.</p>"
+        "</div></div>",
+        unsafe_allow_html=True,
+    )
+
+    if daily_summary.get("valid"):
+        _render_daily_overview(daily_summary, target_weight)
+    else:
+        st.warning(daily_summary.get("message", "Données insuffisantes pour calculer les indicateurs."))
 
     # ── Bannière période d'effort (A1) ──────────────────────────────────
     if has_effort_period:
@@ -262,6 +371,8 @@ def main() -> None:
 
     # ── C2: Résumé actionnable Situation / Interprétation / Action ──────
     st.markdown("---")
+    if daily_summary.get("valid"):
+        _render_simple_insights(daily_summary)
     summary = generate_action_summary(df, target_weight)
     st.subheader("🧭 Votre résumé")
     st.markdown(f"📍 **Situation** : {summary['situation']}")
@@ -292,15 +403,36 @@ def main() -> None:
     ma_type = st.session_state.get("ma_type", "Simple")
     window_size = int(st.session_state.get("window_size", 7))
     df["Poids_MA"] = _moving_average(df["Poids (Kgs)"], window_size, ma_type)
+    df["MA_7J"] = moving_average_by_days(df, 7)
+    df["MA_30J"] = moving_average_by_days(df, 30)
 
     df_ema = compute_trend_ema(df, span=window_size)
 
-    fig = px.line(df, x="Date", y="Poids (Kgs)", title="Évolution du poids")
-    fig.add_scatter(x=df["Date"], y=df["Poids_MA"], mode="lines", name=f"MM {ma_type} ({window_size}j)",
-                    line=dict(width=1.5, dash="dot"))
+    fig = go.Figure()
+    fig.add_scatter(
+        x=df["Date"],
+        y=df["Poids (Kgs)"],
+        mode="lines+markers",
+        name="Poids mesuré",
+        line=dict(color="#2E7BCF", width=2),
+        marker=dict(size=5),
+        hovertemplate="%{x|%d/%m/%Y}<br>%{y:.2f} kg<extra></extra>",
+    )
+    fig.add_scatter(x=df["Date"], y=df["MA_7J"], mode="lines", name="Moyenne mobile 7j",
+                    line=dict(color="#27AE60", width=2, dash="dot"))
+    fig.add_scatter(x=df["Date"], y=df["MA_30J"], mode="lines", name="Moyenne mobile 30j",
+                    line=dict(color="#F39C12", width=2, dash="dash"))
     fig.add_scatter(x=df_ema["Date"], y=df_ema["Tendance_EMA"], mode="lines", name=f"Tendance EMA ({window_size})",
                     line=dict(color="#E74C3C", width=2.5))
     fig.add_hline(y=float(df["Poids (Kgs)"].mean()), line_dash="dot", annotation_text="Moyenne globale")
+    fig.update_layout(
+        title="Évolution du poids avec moyennes mobiles",
+        xaxis_title="Date",
+        yaxis_title="Poids (kg)",
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        margin=dict(l=10, r=10, t=85, b=10),
+    )
 
     _add_target_lines(fig, targets, x_values=df["Date"])
 
@@ -342,6 +474,9 @@ def main() -> None:
     st.caption(f"🎯 Trajectoire cible du graphique : **{TARGET_TRAJECTORY_KG_PER_WEEK:g} kg/semaine**.")
     st.caption(_targets_caption(targets))
     st.plotly_chart(fig, use_container_width=True, key=TARGET_TRAJECTORY_CHART_KEY)
+
+    with st.expander("🎯 Écart à l'objectif", expanded=False):
+        _render_objective_gap_chart(df, target_weight)
 
     # ── Vue hebdomadaire consolidée (AN3 — NOUVEAU) ─────────────────────
     with st.expander("📊 Vue hebdomadaire consolidée", expanded=False):
