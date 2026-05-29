@@ -23,7 +23,7 @@ from app.core.analytics import (
 )
 from app.core.data import data_quality_report
 from app.core.insights import detect_plateau
-from app.core.session_state import get_filtered_or_working_data
+from app.core.session_state import DEFAULT_TARGETS, get_filtered_or_working_data
 from app.ui.components import alert_banner, confidence_badge, empty_state, help_box, kpi_card
 
 
@@ -74,8 +74,8 @@ def main() -> None:
 
     height_m = st.session_state.get("height_m", 1.82)
     imc = current / (height_m**2)
-    targets = st.session_state.get("target_weights", (95.0, 90.0, 85.0, 80.0))
-    target_weight = st.session_state.get("target_weight", 80.0)
+    targets = st.session_state.get("target_weights", DEFAULT_TARGETS)
+    target_weight = st.session_state.get("target_weight", float(targets[-1]))
 
     # ── Bannière période d'effort (A1) ──────────────────────────────────
     if has_effort_period:
