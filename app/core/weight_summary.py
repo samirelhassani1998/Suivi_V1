@@ -259,11 +259,21 @@ def summarize_weight_journey(df: pd.DataFrame, target_weight: float) -> dict[str
     first = float(data[WEIGHT_COL].iloc[0])
     delta_7 = delta_since_days(data, 7)
     delta_30 = delta_since_days(data, 30)
+    delta_90 = delta_since_days(data, 90)
     ma_7 = moving_average_by_days(data, 7)
     ma_30 = moving_average_by_days(data, 30)
     trend_label, trend_explanation = classify_trend(delta_30, delta_7)
     pace = average_weekly_pace(data)
     projection = projection_to_target(data, target_weight)
+    target_weight = float(target_weight)
+    target_gap = current - target_weight
+    total_to_goal = first - target_weight
+    if total_to_goal > 0:
+        progress_pct = (first - current) / total_to_goal * 100
+    else:
+        progress_pct = 100.0 if current <= target_weight else 0.0
+    progress_pct = float(max(0.0, min(100.0, progress_pct)))
+    days_tracked = int((data[DATE_COL].iloc[-1] - data[DATE_COL].iloc[0]).days)
 
     return {
         "valid": True,
@@ -275,12 +285,17 @@ def summarize_weight_journey(df: pd.DataFrame, target_weight: float) -> dict[str
         "delta_start": current - first,
         "delta_7": delta_7,
         "delta_30": delta_30,
+        "delta_90": delta_90,
         "ma_7_current": float(ma_7.iloc[-1]) if not ma_7.empty else None,
         "ma_30_current": float(ma_30.iloc[-1]) if not ma_30.empty else None,
         "min_weight": float(data[WEIGHT_COL].min()),
         "max_weight": float(data[WEIGHT_COL].max()),
         "best_weight": float(data[WEIGHT_COL].min()),
-        "target_gap": current - float(target_weight),
+        "target_gap": target_gap,
+        "target_remaining": max(target_gap, 0.0),
+        "target_progress_pct": progress_pct,
+        "days_tracked": days_tracked,
+        "measurements": len(data),
         "trend_label": trend_label,
         "trend_explanation": trend_explanation,
         "weekly_pace": pace,

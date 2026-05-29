@@ -1,4 +1,4 @@
-"""Thème visuel léger pour Suivi V2."""
+"""Thème visuel moderne pour Suivi V2."""
 
 from __future__ import annotations
 
@@ -10,65 +10,153 @@ def apply_global_theme() -> None:
         """
         <style>
         :root {
-            --suivi-blue: #2E7BCF;
-            --suivi-green: #27AE60;
-            --suivi-orange: #F39C12;
-            --suivi-red: #E74C3C;
-            --suivi-ink: #1f2937;
+            --suivi-blue: #2563eb;
+            --suivi-blue-soft: #dbeafe;
+            --suivi-green: #16a34a;
+            --suivi-green-soft: #dcfce7;
+            --suivi-orange: #f97316;
+            --suivi-orange-soft: #ffedd5;
+            --suivi-red: #dc2626;
+            --suivi-purple: #7c3aed;
+            --suivi-ink: #111827;
             --suivi-muted: #667085;
-            --suivi-card: #f7f9fc;
+            --suivi-subtle: #98a2b3;
+            --suivi-card: rgba(255, 255, 255, 0.92);
+            --suivi-card-soft: #f8fafc;
             --suivi-border: #e5e7eb;
+            --suivi-shadow: 0 18px 45px rgba(15, 23, 42, 0.08);
+        }
+        .stApp {
+            background:
+                radial-gradient(circle at top left, rgba(37, 99, 235, 0.10), transparent 32rem),
+                linear-gradient(180deg, #f8fbff 0%, #ffffff 34%, #f8fafc 100%);
+            color: var(--suivi-ink);
         }
         .block-container {
-            padding-top: 1rem;
-            padding-bottom: 2rem;
-            max-width: 1180px;
+            padding-top: 1.1rem;
+            padding-bottom: 2.5rem;
+            max-width: 1240px;
         }
-        h1, h2, h3 {letter-spacing: 0.2px; color: var(--suivi-ink);}
-        h1 {margin-bottom: 0.25rem;}
+        section[data-testid="stSidebar"] {
+            background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
+            border-right: 1px solid rgba(255,255,255,0.08);
+        }
+        section[data-testid="stSidebar"] * {color: rgba(255,255,255,0.92);}
+        section[data-testid="stSidebar"] .stButton button,
+        section[data-testid="stSidebar"] [data-testid="stFileUploader"] button {
+            border-radius: 999px;
+            border: 1px solid rgba(255,255,255,0.18);
+        }
+        h1, h2, h3 {letter-spacing: -0.02em; color: var(--suivi-ink);}
+        h1 {font-size: clamp(2rem, 4vw, 3.25rem); margin: 0.1rem 0 0.25rem 0; line-height: 1.04;}
+        h2 {font-size: clamp(1.25rem, 2vw, 1.7rem); margin-top: 0.2rem;}
+        h3 {font-size: 1.05rem;}
+        .suivi-fade-in {animation: suiviFadeIn 0.35s ease-out both;}
+        @keyframes suiviFadeIn {from {opacity:0; transform: translateY(6px);} to {opacity:1; transform: translateY(0);}}
         .suivi-hero {
-            margin: 0.25rem 0 1rem 0;
-            padding: 1rem 1.1rem;
-            border: 1px solid var(--suivi-border);
-            border-radius: 18px;
-            background: linear-gradient(135deg, rgba(46,123,207,0.10), rgba(39,174,96,0.08));
+            position: relative;
+            overflow: hidden;
+            margin: 0.15rem 0 1.15rem 0;
+            padding: 1.35rem 1.45rem;
+            border: 1px solid rgba(37, 99, 235, 0.14);
+            border-radius: 28px;
+            background:
+                linear-gradient(135deg, rgba(255,255,255,0.96), rgba(239,246,255,0.92)),
+                radial-gradient(circle at 90% 20%, rgba(22,163,74,0.16), transparent 16rem);
+            box-shadow: var(--suivi-shadow);
+        }
+        .suivi-hero:after {
+            content: "";
+            position: absolute;
+            width: 18rem;
+            height: 18rem;
+            right: -8rem;
+            top: -9rem;
+            background: radial-gradient(circle, rgba(37,99,235,0.18), transparent 65%);
         }
         .suivi-hero p {
+            max-width: 760px;
             margin: 0.25rem 0 0 0;
             color: var(--suivi-muted);
-            font-size: 1rem;
-            line-height: 1.45;
+            font-size: 1.02rem;
+            line-height: 1.55;
+        }
+        .suivi-hero-meta {
+            display: inline-flex;
+            margin-top: 0.8rem;
+            padding: 0.35rem 0.7rem;
+            border-radius: 999px;
+            color: #1e3a8a;
+            background: rgba(219,234,254,0.85);
+            font-size: 0.86rem;
+            font-weight: 700;
         }
         .suivi-eyebrow {
-            display: inline-block;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
             color: var(--suivi-blue);
-            font-weight: 700;
+            font-weight: 800;
             text-transform: uppercase;
-            letter-spacing: 0.08em;
-            font-size: 0.75rem;
+            letter-spacing: 0.10em;
+            font-size: 0.76rem;
             margin-bottom: 0.2rem;
         }
+        .suivi-section-title {
+            margin: 1.05rem 0 0.65rem 0;
+        }
+        .suivi-section-title h2 {margin-bottom: 0.05rem;}
+        .suivi-section-title p {margin: 0; color: var(--suivi-muted); line-height: 1.45;}
         div[data-testid="stMetric"] {
             background: var(--suivi-card);
-            border: 1px solid var(--suivi-border);
-            border-radius: 14px;
-            padding: 0.85rem 0.9rem;
-            box-shadow: 0 1px 2px rgba(16,24,40,0.04);
+            border: 1px solid rgba(226, 232, 240, 0.9);
+            border-radius: 20px;
+            padding: 1rem 1rem;
+            box-shadow: 0 10px 28px rgba(15,23,42,0.055);
+            min-height: 112px;
         }
-        div[data-testid="stMetricLabel"] p {color: var(--suivi-muted); font-size: 0.88rem;}
-        div[data-testid="stMetricValue"] {font-size: 1.35rem;}
-        div[data-testid="stMetricDelta"] {font-size: 0.88rem;}
+        div[data-testid="stMetricLabel"] p {color: var(--suivi-muted); font-size: 0.88rem; font-weight: 700;}
+        div[data-testid="stMetricValue"] {font-size: clamp(1.25rem, 2.2vw, 1.75rem); font-weight: 800; color: var(--suivi-ink);}
+        div[data-testid="stMetricDelta"] {font-size: 0.88rem; font-weight: 700;}
+        div[data-testid="stTabs"] button {font-weight: 800; color: var(--suivi-muted);}
+        div[data-testid="stTabs"] button[aria-selected="true"] {color: var(--suivi-blue);}
         .stPlotlyChart {
-            border: 1px solid var(--suivi-border);
-            border-radius: 16px;
-            padding: 0.35rem;
+            border: 1px solid rgba(226,232,240,0.95);
+            border-radius: 22px;
+            padding: 0.45rem;
             background: #ffffff;
+            box-shadow: 0 12px 30px rgba(15,23,42,0.05);
         }
+        .suivi-insight-card, .suivi-progress-panel {
+            display: flex;
+            gap: 0.8rem;
+            align-items: flex-start;
+            padding: 1rem;
+            margin: 0.45rem 0;
+            border: 1px solid var(--suivi-border);
+            border-radius: 20px;
+            background: var(--suivi-card);
+            box-shadow: 0 10px 24px rgba(15,23,42,0.045);
+        }
+        .suivi-insight-card p, .suivi-progress-panel p {margin: 0.25rem 0 0 0; color: var(--suivi-muted); line-height: 1.45;}
+        .suivi-insight-icon {font-size: 1.35rem; line-height: 1;}
+        .suivi-insight-success {border-color: rgba(22,163,74,0.22); background: linear-gradient(135deg, #ffffff, var(--suivi-green-soft));}
+        .suivi-insight-warning {border-color: rgba(249,115,22,0.25); background: linear-gradient(135deg, #ffffff, var(--suivi-orange-soft));}
+        .suivi-insight-info {border-color: rgba(37,99,235,0.20); background: linear-gradient(135deg, #ffffff, var(--suivi-blue-soft));}
+        .suivi-progress-panel {display: block;}
+        .suivi-progress-top {display: flex; justify-content: space-between; gap: 1rem; align-items: center;}
+        .suivi-progress-top span {font-size: 1.25rem; font-weight: 900; color: var(--suivi-blue);}
+        .suivi-progress-track {height: 0.72rem; background: #e5e7eb; border-radius: 999px; overflow: hidden; margin: 0.85rem 0 0.35rem 0;}
+        .suivi-progress-track div {height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--suivi-blue), var(--suivi-green));}
+        .suivi-progress-success .suivi-progress-track div {background: linear-gradient(90deg, var(--suivi-green), #86efac);}
+        div[data-testid="stAlert"] {border-radius: 18px; border: 1px solid rgba(226,232,240,0.9);}
+        .stDataFrame, div[data-testid="stDataEditor"] {border-radius: 18px; overflow: hidden;}
         @media (max-width: 768px) {
-            .block-container {padding-left: 0.75rem; padding-right: 0.75rem;}
-            .suivi-hero {padding: 0.9rem; border-radius: 14px;}
-            div[data-testid="stMetric"] {padding: 0.75rem;}
-            div[data-testid="stMetricValue"] {font-size: 1.15rem;}
+            .block-container {padding-left: 0.8rem; padding-right: 0.8rem;}
+            .suivi-hero {padding: 1rem; border-radius: 20px;}
+            .suivi-hero p {font-size: 0.95rem;}
+            div[data-testid="stMetric"] {padding: 0.85rem; min-height: 96px;}
+            .stPlotlyChart {border-radius: 16px;}
         }
         </style>
         """,

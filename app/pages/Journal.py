@@ -5,7 +5,7 @@ import streamlit as st
 
 from app.core.data import validate_journal
 from app.core.session_state import get_working_data, set_working_data
-from app.ui.components import alert_banner, empty_state
+from app.ui.components import alert_banner, empty_state, page_hero, section_header
 
 
 def _ensure_df() -> pd.DataFrame:
@@ -24,12 +24,19 @@ def _format_dates_for_display(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def main() -> None:
-    st.title("Journal")
     df = _ensure_df()
+    page_hero(
+        "Données",
+        "Journal",
+        "Ajoutez, corrigez et exportez vos mesures tout en conservant les colonnes personnalisées de votre CSV.",
+        meta=f"{len(df)} ligne(s) en session" if not df.empty else "Aucune mesure en session",
+    )
     if df.empty:
         empty_state("Commencez par ajouter une première ligne.")
 
-    st.caption("Le journal conserve toutes les colonnes du CSV. Les lignes invalides sont signalées, pas supprimées silencieusement.")
+    st.info("Le journal conserve toutes les colonnes du CSV. Les lignes invalides sont signalées avant enregistrement.")
+
+    section_header("Édition des mesures", "Filtrez une période, éditez les lignes puis enregistrez en session.", "🧾")
 
     with st.expander("Filtre date (aperçu)", expanded=False):
         if not df.empty and "Date" in df.columns:
@@ -64,7 +71,7 @@ def main() -> None:
             mime="text/csv",
         )
 
-    st.subheader("Aperçu des dernières lignes")
+    section_header("Aperçu des dernières lignes", "Contrôle rapide après édition ou import.", "👀")
     st.dataframe(_format_dates_for_display(edited.tail(10)), use_container_width=True)
 
 
