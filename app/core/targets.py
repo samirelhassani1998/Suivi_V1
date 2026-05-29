@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, MutableMapping
 import math
 from typing import Any
 
-import streamlit as st
-
 
 DEFAULT_TARGETS = (100.0, 95.0, 90.0, 85.0, 80.0)
+TARGET_COUNT = len(DEFAULT_TARGETS)
 
 
 def normalise_target_weights(target_weights: Any = None) -> tuple[float, float, float, float, float]:
@@ -35,9 +34,19 @@ def normalise_target_weights(target_weights: Any = None) -> tuple[float, float, 
     return tuple(normalised)  # type: ignore[return-value]
 
 
-def get_target_weights() -> tuple[float, float, float, float, float]:
-    """Read, migrate and persist the five configured target weights."""
-    targets = normalise_target_weights(st.session_state.get("target_weights"))
-    st.session_state["target_weights"] = targets
-    st.session_state["target_weight"] = float(targets[-1])
+def get_target_weights(session_state: MutableMapping[str, Any] | None = None) -> tuple[float, float, float, float, float]:
+    """Read, migrate and persist the five configured target weights.
+
+    ``streamlit`` is imported lazily so importing this pure helper module cannot
+    fail while Streamlit is initialising a page.  Passing ``session_state`` keeps
+    the function testable and lets pages reuse the same migration logic.
+    """
+    if session_state is None:
+        import streamlit as st
+
+        session_state = st.session_state
+
+    targets = normalise_target_weights(session_state.get("target_weights"))
+    session_state["target_weights"] = targets
+    session_state["target_weight"] = float(targets[-1])
     return targets

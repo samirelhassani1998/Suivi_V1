@@ -29,7 +29,7 @@ def ensure_session_defaults() -> None:
     st.session_state.setdefault("filtered_data", _empty_df())
 
     st.session_state.setdefault("target_weights", DEFAULT_TARGETS)
-    get_target_weights()
+    get_target_weights(st.session_state)
     st.session_state.setdefault("ma_type", "Simple")
     st.session_state.setdefault("window_size", 7)
     st.session_state.setdefault("theme", "plotly")
