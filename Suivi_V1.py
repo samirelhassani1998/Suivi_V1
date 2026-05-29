@@ -43,26 +43,37 @@ def init_data_once() -> None:
 
 
 def sidebar_controls() -> None:
-    st.sidebar.header("Contrôles de données")
+    st.sidebar.markdown(
+        """
+        <div class="suivi-sidebar-card">
+            <span class="suivi-sidebar-eyebrow">Source active</span>
+            <strong>{source}</strong>
+        </div>
+        """.format(source=st.session_state.get("data_source", "n/a")),
+        unsafe_allow_html=True,
+    )
 
-    if st.sidebar.button("Recharger depuis la source"):
-        load_remote_csv.clear()
-        try:
-            _load_from_source()
-            st.sidebar.success("Données rechargées depuis Google Sheets.")
-        except Exception as exc:
-            st.sidebar.error(f"Échec du rechargement source: {exc}")
+    with st.sidebar.expander("Données", expanded=True):
+        st.caption("Synchronisez la source principale ou annulez les modifications de session.")
+        if st.button("Recharger Google Sheets", use_container_width=True):
+            load_remote_csv.clear()
+            try:
+                _load_from_source()
+                st.success("Données rechargées depuis Google Sheets.")
+            except Exception as exc:
+                st.error(f"Échec du rechargement source: {exc}")
 
-    if st.sidebar.button("Réinitialiser les modifications locales"):
-        reset_working_to_source()
-        st.sidebar.info("Les données de travail ont été réinitialisées depuis la source.")
+        if st.button("Réinitialiser la session", use_container_width=True):
+            reset_working_to_source()
+            st.info("Les données de travail ont été réinitialisées depuis la source.")
 
-    uploaded = st.sidebar.file_uploader("Importer un CSV", type=["csv"], key="sidebar_csv_import")
-    if uploaded is not None and st.sidebar.button("Valider l'import CSV"):
-        _import_local_csv(uploaded)
-        st.sidebar.success("CSV importé dans la session.")
+    with st.sidebar.expander("Import CSV", expanded=False):
+        st.caption("Option secondaire : remplace uniquement les données de la session courante.")
+        uploaded = st.file_uploader("Fichier CSV à importer", type=["csv"], key="sidebar_csv_import")
+        if uploaded is not None and st.button("Valider l’import CSV", use_container_width=True):
+            _import_local_csv(uploaded)
+            st.success("CSV importé dans la session.")
 
-    st.sidebar.caption(f"Source active: {st.session_state.get('data_source', 'n/a')}")
 
 
 st.set_page_config(page_title="Suivi V2", layout="wide")

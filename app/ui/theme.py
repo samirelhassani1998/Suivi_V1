@@ -41,11 +41,61 @@ def apply_global_theme() -> None:
             background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
             border-right: 1px solid rgba(255,255,255,0.08);
         }
-        section[data-testid="stSidebar"] * {color: rgba(255,255,255,0.92);}
+        section[data-testid="stSidebar"] h1,
+        section[data-testid="stSidebar"] h2,
+        section[data-testid="stSidebar"] h3,
+        section[data-testid="stSidebar"] p,
+        section[data-testid="stSidebar"] label,
+        section[data-testid="stSidebar"] span {color: rgba(255,255,255,0.90);}
+        section[data-testid="stSidebar"] [data-testid="stExpander"] {
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 18px;
+            background: rgba(255,255,255,0.055);
+            overflow: hidden;
+            margin-bottom: 0.7rem;
+        }
+        section[data-testid="stSidebar"] [data-testid="stExpander"] details summary {
+            font-weight: 800;
+        }
         section[data-testid="stSidebar"] .stButton button,
         section[data-testid="stSidebar"] [data-testid="stFileUploader"] button {
             border-radius: 999px;
             border: 1px solid rgba(255,255,255,0.18);
+            background: rgba(255,255,255,0.10);
+            color: #ffffff;
+            font-weight: 800;
+        }
+        section[data-testid="stSidebar"] .stButton button:hover,
+        section[data-testid="stSidebar"] [data-testid="stFileUploader"] button:hover {
+            border-color: rgba(255,255,255,0.36);
+            background: rgba(37,99,235,0.45);
+            color: #ffffff;
+        }
+        section[data-testid="stSidebar"] [data-testid="stFileUploader"] section {
+            background: rgba(255,255,255,0.06);
+            border: 1px dashed rgba(255,255,255,0.22);
+            border-radius: 16px;
+        }
+        .suivi-sidebar-card {
+            margin: 0.25rem 0 1rem 0;
+            padding: 0.85rem 0.95rem;
+            border: 1px solid rgba(255,255,255,0.14);
+            border-radius: 18px;
+            background: linear-gradient(135deg, rgba(255,255,255,0.12), rgba(255,255,255,0.05));
+            box-shadow: 0 14px 30px rgba(0,0,0,0.12);
+        }
+        .suivi-sidebar-card strong {
+            display: block;
+            margin-top: 0.2rem;
+            color: #ffffff;
+            font-size: 0.98rem;
+        }
+        .suivi-sidebar-eyebrow {
+            color: rgba(255,255,255,0.62) !important;
+            font-size: 0.72rem;
+            font-weight: 900;
+            letter-spacing: 0.10em;
+            text-transform: uppercase;
         }
         h1, h2, h3 {letter-spacing: -0.02em; color: var(--suivi-ink);}
         h1 {font-size: clamp(2rem, 4vw, 3.25rem); margin: 0.1rem 0 0.25rem 0; line-height: 1.04;}
@@ -122,10 +172,10 @@ def apply_global_theme() -> None:
         div[data-testid="stTabs"] button[aria-selected="true"] {color: var(--suivi-blue);}
         .stPlotlyChart {
             border: 1px solid rgba(226,232,240,0.95);
-            border-radius: 22px;
-            padding: 0.45rem;
+            border-radius: 24px;
+            padding: 0.6rem;
             background: #ffffff;
-            box-shadow: 0 12px 30px rgba(15,23,42,0.05);
+            box-shadow: 0 16px 36px rgba(15,23,42,0.055);
         }
         .suivi-insight-card, .suivi-progress-panel {
             display: flex;
