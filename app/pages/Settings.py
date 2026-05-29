@@ -3,7 +3,7 @@ from __future__ import annotations
 import streamlit as st
 
 from app.config import AppDefaults, DUPLICATE_STRATEGIES
-from app.core.session_state import DEFAULT_TARGETS
+from app.core.session_state import get_target_weights, normalise_target_weights
 
 
 def main() -> None:
@@ -11,11 +11,14 @@ def main() -> None:
     defaults = AppDefaults()
 
     with st.form("settings_form"):
-        target = st.number_input("Poids objectif final (kg)", value=float(st.session_state.get("target_weight", defaults.target_weight)))
+        padded_goals = get_target_weights()
+        st.number_input(
+            "Poids objectif final (kg)",
+            value=float(padded_goals[-1]),
+            disabled=True,
+            help="Synchronisé avec Objectif 5 pour garder une cible finale unique.",
+        )
         height_cm = st.number_input("Taille (cm)", value=float(st.session_state.get("height_cm", defaults.height_cm)))
-
-        goals = tuple(st.session_state.get("target_weights", DEFAULT_TARGETS))
-        padded_goals = goals + DEFAULT_TARGETS[len(goals):]
         g1 = st.number_input("Objectif 1 (kg)", value=float(padded_goals[0]))
         g2 = st.number_input("Objectif 2 (kg)", value=float(padded_goals[1]))
         g3 = st.number_input("Objectif 3 (kg)", value=float(padded_goals[2]))
@@ -31,8 +34,9 @@ def main() -> None:
         submitted = st.form_submit_button("Enregistrer")
 
     if submitted:
-        st.session_state["target_weight"] = float(target)
-        st.session_state["target_weights"] = (float(g1), float(g2), float(g3), float(g4), float(g5))
+        target_weights = normalise_target_weights((g1, g2, g3, g4, g5))
+        st.session_state["target_weights"] = target_weights
+        st.session_state["target_weight"] = float(target_weights[-1])
         st.session_state["height_cm"] = float(height_cm)
         st.session_state["height_m"] = float(height_cm) / 100
         st.session_state["duplicate_strategy"] = duplicate

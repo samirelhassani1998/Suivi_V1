@@ -23,7 +23,7 @@ from app.core.analytics import (
 )
 from app.core.data import data_quality_report
 from app.core.insights import detect_plateau
-from app.core.session_state import DEFAULT_TARGETS, get_filtered_or_working_data
+from app.core.session_state import get_filtered_or_working_data, get_target_weights
 from app.ui.components import alert_banner, confidence_badge, empty_state, help_box, kpi_card
 
 
@@ -41,6 +41,32 @@ def _moving_average(series: pd.Series, window: int, ma_type: str) -> pd.Series:
     if ma_type == "Exponentielle":
         return series.ewm(span=max(window, 2), adjust=False).mean()
     return series.rolling(window=window, min_periods=1).mean()
+
+
+def _target_annotation_shift(targets: tuple[float, ...], index: int) -> int:
+    """Offset duplicate target annotations so identical goals remain readable."""
+    target = round(float(targets[index]), 3)
+    duplicate_position = sum(1 for previous in targets[:index] if round(float(previous), 3) == target)
+    return duplicate_position * 18
+
+
+def _add_target_lines(fig: go.Figure, targets: tuple[float, ...], label_prefix: str = "Objectif") -> None:
+    """Draw target lines with readable labels, including duplicated values."""
+    colors = ("#2E7BCF", "#27AE60", "#F39C12", "#8E44AD", "#E74C3C")
+    for idx, target in enumerate(targets, start=1):
+        fig.add_hline(
+            y=float(target),
+            line_dash="dash",
+            line_color=colors[(idx - 1) % len(colors)],
+            annotation_text=f"{label_prefix} {idx}: {float(target):.1f} kg",
+            annotation_position="top right",
+            annotation_yshift=_target_annotation_shift(targets, idx - 1),
+        )
+
+
+def _targets_caption(targets: tuple[float, ...]) -> str:
+    goals = " · ".join(f"Objectif {idx}: {target:.1f} kg" for idx, target in enumerate(targets, start=1))
+    return f"🎯 Objectifs affichés : {goals}."
 
 
 def main() -> None:
@@ -74,8 +100,8 @@ def main() -> None:
 
     height_m = st.session_state.get("height_m", 1.82)
     imc = current / (height_m**2)
-    targets = st.session_state.get("target_weights", DEFAULT_TARGETS)
-    target_weight = st.session_state.get("target_weight", float(targets[-1]))
+    targets = get_target_weights()
+    target_weight = float(targets[-1])
 
     # ── Bannière période d'effort (A1) ──────────────────────────────────
     if has_effort_period:
@@ -244,8 +270,7 @@ def main() -> None:
                     line=dict(color="#E74C3C", width=2.5))
     fig.add_hline(y=float(df["Poids (Kgs)"].mean()), line_dash="dot", annotation_text="Moyenne globale")
 
-    for idx, target in enumerate(targets, start=1):
-        fig.add_hline(y=float(target), line_dash="dash", annotation_text=f"Objectif {idx}: {target:.1f} kg")
+    _add_target_lines(fig, targets)
 
     # AN1: Trajectoire cible depuis début de l'effort (pente cible = -2 kg/semaine)
     if has_effort_period:
@@ -283,6 +308,7 @@ def main() -> None:
                       annotation_text="Effort actuel", line_width=0)
 
     st.caption(f"🎯 Trajectoire cible du graphique : **{TARGET_TRAJECTORY_KG_PER_WEEK:g} kg/semaine**.")
+    st.caption(_targets_caption(targets))
     st.plotly_chart(fig, use_container_width=True, key=TARGET_TRAJECTORY_CHART_KEY)
 
     # ── Vue hebdomadaire consolidée (AN3 — NOUVEAU) ─────────────────────
@@ -299,8 +325,7 @@ def main() -> None:
         for col, color in colors.items():
             if col in df_ma.columns:
                 fig_ma.add_scatter(x=df_ma["Date"], y=df_ma[col], mode="lines", name=labels.get(col, col), line=dict(color=color, width=2))
-        for idx, target in enumerate(targets, start=1):
-            fig_ma.add_hline(y=float(target), line_dash="dash", annotation_text=f"Obj. {idx}")
+        _add_target_lines(fig_ma, targets, label_prefix="Obj.")
         fig_ma.update_layout(title="Moyennes mobiles (glissantes sur N mesures consécutives)", hovermode="x unified")
         st.plotly_chart(fig_ma, use_container_width=True)
         st.caption("ℹ️ Les moyennes mobiles glissent sur N mesures consécutives (et non sur N jours calendaires).")
