@@ -16,7 +16,7 @@ def _state(at: AppTest) -> None:
     at.session_state["working_data"] = df.copy()
     at.session_state["filtered_data"] = df.copy()
     at.session_state["raw_data"] = df.copy()
-    at.session_state["target_weights"] = (100.0, 95.0, 90.0, 85.0, 90.0)
+    at.session_state["target_weights"] = (100.0, 95.0, 90.0, 85.0, 80.0)
     at.session_state["fast_mode"] = True
 
 
@@ -83,10 +83,11 @@ def test_settings_exposes_five_goals():
 def test_dashboard_migrates_legacy_four_goals_to_requested_five_goals():
     at = AppTest.from_file("app/pages/Dashboard.py")
     _state(at)
-    at.session_state["target_weights"] = (100.0, 95.0, 90.0, 85.0)
-    at.session_state["target_weight"] = 85.0
+    at.session_state["target_weights"] = (95.0, 90.0, 85.0, 80.0)
+    at.session_state["target_weight"] = 80.0
     at.run(timeout=10)
     assert not at.exception
-    assert at.session_state["target_weights"] == (100.0, 95.0, 90.0, 85.0, 90.0)
-    assert at.session_state["target_weight"] == 90.0
-    assert any("Objectif 5: 90.0 kg" in str(c.value) for c in at.caption)
+    assert at.session_state["target_weights"] == (100.0, 95.0, 90.0, 85.0, 80.0)
+    assert at.session_state["target_weight"] == 80.0
+    assert any("Objectif 1: 100.0 kg" in str(c.value) for c in at.caption)
+    assert any("Objectif 5: 80.0 kg" in str(c.value) for c in at.caption)

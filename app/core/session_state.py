@@ -12,7 +12,12 @@ import streamlit as st
 from app.config import ALL_COLUMNS
 
 
-DEFAULT_TARGETS = (100.0, 95.0, 90.0, 85.0, 90.0)
+DEFAULT_TARGETS = (100.0, 95.0, 90.0, 85.0, 80.0)
+LEGACY_DEFAULT_TARGETS = (
+    (95.0, 90.0, 85.0, 80.0),
+    (100.0, 95.0, 90.0, 85.0),
+    (100.0, 95.0, 90.0, 85.0, 90.0),
+)
 DEFAULT_WEIGHT_COLUMNS = ["Date", "Poids (Kgs)"]
 
 
@@ -20,14 +25,37 @@ def _empty_df() -> pd.DataFrame:
     return pd.DataFrame(columns=list(ALL_COLUMNS))
 
 
+def _numeric_targets(values: list[Any]) -> list[float]:
+    numeric_values: list[float] = []
+    for candidate in values:
+        try:
+            numeric = float(candidate)
+        except (TypeError, ValueError):
+            break
+        if not math.isfinite(numeric):
+            break
+        numeric_values.append(numeric)
+    return numeric_values
+
+
+def _matches_targets(values: list[float], targets: tuple[float, ...]) -> bool:
+    return len(values) == len(targets) and all(
+        round(value, 3) == round(target, 3) for value, target in zip(values, targets, strict=True)
+    )
+
+
 def normalise_target_weights(target_weights: Any = None) -> tuple[float, float, float, float, float]:
-    """Return exactly five numeric targets, padding legacy sessions with defaults."""
+    """Return exactly five numeric targets, migrating old default objective sets."""
     if target_weights is None or isinstance(target_weights, (str, bytes)):
         values: list[Any] = []
     elif isinstance(target_weights, Iterable):
         values = list(target_weights)
     else:
         values = [target_weights]
+
+    numeric_values = _numeric_targets(values)
+    if any(_matches_targets(numeric_values, legacy) for legacy in LEGACY_DEFAULT_TARGETS):
+        return DEFAULT_TARGETS
 
     normalised: list[float] = []
     for idx, default in enumerate(DEFAULT_TARGETS):
