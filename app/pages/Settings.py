@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from app.config import AppDefaults, DUPLICATE_STRATEGIES
-from app.core.targets import get_target_weights, normalise_target_weights
+from app.config import AppDefaults, DUPLICATE_STRATEGIES, get_target_weights, normalise_target_weights
 
 
 def main() -> None:
@@ -11,7 +10,7 @@ def main() -> None:
     defaults = AppDefaults()
 
     with st.form("settings_form"):
-        padded_goals = get_target_weights()
+        padded_goals = get_target_weights(st.session_state)
         st.number_input(
             "Poids objectif final (kg)",
             value=float(padded_goals[-1]),

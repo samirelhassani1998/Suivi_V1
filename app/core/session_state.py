@@ -5,8 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from app.config import ALL_COLUMNS
-from app.core.targets import DEFAULT_TARGETS, get_target_weights, normalise_target_weights
+from app.config import ALL_COLUMNS, DEFAULT_TARGETS, get_target_weights, normalise_target_weights
 
 DEFAULT_WEIGHT_COLUMNS = ["Date", "Poids (Kgs)"]
 
@@ -29,7 +28,7 @@ def ensure_session_defaults() -> None:
     st.session_state.setdefault("filtered_data", _empty_df())
 
     st.session_state.setdefault("target_weights", DEFAULT_TARGETS)
-    get_target_weights()
+    get_target_weights(st.session_state)
     st.session_state.setdefault("ma_type", "Simple")
     st.session_state.setdefault("window_size", 7)
     st.session_state.setdefault("theme", "plotly")

@@ -18,7 +18,7 @@ from app.core.features import build_features
 from app.core.forecasting import forecast_with_ml, forecast_with_sarimax
 from app.core.insights import estimate_target_eta
 from app.core.session_state import get_filtered_or_working_data
-from app.core.targets import get_target_weights
+from app.config import get_target_weights
 from app.ui.components import alert_banner, empty_state, kpi_card
 
 warnings.filterwarnings("ignore")
@@ -154,7 +154,7 @@ def _scenarios_block(df: pd.DataFrame) -> None:
     st.subheader("🔮 Scénarios prospectifs")
     st.caption("Scénarios basés sur des rythmes observés (fenêtres 7/14/30j), à interpréter comme guidance et non certitude.")
 
-    target_weight = float(get_target_weights()[-1])
+    target_weight = float(get_target_weights(st.session_state)[-1])
     scenarios = prospective_scenarios(df, target_weight)
 
     if not scenarios:
@@ -235,7 +235,7 @@ def main() -> None:
 
     # ── ETA objectif amélioré (existant + enrichi) ──────────────────────
     st.markdown("---")
-    target_weight = float(get_target_weights()[-1])
+    target_weight = float(get_target_weights(st.session_state)[-1])
 
     # QW3: Utiliser la période d'effort pour l'ETA
     from app.core.analytics import detect_current_effort
