@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from app.config import ALL_COLUMNS
-from app.core.targets import DEFAULT_TARGETS, get_target_weights, normalise_target_weights
+from app.config import DEFAULT_TARGETS, get_target_weights, normalise_target_weights
 
 DEFAULT_WEIGHT_COLUMNS = ["Date", "Poids (Kgs)"]
 

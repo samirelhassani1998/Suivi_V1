@@ -100,3 +100,23 @@ def test_forecast_functions_return_well_formed_dataframes(synthetic_df):
         assert isinstance(frame, pd.DataFrame)
         if not frame.empty:
             assert {"Date", "prevision", "borne_basse", "borne_haute"}.issubset(frame.columns)
+
+
+def test_target_weight_helpers_migrate_only_four_value_legacy_payloads():
+    from app.config import DEFAULT_TARGETS, get_target_weights, normalise_target_weights
+
+    assert normalise_target_weights((100.0, 95.0, 90.0, 85.0)) == DEFAULT_TARGETS
+    assert normalise_target_weights((95.0, 90.0, 85.0, 80.0)) == DEFAULT_TARGETS
+    assert normalise_target_weights((95.0, 90.0, 85.0, 80.0, 80.0)) == (95.0, 90.0, 85.0, 80.0, 80.0)
+
+    session_state = {"target_weights": (95.0, 90.0, 85.0, 80.0, 80.0), "target_weight": 81.0}
+    assert get_target_weights(session_state) == (95.0, 90.0, 85.0, 80.0, 80.0)
+    assert session_state["target_weight"] == 80.0
+
+
+def test_core_targets_compatibility_helper_still_accepts_mapping():
+    from app.core.targets import DEFAULT_TARGETS, get_target_weights
+
+    session_state = {"target_weights": (100.0, 95.0, 90.0, 85.0)}
+    assert get_target_weights(session_state) == DEFAULT_TARGETS
+    assert session_state["target_weights"] == DEFAULT_TARGETS
