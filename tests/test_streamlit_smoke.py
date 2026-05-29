@@ -16,7 +16,7 @@ def _state(at: AppTest) -> None:
     at.session_state["working_data"] = df.copy()
     at.session_state["filtered_data"] = df.copy()
     at.session_state["raw_data"] = df.copy()
-    at.session_state["target_weights"] = (93.0, 90.0, 87.0, 84.0)
+    at.session_state["target_weights"] = (100.0, 95.0, 90.0, 85.0, 90.0)
     at.session_state["fast_mode"] = True
 
 
@@ -28,6 +28,18 @@ def test_dashboard_renders_kpis_and_sections():
     assert any("Dashboard" in h.value for h in at.title)
     assert len(at.metric) >= 3
     assert any("objectif" in str(c.value).lower() for c in at.caption)
+
+
+def test_dashboard_migrates_legacy_four_goals_to_requested_five_goals():
+    at = AppTest.from_file("app/pages/Dashboard.py")
+    _state(at)
+    at.session_state["target_weights"] = (95.0, 90.0, 85.0, 80.0)
+    at.session_state["target_weight"] = 80.0
+    at.run(timeout=10)
+    assert not at.exception
+    assert at.session_state["target_weights"] == (100.0, 95.0, 90.0, 85.0, 90.0)
+    assert at.session_state["target_weight"] == 90.0
+    assert any("Obj. 5: 90.0 kg" in str(c.value) for c in at.caption)
 
 
 def test_journal_loads_and_keeps_state_on_navigation():
@@ -67,7 +79,7 @@ def test_predictions_render_multiple_sections_even_if_submodel_fails():
     assert any("Auto-ARIMA" in t for t in tab_labels)
 
 
-def test_settings_exposes_four_goals():
+def test_settings_exposes_five_goals():
     at = AppTest.from_file("app/pages/Settings.py")
     _state(at)
     at.run(timeout=10)
@@ -77,3 +89,4 @@ def test_settings_exposes_four_goals():
     assert "Objectif 2 (kg)" in labels
     assert "Objectif 3 (kg)" in labels
     assert "Objectif 4 (kg)" in labels
+    assert "Objectif 5 (kg)" in labels

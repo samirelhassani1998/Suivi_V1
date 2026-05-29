@@ -3,21 +3,23 @@ from __future__ import annotations
 import streamlit as st
 
 from app.config import AppDefaults, DUPLICATE_STRATEGIES
+from app.core.session_state import get_target_weights
 
 
 def main() -> None:
     st.title("Paramètres / Qualité")
     defaults = AppDefaults()
+    goals = get_target_weights()
 
     with st.form("settings_form"):
         target = st.number_input("Poids objectif final (kg)", value=float(st.session_state.get("target_weight", defaults.target_weight)))
         height_cm = st.number_input("Taille (cm)", value=float(st.session_state.get("height_cm", defaults.height_cm)))
 
-        goals = st.session_state.get("target_weights", (95.0, 90.0, 85.0, float(target)))
         g1 = st.number_input("Objectif 1 (kg)", value=float(goals[0]))
         g2 = st.number_input("Objectif 2 (kg)", value=float(goals[1]))
         g3 = st.number_input("Objectif 3 (kg)", value=float(goals[2]))
-        g4 = st.number_input("Objectif 4 (kg)", value=float(goals[3] if len(goals) > 3 else target))
+        g4 = st.number_input("Objectif 4 (kg)", value=float(goals[3]))
+        g5 = st.number_input("Objectif 5 (kg)", value=float(goals[4]))
 
         ma_type = st.selectbox("Type de moyenne mobile", ["Simple", "Exponentielle"], index=0 if st.session_state.get("ma_type", "Simple") == "Simple" else 1)
         window_size = st.slider("Fenêtre moyenne mobile", min_value=3, max_value=60, value=int(st.session_state.get("window_size", 7)))
@@ -29,7 +31,7 @@ def main() -> None:
 
     if submitted:
         st.session_state["target_weight"] = float(target)
-        st.session_state["target_weights"] = (float(g1), float(g2), float(g3), float(g4))
+        st.session_state["target_weights"] = (float(g1), float(g2), float(g3), float(g4), float(g5))
         st.session_state["height_cm"] = float(height_cm)
         st.session_state["height_m"] = float(height_cm) / 100
         st.session_state["duplicate_strategy"] = duplicate

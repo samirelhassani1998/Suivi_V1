@@ -8,8 +8,37 @@ import streamlit as st
 from app.config import ALL_COLUMNS
 
 
-DEFAULT_TARGETS = (95.0, 90.0, 85.0, 80.0)
+DEFAULT_TARGETS = (100.0, 95.0, 90.0, 85.0, 90.0)
 DEFAULT_WEIGHT_COLUMNS = ["Date", "Poids (Kgs)"]
+
+
+def normalise_target_weights(targets: object | None) -> tuple[float, ...]:
+    """Retourne toujours les 5 objectifs attendus pour les graphiques.
+
+    Les anciennes sessions Streamlit peuvent encore contenir les 4 anciens
+    objectifs (95, 90, 85, 80). Dans ce cas, on force les nouveaux paliers
+    demandés pour éviter de réafficher l'ancien graphique après déploiement.
+    """
+    if targets is None:
+        return DEFAULT_TARGETS
+
+    try:
+        values = tuple(float(target) for target in targets)
+    except (TypeError, ValueError):
+        return DEFAULT_TARGETS
+
+    if len(values) != len(DEFAULT_TARGETS):
+        return DEFAULT_TARGETS
+
+    return values
+
+
+def get_target_weights() -> tuple[float, ...]:
+    """Lit, corrige et persiste les objectifs de poids de la session."""
+    targets = normalise_target_weights(st.session_state.get("target_weights"))
+    st.session_state["target_weights"] = targets
+    st.session_state["target_weight"] = float(targets[-1])
+    return targets
 
 
 def _empty_df() -> pd.DataFrame:
@@ -29,7 +58,9 @@ def ensure_session_defaults() -> None:
     st.session_state.setdefault("working_data", _empty_df())
     st.session_state.setdefault("filtered_data", _empty_df())
 
-    st.session_state.setdefault("target_weights", DEFAULT_TARGETS)
+    targets = normalise_target_weights(st.session_state.get("target_weights"))
+    st.session_state["target_weights"] = targets
+    st.session_state["target_weight"] = float(targets[-1])
     st.session_state.setdefault("ma_type", "Simple")
     st.session_state.setdefault("window_size", 7)
     st.session_state.setdefault("theme", "plotly")

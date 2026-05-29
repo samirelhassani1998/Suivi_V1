@@ -23,7 +23,7 @@ from app.core.analytics import (
 )
 from app.core.data import data_quality_report
 from app.core.insights import detect_plateau
-from app.core.session_state import get_filtered_or_working_data
+from app.core.session_state import get_filtered_or_working_data, get_target_weights
 from app.ui.components import alert_banner, confidence_badge, empty_state, help_box, kpi_card
 
 
@@ -41,6 +41,28 @@ def _moving_average(series: pd.Series, window: int, ma_type: str) -> pd.Series:
     if ma_type == "Exponentielle":
         return series.ewm(span=max(window, 2), adjust=False).mean()
     return series.rolling(window=window, min_periods=1).mean()
+
+
+def _target_annotation_shift(targets: tuple[float, ...], index: int) -> int:
+    """Décale les libellés quand deux objectifs ont la même valeur."""
+    current_target = targets[index]
+    duplicate_rank = sum(1 for target in targets[:index] if target == current_target)
+    return duplicate_rank * 16
+
+
+def _add_target_lines(fig: go.Figure, targets: tuple[float, ...], label_prefix: str = "Objectif") -> None:
+    for idx, target in enumerate(targets, start=1):
+        yshift = _target_annotation_shift(targets, idx - 1)
+        fig.add_hline(
+            y=float(target),
+            line_dash="dash",
+            annotation_text=f"{label_prefix} {idx}: {target:.1f} kg",
+            annotation_yshift=yshift,
+        )
+
+
+def _targets_caption(targets: tuple[float, ...]) -> str:
+    return " · ".join(f"Obj. {idx}: {target:.1f} kg" for idx, target in enumerate(targets, start=1))
 
 
 def main() -> None:
@@ -74,8 +96,8 @@ def main() -> None:
 
     height_m = st.session_state.get("height_m", 1.82)
     imc = current / (height_m**2)
-    targets = st.session_state.get("target_weights", (95.0, 90.0, 85.0, 80.0))
-    target_weight = st.session_state.get("target_weight", 80.0)
+    targets = get_target_weights()
+    target_weight = float(targets[-1])
 
     # ── Bannière période d'effort (A1) ──────────────────────────────────
     if has_effort_period:
@@ -244,8 +266,8 @@ def main() -> None:
                     line=dict(color="#E74C3C", width=2.5))
     fig.add_hline(y=float(df["Poids (Kgs)"].mean()), line_dash="dot", annotation_text="Moyenne globale")
 
-    for idx, target in enumerate(targets, start=1):
-        fig.add_hline(y=float(target), line_dash="dash", annotation_text=f"Objectif {idx}: {target:.1f} kg")
+    _add_target_lines(fig, targets)
+    st.caption(f"🎯 Objectifs affichés : {_targets_caption(targets)}")
 
     # AN1: Trajectoire cible depuis début de l'effort (pente cible = -2 kg/semaine)
     if has_effort_period:
@@ -299,8 +321,7 @@ def main() -> None:
         for col, color in colors.items():
             if col in df_ma.columns:
                 fig_ma.add_scatter(x=df_ma["Date"], y=df_ma[col], mode="lines", name=labels.get(col, col), line=dict(color=color, width=2))
-        for idx, target in enumerate(targets, start=1):
-            fig_ma.add_hline(y=float(target), line_dash="dash", annotation_text=f"Obj. {idx}")
+        _add_target_lines(fig_ma, targets, label_prefix="Obj.")
         fig_ma.update_layout(title="Moyennes mobiles (glissantes sur N mesures consécutives)", hovermode="x unified")
         st.plotly_chart(fig_ma, use_container_width=True)
         st.caption("ℹ️ Les moyennes mobiles glissent sur N mesures consécutives (et non sur N jours calendaires).")
@@ -398,8 +419,7 @@ def _render_weekly_view(df: pd.DataFrame, targets: tuple) -> None:
                    for _, row in display_weeks.iterrows()],
         hoverinfo="text",
     )
-    for idx, target in enumerate(targets, start=1):
-        fig_wk.add_hline(y=float(target), line_dash="dash", annotation_text=f"Obj. {idx}")
+    _add_target_lines(fig_wk, targets, label_prefix="Obj.")
     fig_wk.update_layout(
         title="Poids moyen par semaine (vert = baisse, rouge = hausse)",
         yaxis_title="Poids moyen (kg)",
