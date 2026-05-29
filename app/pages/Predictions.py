@@ -18,7 +18,7 @@ from app.core.features import build_features
 from app.core.forecasting import forecast_with_ml, forecast_with_sarimax
 from app.core.insights import estimate_target_eta
 from app.core.session_state import get_filtered_or_working_data
-from app.config import get_target_weights
+from app.core.targets import get_target_weights
 from app.ui.components import alert_banner, empty_state, kpi_card
 
 warnings.filterwarnings("ignore")
