@@ -24,7 +24,7 @@ from app.core.analytics import (
 from app.core.data import data_quality_report
 from app.core.insights import detect_plateau
 from app.core.session_state import get_filtered_or_working_data
-from app.config import get_target_weights, normalise_target_weights
+from app.core.targets import get_target_weights, normalise_target_weights
 from app.ui.components import alert_banner, confidence_badge, empty_state, help_box, kpi_card
 
 
