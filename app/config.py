@@ -32,7 +32,7 @@ class AppDefaults:
     """Valeurs par défaut modifiables via l'UI."""
 
     height_cm: int = 182
-    target_weight: float = 80.0
+    target_weight: float = 89.0
     confidence_level: float = 0.9
     duplicate_strategy: str = "garder_la_derniere"
     default_model: str = "ridge"

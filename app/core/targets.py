@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, MutableMapping
 import math
 from typing import Any
 
-import streamlit as st
 
-
-DEFAULT_TARGETS = (100.0, 95.0, 90.0, 85.0, 80.0)
+DEFAULT_TARGETS = (100.0, 95.0, 90.0, 85.0, 89.0)
+LEGACY_DEFAULT_TARGETS = (100.0, 95.0, 90.0, 85.0, 80.0)
 
 
 def normalise_target_weights(target_weights: Any = None) -> tuple[float, float, float, float, float]:
@@ -32,12 +31,22 @@ def normalise_target_weights(target_weights: Any = None) -> tuple[float, float, 
             numeric = default
         normalised.append(numeric)
 
-    return tuple(normalised)  # type: ignore[return-value]
+    targets = tuple(normalised)
+    if targets == LEGACY_DEFAULT_TARGETS:
+        return DEFAULT_TARGETS
+    return targets  # type: ignore[return-value]
+
+
+def _session_state() -> MutableMapping[str, Any]:
+    import streamlit as st
+
+    return st.session_state
 
 
 def get_target_weights() -> tuple[float, float, float, float, float]:
     """Read, migrate and persist the five configured target weights."""
-    targets = normalise_target_weights(st.session_state.get("target_weights"))
-    st.session_state["target_weights"] = targets
-    st.session_state["target_weight"] = float(targets[-1])
+    session_state = _session_state()
+    targets = normalise_target_weights(session_state.get("target_weights"))
+    session_state["target_weights"] = targets
+    session_state["target_weight"] = float(targets[-1])
     return targets
