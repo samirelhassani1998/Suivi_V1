@@ -2,53 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-import math
-from typing import Any
-
 import pandas as pd
 import streamlit as st
 
 from app.config import ALL_COLUMNS
+from app.core.targets import DEFAULT_TARGETS, get_target_weights, normalise_target_weights
 
-
-DEFAULT_TARGETS = (100.0, 95.0, 90.0, 85.0, 80.0)
 DEFAULT_WEIGHT_COLUMNS = ["Date", "Poids (Kgs)"]
 
 
 def _empty_df() -> pd.DataFrame:
     return pd.DataFrame(columns=list(ALL_COLUMNS))
-
-
-def normalise_target_weights(target_weights: Any = None) -> tuple[float, float, float, float, float]:
-    """Return exactly five numeric targets, padding legacy sessions with defaults."""
-    if target_weights is None or isinstance(target_weights, (str, bytes)):
-        values: list[Any] = []
-    elif isinstance(target_weights, Iterable):
-        values = list(target_weights)
-    else:
-        values = [target_weights]
-
-    normalised: list[float] = []
-    for idx, default in enumerate(DEFAULT_TARGETS):
-        candidate = values[idx] if idx < len(values) else default
-        try:
-            numeric = float(candidate)
-        except (TypeError, ValueError):
-            numeric = default
-        if not math.isfinite(numeric):
-            numeric = default
-        normalised.append(numeric)
-
-    return tuple(normalised)  # type: ignore[return-value]
-
-
-def get_target_weights() -> tuple[float, float, float, float, float]:
-    """Read, migrate and persist the five configured target weights."""
-    targets = normalise_target_weights(st.session_state.get("target_weights"))
-    st.session_state["target_weights"] = targets
-    st.session_state["target_weight"] = float(targets[-1])
-    return targets
 
 
 def get_filtered_or_working_data() -> pd.DataFrame:

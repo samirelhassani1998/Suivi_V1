@@ -3,7 +3,7 @@ from __future__ import annotations
 import streamlit as st
 
 from app.config import AppDefaults, DUPLICATE_STRATEGIES
-from app.core.session_state import get_target_weights, normalise_target_weights
+from app.core.targets import get_target_weights, normalise_target_weights
 
 
 def main() -> None:
