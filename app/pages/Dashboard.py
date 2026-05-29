@@ -24,7 +24,7 @@ from app.core.analytics import (
 from app.core.data import data_quality_report
 from app.core.insights import detect_plateau
 from app.core.session_state import get_filtered_or_working_data
-from app.core.targets import get_target_weights
+from app.core.targets import get_target_weights, normalise_target_weights
 from app.ui.components import alert_banner, confidence_badge, empty_state, help_box, kpi_card
 
 
@@ -51,18 +51,49 @@ def _target_annotation_shift(targets: tuple[float, ...], index: int) -> int:
     return duplicate_position * 18
 
 
-def _add_target_lines(fig: go.Figure, targets: tuple[float, ...], label_prefix: str = "Objectif") -> None:
-    """Draw target lines with readable labels, including duplicated values."""
+def _add_target_lines(
+    fig: go.Figure,
+    targets: tuple[float, ...],
+    label_prefix: str = "Objectif",
+    x_values: pd.Series | pd.Index | None = None,
+) -> None:
+    """Draw the five target lines with readable labels and legend entries."""
+    targets = normalise_target_weights(targets)
     colors = ("#2E7BCF", "#27AE60", "#F39C12", "#8E44AD", "#E74C3C")
+    x_range = None
+    if x_values is not None and len(x_values) > 0:
+        x_range = [x_values.min(), x_values.max()]
+
     for idx, target in enumerate(targets, start=1):
-        fig.add_hline(
-            y=float(target),
-            line_dash="dash",
-            line_color=colors[(idx - 1) % len(colors)],
-            annotation_text=f"{label_prefix} {idx}: {float(target):.1f} kg",
-            annotation_position="top right",
-            annotation_yshift=_target_annotation_shift(targets, idx - 1),
-        )
+        color = colors[(idx - 1) % len(colors)]
+        label = f"{label_prefix} {idx}: {float(target):.1f} kg"
+        if x_range is not None:
+            fig.add_scatter(
+                x=x_range,
+                y=[float(target), float(target)],
+                mode="lines",
+                name=label,
+                line=dict(color=color, dash="dash", width=1.5),
+                hovertemplate=f"{label}<extra></extra>",
+            )
+            fig.add_annotation(
+                x=x_range[-1],
+                y=float(target),
+                text=label,
+                showarrow=False,
+                xanchor="left",
+                yshift=_target_annotation_shift(targets, idx - 1),
+                font=dict(color=color, size=11),
+            )
+        else:
+            fig.add_hline(
+                y=float(target),
+                line_dash="dash",
+                line_color=color,
+                annotation_text=label,
+                annotation_position="top right",
+                annotation_yshift=_target_annotation_shift(targets, idx - 1),
+            )
 
 
 def _targets_caption(targets: tuple[float, ...]) -> str:
@@ -101,7 +132,7 @@ def main() -> None:
 
     height_m = st.session_state.get("height_m", 1.82)
     imc = current / (height_m**2)
-    targets = get_target_weights()
+    targets = get_target_weights(st.session_state)
     target_weight = float(targets[-1])
 
     # ── Bannière période d'effort (A1) ──────────────────────────────────
@@ -271,7 +302,7 @@ def main() -> None:
                     line=dict(color="#E74C3C", width=2.5))
     fig.add_hline(y=float(df["Poids (Kgs)"].mean()), line_dash="dot", annotation_text="Moyenne globale")
 
-    _add_target_lines(fig, targets)
+    _add_target_lines(fig, targets, x_values=df["Date"])
 
     # AN1: Trajectoire cible depuis début de l'effort (pente cible = -2 kg/semaine)
     if has_effort_period:
@@ -326,7 +357,7 @@ def main() -> None:
         for col, color in colors.items():
             if col in df_ma.columns:
                 fig_ma.add_scatter(x=df_ma["Date"], y=df_ma[col], mode="lines", name=labels.get(col, col), line=dict(color=color, width=2))
-        _add_target_lines(fig_ma, targets, label_prefix="Obj.")
+        _add_target_lines(fig_ma, targets, label_prefix="Obj.", x_values=df_ma["Date"])
         fig_ma.update_layout(title="Moyennes mobiles (glissantes sur N mesures consécutives)", hovermode="x unified")
         st.plotly_chart(fig_ma, use_container_width=True)
         st.caption("ℹ️ Les moyennes mobiles glissent sur N mesures consécutives (et non sur N jours calendaires).")

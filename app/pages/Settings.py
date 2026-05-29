@@ -11,7 +11,7 @@ def main() -> None:
     defaults = AppDefaults()
 
     with st.form("settings_form"):
-        padded_goals = get_target_weights()
+        padded_goals = get_target_weights(st.session_state)
         st.number_input(
             "Poids objectif final (kg)",
             value=float(padded_goals[-1]),
