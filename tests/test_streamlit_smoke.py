@@ -78,3 +78,15 @@ def test_settings_exposes_five_goals():
     assert "Objectif 3 (kg)" in labels
     assert "Objectif 4 (kg)" in labels
     assert "Objectif 5 (kg)" in labels
+
+
+def test_dashboard_migrates_legacy_four_goals_to_requested_five_goals():
+    at = AppTest.from_file("app/pages/Dashboard.py")
+    _state(at)
+    at.session_state["target_weights"] = (100.0, 95.0, 90.0, 85.0)
+    at.session_state["target_weight"] = 85.0
+    at.run(timeout=10)
+    assert not at.exception
+    assert at.session_state["target_weights"] == (100.0, 95.0, 90.0, 85.0, 90.0)
+    assert at.session_state["target_weight"] == 90.0
+    assert any("Objectif 5: 90.0 kg" in str(c.value) for c in at.caption)
