@@ -26,7 +26,17 @@ from app.core.insights import detect_plateau
 from app.core.session_state import get_filtered_or_working_data
 from app.core.weight_summary import moving_average_by_days, summarize_weight_journey
 from app.core.targets import get_target_weights, normalise_target_weights
-from app.ui.components import alert_banner, confidence_badge, empty_state, help_box, kpi_card
+from app.ui.components import (
+    alert_banner,
+    confidence_badge,
+    empty_state,
+    help_box,
+    insight_card,
+    kpi_card,
+    page_hero,
+    progress_panel,
+    section_header,
+)
 
 
 TARGET_TRAJECTORY_KG_PER_WEEK = -2.0
@@ -121,12 +131,41 @@ def _metric_help_for_period(period) -> str:
     return f"Comparaison avec la première mesure disponible depuis le {date} ({period.measurements} mesure(s))."
 
 
+
+
+def _apply_modern_chart_layout(fig: go.Figure, title: str, height: int = 520) -> go.Figure:
+    """Apply a consistent, polished Plotly style for dashboard charts."""
+    fig.update_layout(
+        title=dict(text=title, x=0.02, xanchor="left", font=dict(size=20, color="#111827")),
+        plot_bgcolor="#ffffff",
+        paper_bgcolor="#ffffff",
+        hovermode="x unified",
+        height=height,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="left",
+            x=0,
+            bgcolor="rgba(255,255,255,0.75)",
+        ),
+        margin=dict(l=10, r=10, t=88, b=10),
+        font=dict(family="Inter, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif", color="#111827"),
+    )
+    fig.update_xaxes(showgrid=True, gridcolor="rgba(148,163,184,0.16)", zeroline=False)
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(148,163,184,0.16)", zeroline=False)
+    return fig
+
 def _render_daily_overview(summary: dict, target_weight: float) -> None:
-    st.markdown("### Vue rapide")
-    st.caption("Les indicateurs ci-dessous comparent la dernière mesure aux repères utiles, avec prudence quand l'historique est court.")
+    section_header(
+        "Vue rapide",
+        "Les indicateurs essentiels sont visibles dès l’ouverture, avec des comparaisons prudentes si l’historique est court.",
+        "⚡",
+    )
 
     delta_7 = summary["delta_7"]
     delta_30 = summary["delta_30"]
+    delta_90 = summary.get("delta_90")
     cols = st.columns(6)
     with cols[0]:
         kpi_card("Poids actuel", _format_value(summary["current"]), _format_delta(summary["previous_delta"]), "Dernière mesure vs mesure précédente.")
@@ -153,6 +192,16 @@ def _render_daily_overview(summary: dict, target_weight: float) -> None:
     with cols2[3]:
         kpi_card("Écart objectif", _format_delta(summary["target_gap"]), help_text=f"Écart entre le poids actuel et l'objectif final ({target_weight:.1f} kg).")
 
+    cols3 = st.columns(4)
+    with cols3[0]:
+        kpi_card("Variation 90 jours", _format_delta(delta_90.value) if delta_90 else "N/A", help_text=_metric_help_for_period(delta_90) if delta_90 else "Recul 90 jours indisponible.")
+    with cols3[1]:
+        kpi_card("Moy. mobile 30j", _format_value(summary["ma_30_current"]), help_text="Moyenne mobile calendaire sur les 30 derniers jours disponibles.")
+    with cols3[2]:
+        kpi_card("Distance restante", _format_value(summary.get("target_remaining")), help_text="Distance restante avant l’objectif final. 0 kg si l’objectif est atteint ou dépassé.")
+    with cols3[3]:
+        kpi_card("Progression objectif", f"{summary.get('target_progress_pct', 0):.1f}%", help_text="Progression entre la première mesure et l’objectif final configuré.")
+
     projection = summary["projection"]
     if projection.get("available") and not projection.get("reached"):
         eta = projection["eta"].strftime("%d/%m/%Y")
@@ -167,9 +216,10 @@ def _render_daily_overview(summary: dict, target_weight: float) -> None:
 
 
 def _render_simple_insights(summary: dict) -> None:
-    st.markdown("### Insights automatiques")
-    for insight in summary.get("insights", []):
-        st.markdown(f"- {insight}")
+    section_header("Insights automatiques", "Commentaires simples, non médicaux, pour comprendre la tendance sans sur-interpréter.", "💡")
+    trend_tone = {"Baisse": "success", "Hausse": "warning", "Stable": "info"}.get(summary.get("trend_label"), "neutral")
+    for idx, insight in enumerate(summary.get("insights", []), start=1):
+        insight_card(f"Signal {idx}", insight, tone=trend_tone if idx == 1 else "info", icon="📉" if trend_tone == "success" else "📈" if trend_tone == "warning" else "🔎")
 
 
 def _render_objective_gap_chart(df: pd.DataFrame, target_weight: float) -> None:
@@ -186,14 +236,8 @@ def _render_objective_gap_chart(df: pd.DataFrame, target_weight: float) -> None:
         line=dict(color="#8E44AD", width=2),
     )
     fig_gap.add_hline(y=0, line_dash="dash", line_color="#27AE60", annotation_text="Objectif")
-    fig_gap.update_layout(
-        title="Écart par rapport à l'objectif final",
-        xaxis_title="Date",
-        yaxis_title="Écart (kg)",
-        hovermode="x unified",
-        height=320,
-        margin=dict(l=10, r=10, t=55, b=10),
-    )
+    fig_gap.update_layout(xaxis_title="Date", yaxis_title="Écart (kg)")
+    _apply_modern_chart_layout(fig_gap, "Écart par rapport à l'objectif final", height=340)
     st.plotly_chart(fig_gap, use_container_width=True)
 
 
@@ -231,12 +275,11 @@ def main() -> None:
     target_weight = float(targets[-1])
     daily_summary = summarize_weight_journey(df, target_weight)
 
-    st.title("Dashboard")
-    st.markdown(
-        "<div class='suivi-hero'><div><span class='suivi-eyebrow'>Suivi de poids</span>"
-        "<p>Une vue simple pour comprendre l'évolution, la tendance et l'écart à l'objectif sans surcharger l'analyse.</p>"
-        "</div></div>",
-        unsafe_allow_html=True,
+    page_hero(
+        "Suivi de poids",
+        "Dashboard",
+        "Une vue claire pour comprendre le poids actuel, la tendance récente, la progression vers l’objectif et les actions utiles au quotidien.",
+        meta=f"Dernière mesure : {last_date.strftime('%d/%m/%Y')} · {len(df)} mesure(s) · objectif final {target_weight:.1f} kg",
     )
 
     if daily_summary.get("valid"):
@@ -257,106 +300,110 @@ def main() -> None:
         )
 
     # ── KPIs principaux ─────────────────────────────────────────────────
-    # C4: Poids EMA lissé comme métrique de référence
-    df_ema_kpi = compute_trend_ema(df, span=7)
-    ema_current = float(df_ema_kpi["Tendance_EMA"].iloc[-1])
-    ema_prev = float(df_ema_kpi["Tendance_EMA"].iloc[-2]) if len(df_ema_kpi) > 1 else ema_current
+    with st.expander("📌 Indicateurs avancés", expanded=False):
+        # C4: Poids EMA lissé comme métrique de référence
+        df_ema_kpi = compute_trend_ema(df, span=7)
+        ema_current = float(df_ema_kpi["Tendance_EMA"].iloc[-1])
+        ema_prev = float(df_ema_kpi["Tendance_EMA"].iloc[-2]) if len(df_ema_kpi) > 1 else ema_current
 
-    c1, c2, c3, c4, c5 = st.columns(5)
-    with c1:
-        kpi_card("Poids actuel", f"{current:.2f} kg", f"{current-prev:+.2f}")
-    with c2:
-        kpi_card("Tendance (EMA)", f"{ema_current:.2f} kg", f"{ema_current-ema_prev:+.2f}",
-                 help_text="Poids lissé — filtre les fluctuations quotidiennes. C'est votre vrai indicateur.")
-    with c3:
-        kpi_card("Moy. 30 derniers jours", f"{long:.2f} kg", help_text=f"Basé sur {long_n} mesure(s) des 30 derniers jours calendaires")
-    with c4:
-        kpi_card("IMC", f"{imc:.2f}")
-    with c5:
-        quality = data_quality_report(effort_df if has_effort_period else df)
-        kpi_card("Qualité des données", f"{quality['score']}/100")
+        c1, c2, c3, c4, c5 = st.columns(5)
+        with c1:
+            kpi_card("Poids actuel", f"{current:.2f} kg", f"{current-prev:+.2f}")
+        with c2:
+            kpi_card("Tendance (EMA)", f"{ema_current:.2f} kg", f"{ema_current-ema_prev:+.2f}",
+                     help_text="Poids lissé — filtre les fluctuations quotidiennes. C'est votre vrai indicateur.")
+        with c3:
+            kpi_card("Moy. 30 derniers jours", f"{long:.2f} kg", help_text=f"Basé sur {long_n} mesure(s) des 30 derniers jours calendaires")
+        with c4:
+            kpi_card("IMC", f"{imc:.2f}")
+        with c5:
+            quality = data_quality_report(effort_df if has_effort_period else df)
+            kpi_card("Qualité des données", f"{quality['score']}/100")
 
-    # ── KPIs avancés (calculés sur l'effort, pas l'historique global) ──
-    analysis_df = effort_df if has_effort_period else df
-    vel = weight_velocity(analysis_df, windows=(7, 14, 30))
-    disc = discipline_score(analysis_df, window_days=min(effort_days, 30) if effort_days > 0 else 30)
-    prog = progression_score(analysis_df, target_weight)
-    streaks = streak_analysis(analysis_df)
+        # ── KPIs avancés (calculés sur l'effort, pas l'historique global) ──
+        analysis_df = effort_df if has_effort_period else df
+        vel = weight_velocity(analysis_df, windows=(7, 14, 30))
+        disc = discipline_score(analysis_df, window_days=min(effort_days, 30) if effort_days > 0 else 30)
+        prog = progression_score(analysis_df, target_weight)
+        streaks = streak_analysis(analysis_df)
 
-    c6, c7, c8, c9 = st.columns(4)
-    with c6:
-        v7 = vel.get(7)
-        v_display = f"{v7:+.2f} kg/sem" if v7 is not None else "N/A"
-        # C3: Flag fragile si phase de démarrage
-        v_help = "Variation de poids en kg par semaine sur les 7 derniers jours"
-        if is_startup:
-            v_display += " ⚠️"
-            v_help += " — signal fragile (< 7 jours de données)"
-        kpi_card("Vitesse 7j", v_display, help_text=v_help)
-    with c7:
-        kpi_card("Discipline", f"{disc['score']}/100", help_text=f"{disc['interpretation'].title()} — {disc['measured_days']}/{disc['expected_days']} jours mesurés")
-    with c8:
-        confidence_label = prog.get('confidence', 'solide')
-        conf_icon = "⚠️ " if confidence_label == 'fragile' else ""
-        kpi_card("Score global", f"{conf_icon}{prog['score']}/100 ({prog['grade']})",
-                 help_text=f"Score composite. {'Signal fragile (< 7 mesures)' if confidence_label == 'fragile' else 'Signal fiable'}")
-    with c9:
-        streak_icon = "🔥" if streaks["current_type"] == "perte" else "📈" if streaks["current_type"] == "gain" else "➡️"
-        streak_txt = f"{streak_icon} {streaks['current_streak']} mesures en {streaks['current_type']}"
-        kpi_card("Série en cours", streak_txt, help_text=f"Record perte : {streaks['longest_loss']} mesures · Record gain : {streaks['longest_gain']} mesures")
+        c6, c7, c8, c9 = st.columns(4)
+        with c6:
+            v7 = vel.get(7)
+            v_display = f"{v7:+.2f} kg/sem" if v7 is not None else "N/A"
+            # C3: Flag fragile si phase de démarrage
+            v_help = "Variation de poids en kg par semaine sur les 7 derniers jours"
+            if is_startup:
+                v_display += " ⚠️"
+                v_help += " — signal fragile (< 7 jours de données)"
+            kpi_card("Vitesse 7j", v_display, help_text=v_help)
+        with c7:
+            kpi_card("Discipline", f"{disc['score']}/100", help_text=f"{disc['interpretation'].title()} — {disc['measured_days']}/{disc['expected_days']} jours mesurés")
+        with c8:
+            confidence_label = prog.get('confidence', 'solide')
+            conf_icon = "⚠️ " if confidence_label == 'fragile' else ""
+            kpi_card("Score global", f"{conf_icon}{prog['score']}/100 ({prog['grade']})",
+                     help_text=f"Score composite. {'Signal fragile (< 7 mesures)' if confidence_label == 'fragile' else 'Signal fiable'}")
+        with c9:
+            streak_icon = "🔥" if streaks["current_type"] == "perte" else "📈" if streaks["current_type"] == "gain" else "➡️"
+            streak_txt = f"{streak_icon} {streaks['current_streak']} mesures en {streaks['current_type']}"
+            kpi_card("Série en cours", streak_txt, help_text=f"Record perte : {streaks['longest_loss']} mesures · Record gain : {streaks['longest_gain']} mesures")
 
-    # ── Barre de progression (recalibrée sur effort) ────────────────────
-    if has_effort_period:
-        effort_initial_weight = float(effort_df["Poids (Kgs)"].iloc[0])
-        if effort_initial_weight > target_weight:
-            total = effort_initial_weight - target_weight
-            progress = ((effort_initial_weight - current) / total * 100) if total > 0 else 0.0
+        # ── Barre de progression (recalibrée sur effort) ────────────────────
+        if has_effort_period:
+            effort_initial_weight = float(effort_df["Poids (Kgs)"].iloc[0])
+            if effort_initial_weight > target_weight:
+                total = effort_initial_weight - target_weight
+                progress = ((effort_initial_weight - current) / total * 100) if total > 0 else 0.0
+            else:
+                progress = 100.0
+            progress_label = f"Progression effort actuel vers {target_weight:.1f} kg"
         else:
-            progress = 100.0
-        progress_label = f"Progression effort actuel vers {target_weight:.1f} kg"
-    else:
-        initial = df["Poids (Kgs)"].iloc[0]
-        final_target = targets[-1]
-        total = initial - final_target
-        progress = ((initial - current) / total * 100) if total > 0 else 0.0
-        progress_label = f"Progression vers l'objectif final ({targets[-1]:.1f} kg)"
+            initial = df["Poids (Kgs)"].iloc[0]
+            final_target = targets[-1]
+            total = initial - final_target
+            progress = ((initial - current) / total * 100) if total > 0 else 0.0
+            progress_label = f"Progression vers l'objectif final ({targets[-1]:.1f} kg)"
 
-    progress = max(0.0, min(100.0, progress))
-    st.progress(progress / 100)
-    st.caption(f"{progress_label}: {progress:.1f}%")
-    st.caption("ℹ️ Les métriques marquées ⚠️ sont informatives, mais restent fragiles en phase de démarrage.")
+        progress = max(0.0, min(100.0, progress))
+        progress_panel(
+            progress_label,
+            progress,
+            "Les métriques marquées ⚠️ restent informatives et plus fragiles en phase de démarrage.",
+            tone="success" if progress >= 100 else "primary",
+        )
 
-    # ── Prochain milestone intelligent (AN4 — avec garde-fous C1/C3) ──
-    v14 = vel.get(14)
-    milestone = next_milestone(current, targets, velocity=v14, measurements=effort_measurements)
-    ms_text = f"🎯 **Prochain palier** : {milestone['label']} (reste **{milestone['remaining']:.1f} kg**)"
-    if milestone.get("eta_days") is not None:
-        conf = milestone.get('eta_confidence', '')
-        conf_note = f" (confiance: {conf})" if conf else ""
-        ms_text += f" — ETA: **~{milestone['eta_days']} jours**{conf_note}"
-    elif milestone.get("eta_confidence") == "fragile":
-        ms_text += " — ETA: disponible après 7+ mesures"
-    st.caption(ms_text)
+        # ── Prochain milestone intelligent (AN4 — avec garde-fous C1/C3) ──
+        v14 = vel.get(14)
+        milestone = next_milestone(current, targets, velocity=v14, measurements=effort_measurements)
+        ms_text = f"🎯 **Prochain palier** : {milestone['label']} (reste **{milestone['remaining']:.1f} kg**)"
+        if milestone.get("eta_days") is not None:
+            conf = milestone.get('eta_confidence', '')
+            conf_note = f" (confiance: {conf})" if conf else ""
+            ms_text += f" — ETA: **~{milestone['eta_days']} jours**{conf_note}"
+        elif milestone.get("eta_confidence") == "fragile":
+            ms_text += " — ETA: disponible après 7+ mesures"
+        st.caption(ms_text)
 
-    # ── Signal de tendance cohérent (A5) ────────────────────────────────
-    plateau = detect_plateau(analysis_df, window=14)
-    nb_mesures_plateau = plateau.get("nb_mesures", 0)
+        # ── Signal de tendance cohérent (A5) ────────────────────────────────
+        plateau = detect_plateau(analysis_df, window=14)
+        nb_mesures_plateau = plateau.get("nb_mesures", 0)
 
-    if nb_mesures_plateau >= 3:
-        if plateau["status"] == "plateau probable":
-            alert_banner(f"➡️ Plateau probable détecté ({nb_mesures_plateau} mesures, pente={plateau['slope']:.3f})", "warning")
-        elif plateau["status"] == "baisse active":
-            alert_banner(f"📉 Tendance à la baisse ({nb_mesures_plateau} mesures, pente={plateau['slope']:.3f})", "success")
-        elif "reprise" in plateau["status"]:
-            alert_banner(f"📈 Tendance à la hausse ({nb_mesures_plateau} mesures, pente={plateau['slope']:.3f})", "warning")
-    else:
-        st.caption(f"📊 Signal de tendance : données limitées ({nb_mesures_plateau} mesures sur 14j)")
+        if nb_mesures_plateau >= 3:
+            if plateau["status"] == "plateau probable":
+                alert_banner(f"➡️ Plateau probable détecté ({nb_mesures_plateau} mesures, pente={plateau['slope']:.3f})", "warning")
+            elif plateau["status"] == "baisse active":
+                alert_banner(f"📉 Tendance à la baisse ({nb_mesures_plateau} mesures, pente={plateau['slope']:.3f})", "success")
+            elif "reprise" in plateau["status"]:
+                alert_banner(f"📈 Tendance à la hausse ({nb_mesures_plateau} mesures, pente={plateau['slope']:.3f})", "warning")
+        else:
+            st.caption(f"📊 Signal de tendance : données limitées ({nb_mesures_plateau} mesures sur 14j)")
 
-    confidence = "élevée" if quality["score"] > 80 else "moyenne" if quality["score"] > 60 else "faible"
-    confidence_badge("Confiance signal", confidence)
+        confidence = "élevée" if quality["score"] > 80 else "moyenne" if quality["score"] > 60 else "faible"
+        confidence_badge("Confiance signal", confidence)
 
-    # ── Alertes intelligentes contextuelles (A9) ────────────────────────
-    _render_smart_alerts(df, analysis_df, streaks, last_date)
+        # ── Alertes intelligentes contextuelles (A9) ────────────────────────
+        _render_smart_alerts(df, analysis_df, streaks, last_date)
 
     # ── Insight pattern yo-yo historique (AN2 — NOUVEAU) ────────────────
     history = analyze_effort_history(df)
@@ -370,14 +417,17 @@ def main() -> None:
             )
 
     # ── C2: Résumé actionnable Situation / Interprétation / Action ──────
-    st.markdown("---")
     if daily_summary.get("valid"):
         _render_simple_insights(daily_summary)
     summary = generate_action_summary(df, target_weight)
-    st.subheader("🧭 Votre résumé")
-    st.markdown(f"📍 **Situation** : {summary['situation']}")
-    st.markdown(f"🔍 **Interprétation** : {summary['interpretation']}")
-    st.markdown(f"▶️ **Action** : {summary['action']}")
+    section_header("Votre résumé", "Un diagnostic court pour savoir où vous en êtes et quoi regarder ensuite.", "🧭")
+    col_s, col_i, col_a = st.columns(3)
+    with col_s:
+        insight_card("Situation", summary["situation"], tone="info", icon="📍")
+    with col_i:
+        insight_card("Interprétation", summary["interpretation"], tone="neutral", icon="🔍")
+    with col_a:
+        insight_card("Action", summary["action"], tone="success", icon="▶️")
 
     # ── Insights détaillés (dans un expander) ───────────────────────────
     with st.expander("💡 Insights détaillés", expanded=False):
@@ -399,7 +449,7 @@ def main() -> None:
             st.caption("🏎️ Comparaison de rythme : disponible après 7+ jours de suivi.")
 
     # ── Graphique principal avec MA + EMA + trajectoire cible (AN1 — NOUVEAU) ──
-    st.markdown("---")
+    section_header("Évolution du poids", "Mesures, moyenne mobile, tendance lissée et objectifs réunis dans un graphique principal lisible.", "📈")
     ma_type = st.session_state.get("ma_type", "Simple")
     window_size = int(st.session_state.get("window_size", 7))
     df["Poids_MA"] = _moving_average(df["Poids (Kgs)"], window_size, ma_type)
@@ -425,14 +475,8 @@ def main() -> None:
     fig.add_scatter(x=df_ema["Date"], y=df_ema["Tendance_EMA"], mode="lines", name=f"Tendance EMA ({window_size})",
                     line=dict(color="#E74C3C", width=2.5))
     fig.add_hline(y=float(df["Poids (Kgs)"].mean()), line_dash="dot", annotation_text="Moyenne globale")
-    fig.update_layout(
-        title="Évolution du poids avec moyennes mobiles",
-        xaxis_title="Date",
-        yaxis_title="Poids (kg)",
-        hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-        margin=dict(l=10, r=10, t=85, b=10),
-    )
+    fig.update_layout(xaxis_title="Date", yaxis_title="Poids (kg)")
+    _apply_modern_chart_layout(fig, "Évolution du poids avec moyennes mobiles", height=540)
 
     _add_target_lines(fig, targets, x_values=df["Date"])
 
@@ -493,7 +537,7 @@ def main() -> None:
             if col in df_ma.columns:
                 fig_ma.add_scatter(x=df_ma["Date"], y=df_ma[col], mode="lines", name=labels.get(col, col), line=dict(color=color, width=2))
         _add_target_lines(fig_ma, targets, label_prefix="Obj.", x_values=df_ma["Date"])
-        fig_ma.update_layout(title="Moyennes mobiles (glissantes sur N mesures consécutives)", hovermode="x unified")
+        _apply_modern_chart_layout(fig_ma, "Moyennes mobiles (glissantes sur N mesures consécutives)", height=420)
         st.plotly_chart(fig_ma, use_container_width=True)
         st.caption("ℹ️ Les moyennes mobiles glissent sur N mesures consécutives (et non sur N jours calendaires).")
 
@@ -592,12 +636,8 @@ def _render_weekly_view(df: pd.DataFrame, targets: tuple) -> None:
     )
     for idx, target in enumerate(targets, start=1):
         fig_wk.add_hline(y=float(target), line_dash="dash", annotation_text=f"Obj. {idx}")
-    fig_wk.update_layout(
-        title="Poids moyen par semaine (vert = baisse, rouge = hausse)",
-        yaxis_title="Poids moyen (kg)",
-        showlegend=False,
-        height=400,
-    )
+    fig_wk.update_layout(yaxis_title="Poids moyen (kg)", showlegend=False)
+    _apply_modern_chart_layout(fig_wk, "Poids moyen par semaine (vert = baisse, rouge = hausse)", height=420)
     st.plotly_chart(fig_wk, use_container_width=True)
     st.caption("ℹ️ Chaque barre = moyenne des mesures de la semaine. La couleur indique le sens de la variation par rapport à la semaine précédente.")
 

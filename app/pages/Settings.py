@@ -2,13 +2,21 @@ from __future__ import annotations
 
 import streamlit as st
 
+from app.ui.components import page_hero, section_header
+
 from app.config import AppDefaults, DUPLICATE_STRATEGIES
 from app.core.targets import get_target_weights, normalise_target_weights
 
 
 def main() -> None:
-    st.title("Paramètres / Qualité")
     defaults = AppDefaults()
+    page_hero(
+        "Configuration",
+        "Paramètres / Qualité",
+        "Ajustez vos objectifs, votre taille, les moyennes mobiles et quelques options d’analyse.",
+        meta="Les changements sont enregistrés dans la session Streamlit",
+    )
+    section_header("Objectifs et préférences", "Gardez une cible finale claire tout en suivant des paliers intermédiaires.", "⚙️")
 
     with st.form("settings_form"):
         padded_goals = get_target_weights(st.session_state)
@@ -46,7 +54,7 @@ def main() -> None:
         st.session_state["theme"] = plotly_theme
         st.success("Paramètres enregistrés.")
 
-    st.caption("Diagnostic système")
+    section_header("Diagnostic système", "Informations utiles pour vérifier la session active et le déploiement.", "🧪")
     st.write({
         "streamlit": st.__version__,
         "source": st.session_state.get("data_source", "n/a"),
