@@ -73,7 +73,7 @@ def _add_target_lines(
             mode="lines",
             name=label,
             showlegend=showlegend,
-            line=dict(color=color, dash="dash", width=1.4),
+            line=dict(color=color, dash="dash", width=1.15),
             hovertemplate=f"{label}<extra></extra>",
         )
 
@@ -88,7 +88,7 @@ def _add_single_target_line(fig: go.Figure, target: float, x_values: pd.Series |
         y=[float(target), float(target)],
         mode="lines",
         name=label,
-        line=dict(color="#16a34a", width=2, dash="dash"),
+        line=dict(color="#16a34a", width=1.45, dash="dash"),
         hovertemplate=f"{label}<extra></extra>",
     )
 
@@ -129,7 +129,7 @@ def _apply_modern_chart_layout(fig: go.Figure, title: str, height: int = 520) ->
         legend=dict(
             orientation="h",
             yanchor="bottom",
-            y=1.08,
+            y=1.1,
             xanchor="left",
             x=0,
             bgcolor="rgba(255,255,255,0)",
@@ -137,7 +137,7 @@ def _apply_modern_chart_layout(fig: go.Figure, title: str, height: int = 520) ->
             itemclick="toggleothers",
             itemdoubleclick="toggle",
         ),
-        margin=dict(l=12, r=12, t=96, b=34),
+        margin=dict(l=12, r=12, t=112, b=34),
         font=dict(family="Inter, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif", color="#111827"),
     )
     fig.update_xaxes(showgrid=False, zeroline=False, title_font=dict(color="#667085"), tickfont=dict(color="#667085"))
@@ -343,26 +343,31 @@ def _render_main_weight_chart(
 ) -> None:
     section_header(
         "Évolution du poids",
-        "Vue volontairement minimaliste : poids mesuré, une seule moyenne mobile et l’objectif principal. Le reste est disponible dans les options.",
+        "Lecture principale : poids mesuré, objectifs, trajectoire cible et tendance lissée discrète.",
         "📈",
     )
 
     with st.expander("Options d’affichage du graphique", expanded=False):
         c1, c2, c3 = st.columns(3)
         with c1:
+            show_moving_average = st.checkbox(
+                "Moyenne mobile",
+                value=True,
+                help="Affichée comme repère secondaire : fine, neutre et moins dominante que le poids réel.",
+            )
             selected_ma = st.radio(
-                "Moyenne mobile visible",
+                "Fenêtre",
                 ["7 jours", "30 jours"],
                 index=0,
                 horizontal=True,
                 help="Une seule moyenne mobile est affichée à la fois pour préserver la lisibilité.",
             )
         with c2:
-            show_secondary_targets = st.checkbox("Objectifs secondaires", value=False)
+            show_secondary_targets = st.checkbox("Objectifs secondaires", value=True)
             show_long_term_trend = st.checkbox("Tendance long terme", value=False)
         with c3:
-            show_forecast = st.checkbox("Trajectoire cible", value=False)
-            st.caption("Ces options sont masquées par défaut pour éviter de surcharger le graphique principal.")
+            show_forecast = st.checkbox("Trajectoire cible", value=True)
+            st.caption("Les objectifs et la trajectoire font partie de la lecture par défaut ; désactivez-les ici si besoin.")
 
     df["MA_7J"] = moving_average_by_days(df, 7)
     df["MA_30J"] = moving_average_by_days(df, 30)
@@ -379,14 +384,15 @@ def _render_main_weight_chart(
         marker=dict(size=5, color="#2563eb", line=dict(width=1, color="#ffffff")),
         hovertemplate="%{x|%d/%m/%Y}<br>Poids: %{y:.2f} kg<extra></extra>",
     )
-    fig.add_scatter(
-        x=df["Date"],
-        y=df[ma_col],
-        mode="lines",
-        name=ma_label,
-        line=dict(color="#0f172a", width=3),
-        hovertemplate=f"%{{x|%d/%m/%Y}}<br>{ma_label}: %{{y:.2f}} kg<extra></extra>",
-    )
+    if show_moving_average:
+        fig.add_scatter(
+            x=df["Date"],
+            y=df[ma_col],
+            mode="lines",
+            name=ma_label,
+            line=dict(color="rgba(100,116,139,0.62)", width=1.35, dash="dot"),
+            hovertemplate=f"%{{x|%d/%m/%Y}}<br>{ma_label}: %{{y:.2f}} kg<extra></extra>",
+        )
     _add_single_target_line(fig, target_weight, df["Date"])
 
     if show_secondary_targets:
@@ -406,7 +412,8 @@ def _render_main_weight_chart(
             hovertemplate="%{x|%d/%m/%Y}<br>Tendance: %{y:.2f} kg<extra></extra>",
         )
 
-    if show_forecast and has_effort_period:
+    can_draw_target_trajectory = effort_start is not None and len(effort_df) >= 2
+    if show_forecast and can_draw_target_trajectory:
         effort_initial_w = float(effort_df["Poids (Kgs)"].iloc[0])
         traj_dates = pd.date_range(effort_start, periods=min(180, max(effort_days * 3, 90)), freq="D")
         traj_values = [max(effort_initial_w + TARGET_TRAJECTORY_DAILY_RATE * i, target_weight) for i in range(len(traj_dates))]
@@ -415,7 +422,7 @@ def _render_main_weight_chart(
             y=traj_values,
             mode="lines",
             name=TARGET_TRAJECTORY_LABEL,
-            line=dict(color="#16a34a", width=2, dash="dashdot"),
+            line=dict(color="rgba(20,184,166,0.78)", width=1.7, dash="dashdot"),
             hovertemplate=(
                 "Date: %{x|%d/%m/%Y}<br>"
                 "Poids cible: %{y:.1f} kg<br>"
@@ -426,7 +433,7 @@ def _render_main_weight_chart(
     fig.update_layout(xaxis_title="Date", yaxis_title="Poids (kg)")
     _apply_modern_chart_layout(fig, "Évolution du poids", height=500)
     st.plotly_chart(fig, use_container_width=True, key=TARGET_TRAJECTORY_CHART_KEY)
-    st.caption("Vue par défaut limitée à 3 lignes : poids mesuré, moyenne mobile sélectionnée et objectif principal.")
+    st.caption("Vue par défaut : poids mesuré prioritaire, moyenne mobile discrète, objectifs et trajectoire cible visibles.")
 
 
 def main() -> None:
