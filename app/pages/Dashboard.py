@@ -115,6 +115,36 @@ def _format_value(value: float | None, suffix: str = " kg") -> str:
     return f"{value:.2f}{suffix}"
 
 
+def _format_fr_number(value: float, decimals: int = 1, *, trim_zeros: bool = True) -> str:
+    formatted = f"{float(value):.{decimals}f}"
+    if trim_zeros:
+        formatted = formatted.rstrip("0").rstrip(".")
+    return formatted.replace(".", ",")
+
+
+def _format_fr_kg(value: float, decimals: int = 1, *, trim_zeros: bool = True) -> str:
+    return f"{_format_fr_number(value, decimals=decimals, trim_zeros=trim_zeros)} kg"
+
+
+def _trajectory_gap_label(trajectory_status: dict) -> str:
+    gap = float(trajectory_status.get("gap_kg", 0.0))
+    status = trajectory_status.get("status")
+    gap_text = _format_fr_kg(abs(gap), decimals=1)
+
+    if status == "avance":
+        return f"{gap_text} en dessous"
+    if status == "aligné":
+        return "Aligné"
+    return f"{gap_text} au-dessus"
+
+
+def _trajectory_position_sentence(trajectory_status: dict) -> str:
+    status = trajectory_status.get("status")
+    if status == "aligné":
+        return "Vous êtes actuellement aligné avec la trajectoire cible."
+    return f"Vous êtes actuellement à {_trajectory_gap_label(trajectory_status)} de la trajectoire cible."
+
+
 def _metric_help_for_period(period) -> str:
     if period.value is None:
         return period.reason or "Données insuffisantes pour cette période."
@@ -183,7 +213,7 @@ def _render_daily_overview(summary: dict, target_weight: float, trajectory_statu
     delta_30 = summary["delta_30"]
     cols = st.columns(5)
     with cols[0]:
-        kpi_card("Poids actuel", _format_value(summary["current"]), _format_delta(summary["previous_delta"]), "Dernière mesure vs mesure précédente.")
+        kpi_card("Poids actuel", _format_value(summary["current"]), _format_delta(summary["previous_delta"]), "Dernière mesure par rapport à la mesure précédente.")
     with cols[1]:
         kpi_card("Variation 7 jours", _format_delta(delta_7.value), help_text=_metric_help_for_period(delta_7))
     with cols[2]:
@@ -192,10 +222,10 @@ def _render_daily_overview(summary: dict, target_weight: float, trajectory_statu
         if trajectory_status and trajectory_status.get("available"):
             kpi_card(
                 "Écart trajectoire",
-                _format_delta(trajectory_status.get("gap_kg")),
+                _trajectory_gap_label(trajectory_status),
                 help_text=(
-                    f"Écart entre le poids actuel et la trajectoire cible corrigée "
-                    f"({trajectory_status['scheduled_weight']:.1f} kg attendu au {trajectory_status['current_date'].strftime('%d/%m/%Y')})."
+                    f"Poids attendu au {trajectory_status['current_date'].strftime('%d/%m/%Y')} "
+                    f"dans la trajectoire cible : {_format_fr_kg(trajectory_status['scheduled_weight'])}."
                 ),
             )
         else:
@@ -208,17 +238,14 @@ def _render_daily_overview(summary: dict, target_weight: float, trajectory_statu
     insight_card("Lecture rapide", sentence, tone=tone, icon="🔎")
 
     if trajectory_status and trajectory_status.get("available"):
-        status_label = {"retard": "en retard", "avance": "en avance", "aligné": "aligné"}.get(
-            trajectory_status.get("status"), "à comparer"
-        )
         insight_card(
-            "Trajectoire cible corrigée",
+            "Trajectoire cible",
             (
-                f"Départ fixé au {trajectory_status['start_date'].strftime('%d/%m/%Y')} "
-                f"depuis {trajectory_status['start_weight']:.1f} kg, objectif "
-                f"{trajectory_status['final_target_weight']:.1f} kg estimé le "
-                f"{trajectory_status['eta_date'].strftime('%d/%m/%Y')}. "
-                f"Aujourd’hui : {trajectory_status['gap_kg']:+.1f} kg vs trajectoire ({status_label})."
+                f"Objectif {_format_fr_kg(trajectory_status['final_target_weight'])} estimé autour du "
+                f"{trajectory_status['eta_date'].strftime('%d/%m/%Y')}, avec une trajectoire de "
+                f"-{_format_fr_kg(trajectory_status['weekly_loss_target'])}/semaine depuis le "
+                f"{trajectory_status['start_date'].strftime('%d/%m/%Y')}. "
+                f"{_trajectory_position_sentence(trajectory_status)}"
             ),
             tone="success" if trajectory_status.get("status") in {"avance", "aligné"} else "warning",
             icon="🎯",
@@ -290,15 +317,12 @@ def _render_advanced_kpis(
 
     if trajectory_status and trajectory_status.get("available"):
         progress = float(trajectory_status["progress_pct"])
-        progress_label = f"Progression vers {trajectory_status['final_target_weight']:.1f} kg"
-        status_label = {"retard": "en retard", "avance": "en avance", "aligné": "aligné"}.get(
-            trajectory_status.get("status"), "à comparer"
-        )
+        progress_label = f"Progression vers {_format_fr_kg(trajectory_status['final_target_weight'])}"
         st.caption(
-            f"🎯 Trajectoire cible : {trajectory_status['scheduled_weight']:.1f} kg attendus au "
-            f"{trajectory_status['current_date'].strftime('%d/%m/%Y')} — "
-            f"écart {trajectory_status['gap_kg']:+.1f} kg ({status_label}). "
-            f"Atteinte théorique de {trajectory_status['final_target_weight']:.1f} kg : "
+            f"🎯 Trajectoire cible : {_format_fr_kg(trajectory_status['scheduled_weight'])} attendus au "
+            f"{trajectory_status['current_date'].strftime('%d/%m/%Y')}. "
+            f"{_trajectory_position_sentence(trajectory_status)} "
+            f"Objectif {_format_fr_kg(trajectory_status['final_target_weight'])} estimé autour du "
             f"{trajectory_status['eta_date'].strftime('%d/%m/%Y')}."
         )
     elif has_effort_period:
@@ -308,13 +332,13 @@ def _render_advanced_kpis(
             progress = ((effort_initial_weight - current) / total * 100) if total > 0 else 0.0
         else:
             progress = 100.0
-        progress_label = f"Progression effort actuel vers {target_weight:.1f} kg"
+        progress_label = f"Progression effort actuel vers {_format_fr_kg(target_weight)}"
     else:
         initial = df["Poids (Kgs)"].iloc[0]
         final_target = target_weight
         total = initial - final_target
         progress = ((initial - current) / total * 100) if total > 0 else 0.0
-        progress_label = f"Progression vers l’objectif final ({target_weight:.1f} kg)"
+        progress_label = f"Progression vers l’objectif final ({_format_fr_kg(target_weight)})"
 
     progress_panel(
         progress_label,
@@ -329,9 +353,9 @@ def _render_advanced_kpis(
     if milestone.get("eta_days") is not None:
         conf = milestone.get("eta_confidence", "")
         conf_note = f" (confiance: {conf})" if conf else ""
-        ms_text += f" — ETA: **~{milestone['eta_days']} jours**{conf_note}"
+        ms_text += f" — Date estimée : **~{milestone['eta_days']} jours**{conf_note}"
     elif milestone.get("eta_confidence") == "fragile":
-        ms_text += " — ETA: disponible après 7+ mesures"
+        ms_text += " — Date estimée disponible après 7+ mesures"
     st.caption(ms_text)
 
     plateau = detect_plateau(analysis_df, window=14)
@@ -626,14 +650,10 @@ def main() -> None:
     with tab_forecast:
         section_header("Prévisions", "Les projections restent prudentes et sont séparées de la lecture principale.", "🔮")
         if trajectory_status.get("available"):
-            delay_days = trajectory_status.get("days_delta")
-            delay_text = ""
-            if delay_days is not None:
-                delay_text = f" · {abs(delay_days):.0f} jour(s) {'de retard' if delay_days > 0 else 'd’avance' if delay_days < 0 else 'd’écart'}"
             st.info(
-                f"🎯 Trajectoire métier corrigée : objectif {trajectory_status['final_target_weight']:.1f} kg le "
+                f"🎯 Plan d’atteinte de l’objectif : {_format_fr_kg(trajectory_status['final_target_weight'])} autour du "
                 f"**{trajectory_status['eta_date'].strftime('%d/%m/%Y')}**. "
-                f"Écart actuel : **{trajectory_status['gap_kg']:+.1f} kg**{delay_text}."
+                f"{_trajectory_position_sentence(trajectory_status)}"
             )
         projection = daily_summary.get("projection", {}) if daily_summary.get("valid") else {}
         if projection.get("available") and not projection.get("reached"):

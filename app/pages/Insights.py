@@ -222,24 +222,24 @@ def main() -> None:
     period = period_comparison(analysis_df)
     cmp_cols = st.columns(2)
     with cmp_cols[0]:
-        st.markdown("**Semaine courante vs précédente**")
+        st.markdown("**Semaine courante par rapport à la précédente**")
         if period["week"]:
             w = period["week"]
             delta = w["delta"]
             icon = "📉" if delta < -0.1 else "📈" if delta > 0.1 else "➡️"
             st.metric("Delta hebdo", f"{icon} {delta:+.2f} kg",
-                      f"{w['current_mean']:.1f} vs {w['previous_mean']:.1f} kg")
+                      f"{w['current_mean']:.1f} par rapport à {w['previous_mean']:.1f} kg")
         else:
             st.info("Données insuffisantes")
         st.caption("Base de calcul: moyennes hebdomadaires calendaires.")
     with cmp_cols[1]:
-        st.markdown("**Mois courant vs précédent**")
+        st.markdown("**Mois courant par rapport au précédent**")
         if period["month"]:
             m = period["month"]
             delta = m["delta"]
             icon = "📉" if delta < -0.1 else "📈" if delta > 0.1 else "➡️"
             st.metric("Delta mensuel", f"{icon} {delta:+.2f} kg",
-                      f"{m['current_mean']:.1f} vs {m['previous_mean']:.1f} kg")
+                      f"{m['current_mean']:.1f} par rapport à {m['previous_mean']:.1f} kg")
         else:
             st.info("Données insuffisantes")
         st.caption("Base de calcul: moyennes mensuelles calendaires.")
