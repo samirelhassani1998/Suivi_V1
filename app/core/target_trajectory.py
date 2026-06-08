@@ -1,0 +1,168 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+import pandas as pd
+
+
+DEFAULT_TARGET_TRAJECTORY_START_DATE = pd.Timestamp("2026-06-01")
+DEFAULT_WEEKLY_LOSS_TARGET = 2.0
+DEFAULT_FINAL_TARGET_WEIGHT = 80.0
+
+DATE_COL = "Date"
+WEIGHT_COL = "Poids (Kgs)"
+
+
+@dataclass(frozen=True)
+class TargetTrajectoryConfig:
+    """Business parameters for the main target trajectory."""
+
+    start_date: pd.Timestamp = DEFAULT_TARGET_TRAJECTORY_START_DATE
+    weekly_loss_target: float = DEFAULT_WEEKLY_LOSS_TARGET
+    final_target_weight: float = DEFAULT_FINAL_TARGET_WEIGHT
+
+    @classmethod
+    def from_values(
+        cls,
+        start_date: Any = DEFAULT_TARGET_TRAJECTORY_START_DATE,
+        weekly_loss_target: float = DEFAULT_WEEKLY_LOSS_TARGET,
+        final_target_weight: float = DEFAULT_FINAL_TARGET_WEIGHT,
+    ) -> "TargetTrajectoryConfig":
+        return cls(
+            start_date=pd.Timestamp(start_date).normalize(),
+            weekly_loss_target=float(weekly_loss_target),
+            final_target_weight=float(final_target_weight),
+        )
+
+
+def _prepare_weight_data(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or DATE_COL not in df.columns or WEIGHT_COL not in df.columns:
+        return pd.DataFrame(columns=[DATE_COL, WEIGHT_COL])
+
+    data = df[[DATE_COL, WEIGHT_COL]].copy()
+    data[DATE_COL] = pd.to_datetime(data[DATE_COL], errors="coerce").dt.normalize()
+    data[WEIGHT_COL] = pd.to_numeric(data[WEIGHT_COL], errors="coerce")
+    return data.dropna(subset=[DATE_COL, WEIGHT_COL]).sort_values(DATE_COL).reset_index(drop=True)
+
+
+def nearest_start_measurement(df: pd.DataFrame, start_date: pd.Timestamp) -> pd.Series | None:
+    """Return the real measured weight closest to the fixed trajectory start date."""
+    data = _prepare_weight_data(df)
+    if data.empty:
+        return None
+
+    normalized_start = pd.Timestamp(start_date).normalize()
+    distances = (data[DATE_COL] - normalized_start).abs()
+    return data.loc[distances.idxmin()]
+
+
+def build_target_trajectory(
+    df: pd.DataFrame,
+    config: TargetTrajectoryConfig | None = None,
+) -> dict[str, Any]:
+    """Build a capped target trajectory from a fixed date to the final target.
+
+    The curve starts at ``config.start_date`` using the closest real measured
+    weight to that date, descends at ``weekly_loss_target`` kg/week, and stops
+    exactly when ``final_target_weight`` is reached. It never goes below the
+    final target and never extends past it.
+    """
+    config = config or TargetTrajectoryConfig()
+    if config.weekly_loss_target <= 0:
+        return {"available": False, "message": "Le rythme cible doit être positif."}
+
+    measurement = nearest_start_measurement(df, config.start_date)
+    if measurement is None:
+        return {"available": False, "message": "Aucune mesure disponible pour ancrer la trajectoire cible."}
+
+    start_date = pd.Timestamp(config.start_date).normalize()
+    start_weight = float(measurement[WEIGHT_COL])
+    final_target = float(config.final_target_weight)
+    weekly_loss = float(config.weekly_loss_target)
+    daily_loss = weekly_loss / 7.0
+
+    if start_weight <= final_target:
+        dates = pd.DatetimeIndex([start_date])
+        values = [final_target]
+        target_days = 0.0
+        eta_date = start_date
+    else:
+        target_days = (start_weight - final_target) / daily_loss
+        full_days = int(target_days)
+        dates = pd.date_range(start_date, periods=full_days + 1, freq="D")
+        values = [max(start_weight - daily_loss * day, final_target) for day in range(full_days + 1)]
+
+        eta_date = start_date + pd.Timedelta(days=target_days)
+        if target_days > full_days:
+            dates = dates.append(pd.DatetimeIndex([eta_date]))
+            values.append(final_target)
+        else:
+            values[-1] = final_target
+
+    trajectory = pd.DataFrame({DATE_COL: dates, "Poids cible (kg)": values})
+    return {
+        "available": True,
+        "config": config,
+        "trajectory": trajectory,
+        "start_date": start_date,
+        "start_weight": start_weight,
+        "start_measurement_date": pd.Timestamp(measurement[DATE_COL]),
+        "weekly_loss_target": weekly_loss,
+        "final_target_weight": final_target,
+        "target_days": float(target_days),
+        "eta_date": eta_date,
+    }
+
+
+def target_weight_on_date(start_weight: float, date: pd.Timestamp, config: TargetTrajectoryConfig) -> float:
+    """Return the scheduled target weight for a date, capped at final target."""
+    elapsed_days = max((pd.Timestamp(date).normalize() - config.start_date).days, 0)
+    scheduled = float(start_weight) - (elapsed_days / 7.0 * config.weekly_loss_target)
+    return max(scheduled, config.final_target_weight)
+
+
+def compare_to_target_trajectory(
+    df: pd.DataFrame,
+    config: TargetTrajectoryConfig | None = None,
+) -> dict[str, Any]:
+    """Compare the latest measured weight with the corrected target trajectory."""
+    config = config or TargetTrajectoryConfig()
+    trajectory = build_target_trajectory(df, config)
+    if not trajectory.get("available"):
+        return trajectory
+
+    data = _prepare_weight_data(df)
+    if data.empty:
+        return {"available": False, "message": "Aucune mesure disponible."}
+
+    latest = data.iloc[-1]
+    current_date = pd.Timestamp(latest[DATE_COL])
+    current_weight = float(latest[WEIGHT_COL])
+    scheduled_weight = target_weight_on_date(float(trajectory["start_weight"]), current_date, config)
+    gap_kg = current_weight - scheduled_weight
+
+    start_weight = float(trajectory["start_weight"])
+    final_target = float(config.final_target_weight)
+    total_to_lose = max(start_weight - final_target, 0.0)
+    progress_pct = 100.0 if total_to_lose == 0 else (start_weight - current_weight) / total_to_lose * 100
+    progress_pct = max(0.0, min(100.0, progress_pct))
+
+    days_delta = gap_kg / (config.weekly_loss_target / 7.0) if config.weekly_loss_target > 0 else None
+    if gap_kg > 0.1:
+        status = "retard"
+    elif gap_kg < -0.1:
+        status = "avance"
+    else:
+        status = "aligné"
+
+    return {
+        **trajectory,
+        "current_date": current_date,
+        "current_weight": current_weight,
+        "scheduled_weight": scheduled_weight,
+        "gap_kg": gap_kg,
+        "days_delta": days_delta,
+        "status": status,
+        "progress_pct": progress_pct,
+    }

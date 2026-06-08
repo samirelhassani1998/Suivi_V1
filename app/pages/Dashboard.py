@@ -24,6 +24,14 @@ from app.core.analytics import (
 from app.core.data import data_quality_report
 from app.core.insights import detect_plateau
 from app.core.session_state import get_filtered_or_working_data
+from app.core.target_trajectory import (
+    DEFAULT_FINAL_TARGET_WEIGHT,
+    DEFAULT_TARGET_TRAJECTORY_START_DATE,
+    DEFAULT_WEEKLY_LOSS_TARGET,
+    TargetTrajectoryConfig,
+    build_target_trajectory,
+    compare_to_target_trajectory,
+)
 from app.core.weight_summary import moving_average_by_days, summarize_weight_journey
 from app.core.targets import get_target_weights
 from app.ui.components import (
@@ -39,9 +47,6 @@ from app.ui.components import (
 )
 
 
-TARGET_TRAJECTORY_KG_PER_WEEK = -2.0
-TARGET_TRAJECTORY_DAILY_RATE = TARGET_TRAJECTORY_KG_PER_WEEK / 7
-TARGET_TRAJECTORY_LABEL = f"Trajectoire cible ({TARGET_TRAJECTORY_KG_PER_WEEK:g} kg/semaine)"
 TARGET_TRAJECTORY_CHART_KEY = "dashboard-target-trajectory-2kg-week"
 
 
@@ -167,7 +172,7 @@ def _trend_sentence(summary: dict, target_weight: float) -> tuple[str, str]:
         trend_text += f" Vous êtes à {abs(gap):.1f} kg de l’objectif principal ({target_weight:.1f} kg)."
     return trend_text, tone
 
-def _render_daily_overview(summary: dict, target_weight: float) -> None:
+def _render_daily_overview(summary: dict, target_weight: float, trajectory_status: dict | None = None) -> None:
     section_header(
         "Vue rapide",
         "Les cinq informations clés pour comprendre la situation en quelques secondes.",
@@ -184,13 +189,40 @@ def _render_daily_overview(summary: dict, target_weight: float) -> None:
     with cols[2]:
         kpi_card("Variation 30 jours", _format_delta(delta_30.value), help_text=_metric_help_for_period(delta_30))
     with cols[3]:
-        kpi_card("Écart objectif", _format_delta(summary["target_gap"]), help_text=f"Écart entre le poids actuel et l’objectif principal ({target_weight:.1f} kg).")
+        if trajectory_status and trajectory_status.get("available"):
+            kpi_card(
+                "Écart trajectoire",
+                _format_delta(trajectory_status.get("gap_kg")),
+                help_text=(
+                    f"Écart entre le poids actuel et la trajectoire cible corrigée "
+                    f"({trajectory_status['scheduled_weight']:.1f} kg attendu au {trajectory_status['current_date'].strftime('%d/%m/%Y')})."
+                ),
+            )
+        else:
+            kpi_card("Écart objectif", _format_delta(summary["target_gap"]), help_text=f"Écart entre le poids actuel et l’objectif principal ({target_weight:.1f} kg).")
     with cols[4]:
         trend_icon = {"Baisse": "📉", "Hausse": "📈", "Stable": "➡️"}.get(summary["trend_label"], "🔎")
         kpi_card("Tendance actuelle", f"{trend_icon} {summary['trend_label']}", help_text=summary["trend_explanation"])
 
     sentence, tone = _trend_sentence(summary, target_weight)
     insight_card("Lecture rapide", sentence, tone=tone, icon="🔎")
+
+    if trajectory_status and trajectory_status.get("available"):
+        status_label = {"retard": "en retard", "avance": "en avance", "aligné": "aligné"}.get(
+            trajectory_status.get("status"), "à comparer"
+        )
+        insight_card(
+            "Trajectoire cible corrigée",
+            (
+                f"Départ fixé au {trajectory_status['start_date'].strftime('%d/%m/%Y')} "
+                f"depuis {trajectory_status['start_weight']:.1f} kg, objectif "
+                f"{trajectory_status['final_target_weight']:.1f} kg estimé le "
+                f"{trajectory_status['eta_date'].strftime('%d/%m/%Y')}. "
+                f"Aujourd’hui : {trajectory_status['gap_kg']:+.1f} kg vs trajectoire ({status_label})."
+            ),
+            tone="success" if trajectory_status.get("status") in {"avance", "aligné"} else "warning",
+            icon="🎯",
+        )
 
 
 def _render_advanced_kpis(
@@ -206,6 +238,7 @@ def _render_advanced_kpis(
     height_m: float,
     is_startup: bool,
     last_date: pd.Timestamp,
+    trajectory_status: dict | None = None,
 ) -> tuple[pd.DataFrame, dict, dict]:
     analysis_df = effort_df if has_effort_period else df
     quality = data_quality_report(analysis_df)
@@ -255,7 +288,20 @@ def _render_advanced_kpis(
         streak_txt = f"{streak_icon} {streaks['current_streak']} mesures en {streaks['current_type']}"
         kpi_card("Série en cours", streak_txt, help_text=f"Record perte : {streaks['longest_loss']} mesures · Record gain : {streaks['longest_gain']} mesures")
 
-    if has_effort_period:
+    if trajectory_status and trajectory_status.get("available"):
+        progress = float(trajectory_status["progress_pct"])
+        progress_label = f"Progression vers {trajectory_status['final_target_weight']:.1f} kg"
+        status_label = {"retard": "en retard", "avance": "en avance", "aligné": "aligné"}.get(
+            trajectory_status.get("status"), "à comparer"
+        )
+        st.caption(
+            f"🎯 Trajectoire cible : {trajectory_status['scheduled_weight']:.1f} kg attendus au "
+            f"{trajectory_status['current_date'].strftime('%d/%m/%Y')} — "
+            f"écart {trajectory_status['gap_kg']:+.1f} kg ({status_label}). "
+            f"Atteinte théorique de {trajectory_status['final_target_weight']:.1f} kg : "
+            f"{trajectory_status['eta_date'].strftime('%d/%m/%Y')}."
+        )
+    elif has_effort_period:
         effort_initial_weight = float(effort_df["Poids (Kgs)"].iloc[0])
         if effort_initial_weight > target_weight:
             total = effort_initial_weight - target_weight
@@ -265,10 +311,10 @@ def _render_advanced_kpis(
         progress_label = f"Progression effort actuel vers {target_weight:.1f} kg"
     else:
         initial = df["Poids (Kgs)"].iloc[0]
-        final_target = targets[-1]
+        final_target = target_weight
         total = initial - final_target
         progress = ((initial - current) / total * 100) if total > 0 else 0.0
-        progress_label = f"Progression vers l’objectif final ({targets[-1]:.1f} kg)"
+        progress_label = f"Progression vers l’objectif final ({target_weight:.1f} kg)"
 
     progress_panel(
         progress_label,
@@ -340,6 +386,7 @@ def _render_main_weight_chart(
     effort_start: pd.Timestamp,
     effort_days: int,
     has_effort_period: bool,
+    trajectory_config: TargetTrajectoryConfig,
 ) -> None:
     section_header(
         "Évolution du poids",
@@ -368,6 +415,10 @@ def _render_main_weight_chart(
         with c3:
             show_forecast = st.checkbox("Trajectoire cible", value=True)
             st.caption("Les objectifs et la trajectoire font partie de la lecture par défaut ; désactivez-les ici si besoin.")
+            st.caption(
+                f"Paramètres trajectoire : départ {trajectory_config.start_date.strftime('%d/%m/%Y')} · "
+                f"-{trajectory_config.weekly_loss_target:g} kg/sem · objectif {trajectory_config.final_target_weight:g} kg"
+            )
 
     df["MA_7J"] = moving_average_by_days(df, 7)
     df["MA_30J"] = moving_average_by_days(df, 30)
@@ -412,21 +463,22 @@ def _render_main_weight_chart(
             hovertemplate="%{x|%d/%m/%Y}<br>Tendance: %{y:.2f} kg<extra></extra>",
         )
 
-    can_draw_target_trajectory = effort_start is not None and len(effort_df) >= 2
-    if show_forecast and can_draw_target_trajectory:
-        effort_initial_w = float(effort_df["Poids (Kgs)"].iloc[0])
-        traj_dates = pd.date_range(effort_start, periods=min(180, max(effort_days * 3, 90)), freq="D")
-        traj_values = [max(effort_initial_w + TARGET_TRAJECTORY_DAILY_RATE * i, target_weight) for i in range(len(traj_dates))]
+    target_trajectory = build_target_trajectory(df, trajectory_config)
+    if show_forecast and target_trajectory.get("available"):
+        trajectory_df = target_trajectory["trajectory"]
+        label = f"Trajectoire cible (-{trajectory_config.weekly_loss_target:g} kg/semaine)"
         fig.add_scatter(
-            x=traj_dates,
-            y=traj_values,
+            x=trajectory_df["Date"],
+            y=trajectory_df["Poids cible (kg)"],
             mode="lines",
-            name=TARGET_TRAJECTORY_LABEL,
+            name=label,
             line=dict(color="rgba(20,184,166,0.78)", width=1.7, dash="dashdot"),
             hovertemplate=(
                 "Date: %{x|%d/%m/%Y}<br>"
                 "Poids cible: %{y:.1f} kg<br>"
-                f"Rythme: {TARGET_TRAJECTORY_KG_PER_WEEK:g} kg/semaine<extra></extra>"
+                f"Départ: {target_trajectory['start_weight']:.1f} kg "
+                f"({target_trajectory['start_measurement_date'].strftime('%d/%m/%Y')})<br>"
+                f"Objectif final: {trajectory_config.final_target_weight:g} kg<extra></extra>"
             ),
         )
 
@@ -435,6 +487,33 @@ def _render_main_weight_chart(
     st.plotly_chart(fig, use_container_width=True, key=TARGET_TRAJECTORY_CHART_KEY)
     st.caption("Vue par défaut : poids mesuré prioritaire, moyenne mobile discrète, objectifs et trajectoire cible visibles.")
 
+
+
+def _trajectory_config_controls() -> TargetTrajectoryConfig:
+    """Expose explicit business parameters with required defaults."""
+    with st.sidebar.expander("Trajectoire cible", expanded=False):
+        start_date = st.date_input(
+            "Date de départ de trajectoire",
+            value=DEFAULT_TARGET_TRAJECTORY_START_DATE.date(),
+            help="Par défaut : 01/06/2026. La courbe ne démarre pas avant cette date ni à aujourd’hui.",
+        )
+        weekly_loss_target = st.number_input(
+            "Rythme cible (kg/semaine)",
+            min_value=0.1,
+            max_value=10.0,
+            value=float(DEFAULT_WEEKLY_LOSS_TARGET),
+            step=0.1,
+            help="Saisir une valeur positive : 2 signifie une perte cible de 2 kg par semaine.",
+        )
+        final_target_weight = st.number_input(
+            "Objectif final (kg)",
+            min_value=30.0,
+            max_value=250.0,
+            value=float(DEFAULT_FINAL_TARGET_WEIGHT),
+            step=0.5,
+            help="Par défaut : 80 kg. La trajectoire s’arrête à cet objectif et ne descend pas en dessous.",
+        )
+    return TargetTrajectoryConfig.from_values(start_date, weekly_loss_target, final_target_weight)
 
 def main() -> None:
     df = _df()
@@ -457,7 +536,9 @@ def main() -> None:
 
     height_m = st.session_state.get("height_m", 1.82)
     targets = get_target_weights(st.session_state)
-    target_weight = float(targets[-1])
+    trajectory_config = _trajectory_config_controls()
+    target_weight = float(trajectory_config.final_target_weight)
+    trajectory_status = compare_to_target_trajectory(df, trajectory_config)
     daily_summary = summarize_weight_journey(df, target_weight)
     analysis_df = effort_df if has_effort_period else df
     prog = progression_score(analysis_df, target_weight)
@@ -470,7 +551,7 @@ def main() -> None:
     )
 
     if daily_summary.get("valid"):
-        _render_daily_overview(daily_summary, target_weight)
+        _render_daily_overview(daily_summary, target_weight, trajectory_status)
     else:
         st.warning(daily_summary.get("message", "Données insuffisantes pour calculer les indicateurs."))
 
@@ -485,7 +566,7 @@ def main() -> None:
             f"{delta_icon} **{delta_text} kg** ({effort_initial:.1f} → {current:.1f} kg)"
         )
 
-    _render_main_weight_chart(df, target_weight, targets, effort_df, effort_start, effort_days, has_effort_period)
+    _render_main_weight_chart(df, target_weight, targets, effort_df, effort_start, effort_days, has_effort_period, trajectory_config)
 
     tab_analysis, tab_forecast, tab_history, tab_settings = st.tabs(
         ["Analyse détaillée", "Prévisions", "Historique", "Paramètres / objectifs"]
@@ -519,6 +600,7 @@ def main() -> None:
                 height_m,
                 is_startup,
                 last_date,
+                trajectory_status,
             )
 
         with st.expander("💡 Insights détaillés", expanded=False):
@@ -543,6 +625,16 @@ def main() -> None:
 
     with tab_forecast:
         section_header("Prévisions", "Les projections restent prudentes et sont séparées de la lecture principale.", "🔮")
+        if trajectory_status.get("available"):
+            delay_days = trajectory_status.get("days_delta")
+            delay_text = ""
+            if delay_days is not None:
+                delay_text = f" · {abs(delay_days):.0f} jour(s) {'de retard' if delay_days > 0 else 'd’avance' if delay_days < 0 else 'd’écart'}"
+            st.info(
+                f"🎯 Trajectoire métier corrigée : objectif {trajectory_status['final_target_weight']:.1f} kg le "
+                f"**{trajectory_status['eta_date'].strftime('%d/%m/%Y')}**. "
+                f"Écart actuel : **{trajectory_status['gap_kg']:+.1f} kg**{delay_text}."
+            )
         projection = daily_summary.get("projection", {}) if daily_summary.get("valid") else {}
         if projection.get("available") and not projection.get("reached"):
             eta = projection["eta"].strftime("%d/%m/%Y")
