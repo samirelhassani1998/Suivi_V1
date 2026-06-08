@@ -29,7 +29,7 @@ def _df() -> pd.DataFrame:
 
 
 def _model_comparison(df: pd.DataFrame) -> None:
-    st.subheader("Comparaison Régression Linéaire vs Random Forest")
+    st.subheader("Comparaison Régression Linéaire et Random Forest")
     if len(df) < 10:
         st.warning("Données insuffisantes pour comparer les modèles.")
         return

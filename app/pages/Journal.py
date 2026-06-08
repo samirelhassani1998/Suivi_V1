@@ -28,7 +28,7 @@ def main() -> None:
     page_hero(
         "Données",
         "Journal",
-        "Ajoutez, corrigez et exportez vos mesures tout en conservant les colonnes personnalisées de votre CSV.",
+        "Ajoutez, modifiez et exportez vos mesures tout en conservant les colonnes personnalisées de votre CSV.",
         meta=f"{len(df)} ligne(s) en session" if not df.empty else "Aucune mesure en session",
     )
     if df.empty:

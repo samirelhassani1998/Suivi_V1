@@ -373,13 +373,13 @@ def _merge_consecutive_phases(phases: list[Phase]) -> list[Phase]:
 # ---------------------------------------------------------------------------
 
 def period_comparison(df: pd.DataFrame) -> dict[str, Any]:
-    """Compare semaine courante vs précédente, mois courant vs précédent."""
+    """Compare la semaine courante à la précédente, puis le mois courant au précédent."""
     if len(df) < 7:
         return {"week": None, "month": None}
     data = df.sort_values("Date")
     last_date = data["Date"].max()
 
-    # Semaine courante vs précédente
+    # Semaine courante par rapport à la précédente
     week_end = last_date
     week_start = week_end - pd.Timedelta(days=6)
     prev_week_end = week_start - pd.Timedelta(days=1)
@@ -398,7 +398,7 @@ def period_comparison(df: pd.DataFrame) -> dict[str, Any]:
             "previous_count": len(prev_week),
         }
 
-    # Mois courant vs précédent
+    # Mois courant par rapport au précédent
     month_start = last_date.replace(day=1)
     prev_month_end = month_start - pd.Timedelta(days=1)
     prev_month_start = prev_month_end.replace(day=1)
@@ -738,7 +738,7 @@ def compute_trend_ema(df: pd.DataFrame, span: int = 7) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# 17. Comparaison rythme actuel vs rythme nécessaire
+# 17. Comparaison rythme actuel par rapport au rythme nécessaire
 # ---------------------------------------------------------------------------
 
 def pace_comparison(df: pd.DataFrame, target_weight: float, target_date: pd.Timestamp | None = None) -> dict[str, Any]:
@@ -787,9 +787,9 @@ def pace_comparison(df: pd.DataFrame, target_weight: float, target_date: pd.Time
         elif ratio >= 1.0:
             interp = f"Bon rythme ! Vous perdez **{abs(current_pace):.2f} kg/sem**, aligné avec le rythme nécessaire ({abs(required_pace):.2f} kg/sem)."
         elif ratio >= 0.5:
-            interp = f"Rythme un peu lent : **{abs(current_pace):.2f} kg/sem** vs {abs(required_pace):.2f} kg/sem nécessaire."
+            interp = f"Rythme un peu lent : **{abs(current_pace):.2f} kg/sem** par rapport à {abs(required_pace):.2f} kg/sem nécessaire."
         else:
-            interp = f"Rythme insuffisant : **{abs(current_pace):.2f} kg/sem** vs {abs(required_pace):.2f} kg/sem nécessaire."
+            interp = f"Rythme insuffisant : **{abs(current_pace):.2f} kg/sem** par rapport à {abs(required_pace):.2f} kg/sem nécessaire."
 
     return {
         "current_pace": current_pace,
