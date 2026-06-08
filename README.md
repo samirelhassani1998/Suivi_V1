@@ -15,7 +15,7 @@ Application Streamlit de suivi de poids avec analyses comportementales avancées
 | **Tendance EMA** | Poids lissé comme KPI principal (filtre les fluctuations quotidiennes) |
 | **Détection yo-yo** | Analyse factuelle des rebonds après chaque pause de suivi |
 | **Détection d'effort** | Identification automatique de la période d'effort actuelle (gap > 21j = nouveau départ) |
-| **Trajectoire cible** | Corridor ±1 kg autour d'une pente cible de -2 kg/semaine |
+| **Trajectoire cible** | Courbe cible fixe de 106,2 kg le 26/05/2026 vers 80 kg à -2 kg/semaine, arrêtée à l’objectif |
 | **Phase de démarrage** | Les 7 premiers jours = "données fragiles", pas d'extrapolation |
 | **Milestone intelligent** | Prochain palier avec ETA réaliste (gardes-fous physiologiques) |
 | **Vue hebdomadaire** | Bar chart consolidé avec coloration baisse/hausse |

@@ -6,7 +6,8 @@ from typing import Any
 import pandas as pd
 
 
-DEFAULT_TARGET_TRAJECTORY_START_DATE = pd.Timestamp("2026-06-01")
+DEFAULT_TARGET_TRAJECTORY_START_DATE = pd.Timestamp("2026-05-26")
+DEFAULT_TARGET_TRAJECTORY_START_WEIGHT = 106.2
 DEFAULT_WEEKLY_LOSS_TARGET = 2.0
 DEFAULT_FINAL_TARGET_WEIGHT = 80.0
 
@@ -19,6 +20,7 @@ class TargetTrajectoryConfig:
     """Business parameters for the main target trajectory."""
 
     start_date: pd.Timestamp = DEFAULT_TARGET_TRAJECTORY_START_DATE
+    start_weight: float = DEFAULT_TARGET_TRAJECTORY_START_WEIGHT
     weekly_loss_target: float = DEFAULT_WEEKLY_LOSS_TARGET
     final_target_weight: float = DEFAULT_FINAL_TARGET_WEIGHT
 
@@ -28,9 +30,12 @@ class TargetTrajectoryConfig:
         start_date: Any = DEFAULT_TARGET_TRAJECTORY_START_DATE,
         weekly_loss_target: float = DEFAULT_WEEKLY_LOSS_TARGET,
         final_target_weight: float = DEFAULT_FINAL_TARGET_WEIGHT,
+        *,
+        start_weight: float = DEFAULT_TARGET_TRAJECTORY_START_WEIGHT,
     ) -> "TargetTrajectoryConfig":
         return cls(
             start_date=pd.Timestamp(start_date).normalize(),
+            start_weight=float(start_weight),
             weekly_loss_target=float(weekly_loss_target),
             final_target_weight=float(final_target_weight),
         )
@@ -46,15 +51,13 @@ def _prepare_weight_data(df: pd.DataFrame) -> pd.DataFrame:
     return data.dropna(subset=[DATE_COL, WEIGHT_COL]).sort_values(DATE_COL).reset_index(drop=True)
 
 
-def nearest_start_measurement(df: pd.DataFrame, start_date: pd.Timestamp) -> pd.Series | None:
-    """Return the real measured weight closest to the fixed trajectory start date."""
-    data = _prepare_weight_data(df)
-    if data.empty:
-        return None
+def fixed_start_measurement(_df: pd.DataFrame, config: TargetTrajectoryConfig) -> pd.Series:
+    """Return the explicit reference point used to anchor the trajectory.
 
-    normalized_start = pd.Timestamp(start_date).normalize()
-    distances = (data[DATE_COL] - normalized_start).abs()
-    return data.loc[distances.idxmin()]
+    The business rule intentionally does not infer this point from the data set:
+    it must always be 26/05/2026 at 106.2 kg by default.
+    """
+    return pd.Series({DATE_COL: config.start_date, WEIGHT_COL: config.start_weight})
 
 
 def build_target_trajectory(
@@ -63,21 +66,20 @@ def build_target_trajectory(
 ) -> dict[str, Any]:
     """Build a capped target trajectory from a fixed date to the final target.
 
-    The curve starts at ``config.start_date`` using the closest real measured
-    weight to that date, descends at ``weekly_loss_target`` kg/week, and stops
-    exactly when ``final_target_weight`` is reached. It never goes below the
-    final target and never extends past it.
+    The curve starts at the explicit business reference point in ``config``
+    (26/05/2026 at 106.2 kg by default), descends at
+    ``weekly_loss_target`` kg/week, and stops exactly when
+    ``final_target_weight`` is reached. It never goes below the final target
+    and never extends past it.
     """
     config = config or TargetTrajectoryConfig()
     if config.weekly_loss_target <= 0:
         return {"available": False, "message": "Le rythme cible doit être positif."}
 
-    measurement = nearest_start_measurement(df, config.start_date)
-    if measurement is None:
-        return {"available": False, "message": "Aucune mesure disponible pour ancrer la trajectoire cible."}
+    measurement = fixed_start_measurement(df, config)
 
     start_date = pd.Timestamp(config.start_date).normalize()
-    start_weight = float(measurement[WEIGHT_COL])
+    start_weight = float(config.start_weight)
     final_target = float(config.final_target_weight)
     weekly_loss = float(config.weekly_loss_target)
     daily_loss = weekly_loss / 7.0
@@ -117,7 +119,8 @@ def build_target_trajectory(
 
 def target_weight_on_date(start_weight: float, date: pd.Timestamp, config: TargetTrajectoryConfig) -> float:
     """Return the scheduled target weight for a date, capped at final target."""
-    elapsed_days = max((pd.Timestamp(date).normalize() - config.start_date).days, 0)
+    start_date = pd.Timestamp(config.start_date).normalize()
+    elapsed_days = max((pd.Timestamp(date).normalize() - start_date).days, 0)
     scheduled = float(start_weight) - (elapsed_days / 7.0 * config.weekly_loss_target)
     return max(scheduled, config.final_target_weight)
 
