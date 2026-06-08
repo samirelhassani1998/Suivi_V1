@@ -378,11 +378,51 @@ def _render_advanced_kpis(
     return analysis_df, prog, streaks
 
 
+def _daily_insight_title(body: str, position: int) -> str:
+    text = body.lower()
+    if "7 jours" in text:
+        return "Tendance 7 jours"
+    if "30 jours" in text or "reprise" in text:
+        return "Évolution récente"
+    if "palier" in text or "passer sous" in text:
+        return "Prochain palier"
+    if "objectif final" in text or "objectif configuré" in text:
+        return "Distance à l’objectif"
+    if "stabilité" in text or "stable" in text:
+        return "Stabilité du poids"
+    if "trajectoire" in text:
+        return "Écart à la trajectoire"
+    fallback_titles = ("Tendance récente", "Distance au prochain palier", "Analyse complémentaire")
+    return fallback_titles[min(position, len(fallback_titles) - 1)]
+
+
+def _daily_insight_tone(body: str, default_tone: str) -> str:
+    text = body.lower()
+    if "baisse" in text or "perdu" in text:
+        return "success"
+    if "hausse" in text or "remonte" in text or "attention" in text:
+        return "warning"
+    if "objectif" in text or "palier" in text:
+        return "info"
+    return default_tone
+
+
 def _render_simple_insights(summary: dict) -> None:
-    section_header("Insights automatiques", "Commentaires simples, non médicaux, pour comprendre la tendance sans sur-interpréter.", "💡")
+    section_header("Insights automatiques", "Les 3 signaux les plus utiles pour suivre la tendance actuelle.", "💡")
     trend_tone = {"Baisse": "success", "Hausse": "warning", "Stable": "info"}.get(summary.get("trend_label"), "neutral")
-    for idx, insight in enumerate(summary.get("insights", []), start=1):
-        insight_card(f"Signal {idx}", insight, tone=trend_tone if idx == 1 else "info", icon="📉" if trend_tone == "success" else "📈" if trend_tone == "warning" else "🔎")
+    insights = [str(item).replace("**", "") for item in summary.get("insights", []) if str(item).strip()]
+    primary_insights = insights[:3]
+    detailed_insights = insights[3:]
+
+    for idx, insight in enumerate(primary_insights):
+        tone = _daily_insight_tone(insight, trend_tone if idx == 0 else "neutral")
+        icon = "📉" if tone == "success" else "📈" if tone == "warning" else "🎯" if "objectif" in insight.lower() or "palier" in insight.lower() else "🔎"
+        insight_card(_daily_insight_title(insight, idx), insight, tone=tone, icon=icon)
+
+    if detailed_insights:
+        with st.expander("Voir les analyses détaillées", expanded=False):
+            for idx, insight in enumerate(detailed_insights, start=len(primary_insights)):
+                insight_card(_daily_insight_title(insight, idx), insight, tone=_daily_insight_tone(insight, "neutral"), icon="🔎")
 
 
 def _render_objective_gap_chart(df: pd.DataFrame, target_weight: float) -> None:
@@ -561,7 +601,7 @@ def main() -> None:
         "Suivi de poids",
         "Dashboard",
         "Un tableau de bord allégé pour lire immédiatement le poids actuel, la tendance récente et l’écart à l’objectif.",
-        meta=f"Dernière mesure : {last_date.strftime('%d/%m/%Y')} · {len(df)} mesure(s) · objectif principal {target_weight:.1f} kg",
+        meta=f"Dernière mesure : {last_date.strftime('%d/%m/%Y')} · {len(df)} mesure(s) · objectif principal {_format_fr_kg(target_weight)}",
     )
 
     if daily_summary.get("valid"):
@@ -573,11 +613,16 @@ def main() -> None:
         effort_initial = float(effort_df["Poids (Kgs)"].iloc[0])
         effort_delta = effort_initial - current
         delta_icon = "📉" if effort_delta > 0 else "📈" if effort_delta < 0 else "➡️"
-        delta_text = f"-{effort_delta:.1f}" if effort_delta > 0 else f"+{abs(effort_delta):.1f}"
+        if effort_delta > 0:
+            delta_text = f"-{_format_fr_kg(effort_delta)}"
+        elif effort_delta < 0:
+            delta_text = f"+{_format_fr_kg(abs(effort_delta))}"
+        else:
+            delta_text = _format_fr_kg(0)
         st.info(
             f"📅 **Période d’effort actuelle** : depuis le {effort_start.strftime('%d/%m/%Y')} "
             f"({effort_days} jours, {effort_measurements} mesures) — "
-            f"{delta_icon} **{delta_text} kg** ({effort_initial:.1f} → {current:.1f} kg)"
+            f"{delta_icon} **{delta_text}** ({_format_fr_kg(effort_initial)} → {_format_fr_kg(current)})"
         )
 
     _render_main_weight_chart(df, target_weight, targets, effort_df, effort_start, effort_days, has_effort_period, trajectory_config)

@@ -912,6 +912,21 @@ def generate_insights_text(df: pd.DataFrame, target_weight: float) -> list[str]:
     return insights if insights else ["📊 Analyses en cours, continuez à saisir vos données."]
 
 
+
+def _format_fr_number(value: float, decimals: int = 1, *, trim_zeros: bool = True) -> str:
+    formatted = f"{float(value):.{decimals}f}"
+    if trim_zeros:
+        formatted = formatted.rstrip("0").rstrip(".")
+    return formatted.replace(".", ",")
+
+
+def _format_fr_kg(value: float, decimals: int = 1, *, trim_zeros: bool = True) -> str:
+    return f"{_format_fr_number(value, decimals=decimals, trim_zeros=trim_zeros)} kg"
+
+
+def _format_fr_weekly_pace(value: float, decimals: int = 1) -> str:
+    return f"{_format_fr_number(abs(value), decimals=decimals)} kg par semaine"
+
 # ---------------------------------------------------------------------------
 # 18b. Résumé actionnable : Situation / Interprétation / Action
 # ---------------------------------------------------------------------------
@@ -948,21 +963,30 @@ def generate_action_summary(df: pd.DataFrame, target_weight: float) -> dict[str,
     # ── SITUATION (factuelle) ──
     if effort["is_subset"]:
         if delta > 0:
-            situation = f"Vous avez repris le suivi le {start_str} — **-{delta:.1f} kg** en {effort_days} jours ({effort_measurements} mesures)."
+            situation = (
+                f"Depuis la reprise du suivi le {start_str}, vous avez perdu "
+                f"{_format_fr_kg(delta)} en {effort_days} jours, sur {effort_measurements} mesures."
+            )
         elif delta < 0:
-            situation = f"Vous avez repris le suivi le {start_str} — **+{abs(delta):.1f} kg** en {effort_days} jours ({effort_measurements} mesures)."
+            situation = (
+                f"Depuis la reprise du suivi le {start_str}, votre poids a augmenté de "
+                f"{_format_fr_kg(abs(delta))} en {effort_days} jours, sur {effort_measurements} mesures."
+            )
         else:
-            situation = f"Vous avez repris le suivi le {start_str} — poids stable ({effort_measurements} mesures)."
+            situation = (
+                f"Depuis la reprise du suivi le {start_str}, votre poids est resté stable "
+                f"sur {effort_measurements} mesures."
+            )
     else:
-        situation = f"Suivi continu depuis le {start_str} — {len(df)} mesures."
+        situation = f"Suivi continu depuis le {start_str}, avec {len(df)} mesures enregistrées."
 
     # ── INTERPRÉTATION (ce que ça veut dire) ──
     if is_startup:
         if delta > 1.5:
             interpretation = (
-                f"Cette perte rapide ({delta:.1f} kg en {effort_days}j) est très probablement de l'eau "
-                f"et de la vidange digestive. **Ce n'est pas de la graisse.** "
-                f"La vraie tendance se vérifiera à partir du jour 7-10."
+                f"Cette perte rapide ({_format_fr_kg(delta)} en {effort_days} jours) est probablement liée "
+                f"en partie aux variations d'eau et de digestion. La tendance réelle se confirmera "
+                f"à partir de 7 à 10 jours de suivi."
             )
         elif delta > 0:
             interpretation = (
@@ -971,7 +995,7 @@ def generate_action_summary(df: pd.DataFrame, target_weight: float) -> dict[str,
             )
         elif delta < 0:
             interpretation = (
-                f"Reprise de {abs(delta):.1f} kg en début de suivi. "
+                f"Votre poids a augmenté de {_format_fr_kg(abs(delta))} en début de suivi. "
                 f"Les premiers jours sont souvent bruités — attendez le jour 7 pour évaluer."
             )
         else:
@@ -981,13 +1005,25 @@ def generate_action_summary(df: pd.DataFrame, target_weight: float) -> dict[str,
         vel = weight_velocity(effort_df, windows=(7,))
         v7 = vel.get(7)
         if v7 is not None and v7 < -1.0:
-            interpretation = f"Perte soutenue de **{v7:.2f} kg/sem** — rythme rapide mais tenable si bien encadré."
+            interpretation = (
+                f"Votre rythme récent est d’environ {_format_fr_weekly_pace(v7)}. "
+                f"C’est une baisse soutenue : vérifiez qu’elle reste compatible avec votre énergie et votre régularité."
+            )
         elif v7 is not None and v7 < -0.3:
-            interpretation = f"Perte régulière de **{v7:.2f} kg/sem** — c'est le rythme idéal pour une perte durable."
+            interpretation = (
+                f"Votre rythme récent est d’environ {_format_fr_weekly_pace(v7)}. "
+                f"C’est une tendance progressive et plus facile à maintenir."
+            )
         elif v7 is not None and v7 < 0:
-            interpretation = f"Perte lente ({v7:.2f} kg/sem) mais dans la bonne direction. La patience paie."
+            interpretation = (
+                f"Votre poids baisse lentement, autour de {_format_fr_weekly_pace(v7)}. "
+                f"La tendance reste dans la bonne direction."
+            )
         elif v7 is not None and v7 > 0.5:
-            interpretation = f"Reprise récente de **+{v7:.2f} kg/sem**. Vérifiez si c'est du bruit ou une tendance."
+            interpretation = (
+                f"Votre poids remonte récemment, autour de {_format_fr_weekly_pace(v7)}. "
+                f"Vérifiez si cela correspond à quelques fluctuations ou à une tendance qui s’installe."
+            )
         elif v7 is not None and v7 > 0:
             interpretation = "Légère remontée récente — probablement des fluctuations naturelles."
         else:
@@ -998,25 +1034,28 @@ def generate_action_summary(df: pd.DataFrame, target_weight: float) -> dict[str,
 
     if is_startup:
         action = (
-            f"**Cette semaine** : pesez-vous chaque matin à jeun. "
-            f"L'objectif n'est pas la perte mais la régularité du suivi. "
-            f"Les analyses fiables arrivent au jour 7."
+            f"Cette semaine : pesez-vous chaque matin à jeun. "
+            f"L’objectif est de consolider la régularité du suivi avant d’interpréter la tendance."
         )
     elif remaining > 20:
+        next_step = int(current / 5) * 5
         action = (
-            f"**Prochain objectif** : passer sous {int(current / 5) * 5} kg. "
-            f"Concentrez-vous sur la constance du suivi quotidien."
+            f"Prochain objectif : passer sous {_format_fr_kg(next_step, trim_zeros=True)}. "
+            f"Continuez à suivre votre poids régulièrement pour confirmer la tendance."
         )
     elif remaining > 5:
         ms_target = int(current) if int(current) < current else int(current) - 1
         action = (
-            f"**Prochain palier** : {ms_target} kg (reste {current - ms_target:.1f} kg). "
-            f"Maintenez le rythme actuel."
+            f"Prochain palier : {_format_fr_kg(ms_target, trim_zeros=True)}. "
+            f"Il reste {_format_fr_kg(current - ms_target)} pour l’atteindre ; maintenez votre régularité."
         )
     elif remaining > 0:
-        action = f"**Vous approchez de l'objectif** ({remaining:.1f} kg restants). Gardez le cap !"
+        action = (
+            f"Vous approchez de l’objectif : il reste {_format_fr_kg(remaining)}. "
+            f"Gardez le cap et continuez le suivi régulier."
+        )
     else:
-        action = "**Objectif atteint !** Passez en mode maintien — l'enjeu est de rester stable."
+        action = "Objectif atteint. Passez en mode maintien : l’enjeu est de rester stable dans la durée."
 
     return {
         "situation": situation,

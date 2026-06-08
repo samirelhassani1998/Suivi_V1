@@ -179,20 +179,21 @@ def apply_global_theme() -> None:
         }
         .suivi-insight-card, .suivi-progress-panel {
             display: flex;
-            gap: 0.8rem;
+            gap: 0.65rem;
             align-items: flex-start;
-            padding: 1rem;
-            margin: 0.45rem 0;
+            padding: 0.68rem 0.78rem;
+            margin: 0.32rem 0;
             border: 1px solid var(--suivi-border);
-            border-radius: 20px;
+            border-radius: 16px;
             background: var(--suivi-card);
-            box-shadow: 0 10px 24px rgba(15,23,42,0.045);
+            box-shadow: 0 6px 16px rgba(15,23,42,0.035);
         }
-        .suivi-insight-card p, .suivi-progress-panel p {margin: 0.25rem 0 0 0; color: var(--suivi-muted); line-height: 1.45;}
-        .suivi-insight-icon {font-size: 1.35rem; line-height: 1;}
-        .suivi-insight-success {border-color: rgba(22,163,74,0.22); background: linear-gradient(135deg, #ffffff, var(--suivi-green-soft));}
-        .suivi-insight-warning {border-color: rgba(249,115,22,0.25); background: linear-gradient(135deg, #ffffff, var(--suivi-orange-soft));}
-        .suivi-insight-info {border-color: rgba(37,99,235,0.20); background: linear-gradient(135deg, #ffffff, var(--suivi-blue-soft));}
+        .suivi-insight-card strong {font-size: 0.93rem; line-height: 1.2;}
+        .suivi-insight-card p, .suivi-progress-panel p {margin: 0.16rem 0 0 0; color: var(--suivi-muted); line-height: 1.32; font-size: 0.92rem;}
+        .suivi-insight-icon {font-size: 1.08rem; line-height: 1.15; opacity: 0.9;}
+        .suivi-insight-success {border-left: 3px solid var(--suivi-green);}
+        .suivi-insight-warning {border-left: 3px solid var(--suivi-orange);}
+        .suivi-insight-info {border-left: 3px solid var(--suivi-blue);}
         .suivi-progress-panel {display: block;}
         .suivi-progress-top {display: flex; justify-content: space-between; gap: 1rem; align-items: center;}
         .suivi-progress-top span {font-size: 1.25rem; font-weight: 900; color: var(--suivi-blue);}
