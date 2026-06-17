@@ -48,7 +48,7 @@ from app.ui.components import (
 )
 
 
-TARGET_TRAJECTORY_CHART_KEY = "dashboard-target-trajectory-2kg-week"
+TARGET_TRAJECTORY_CHART_KEY = "dashboard-target-trajectory-1kg-week"
 
 
 def _df() -> pd.DataFrame:

@@ -32,8 +32,8 @@ def test_target_trajectory_starts_on_fixed_reference_point_and_stops_at_80():
     assert trajectory["Poids cible (kg)"].iloc[0] == DEFAULT_TARGET_TRAJECTORY_START_WEIGHT
     assert trajectory["Poids cible (kg)"].min() == DEFAULT_FINAL_TARGET_WEIGHT
     assert trajectory["Poids cible (kg)"].iloc[-1] == DEFAULT_FINAL_TARGET_WEIGHT
-    assert math.isclose(result["target_days"], 91.7)
-    assert result["eta_date"] == DEFAULT_TARGET_TRAJECTORY_START_DATE + pd.Timedelta(days=91.7)
+    assert math.isclose(result["target_days"], 183.4)
+    assert result["eta_date"] == DEFAULT_TARGET_TRAJECTORY_START_DATE + pd.Timedelta(days=183.4)
     assert trajectory["Date"].iloc[-1] == result["eta_date"]
 
 
@@ -62,9 +62,9 @@ def test_compare_to_target_trajectory_reports_gap_status_and_progress():
 
     result = compare_to_target_trajectory(df)
 
-    assert result["scheduled_weight"] == 104.2
-    assert math.isclose(result["gap_kg"], 0.8)
-    assert result["status"] == "retard"
+    assert result["scheduled_weight"] == 105.2
+    assert math.isclose(result["gap_kg"], -0.2)
+    assert result["status"] == "avance"
     assert math.isclose(result["progress_pct"], (106.2 - 105.0) / 26.2 * 100)
 
 
@@ -85,4 +85,4 @@ def test_target_trajectory_supports_explicit_business_parameters():
     assert result["final_target_weight"] == 85.0
     assert math.isclose(result["target_days"], 35.0)
     assert result["eta_date"] == pd.Timestamp("2026-08-05")
-    assert DEFAULT_WEEKLY_LOSS_TARGET == 2.0
+    assert DEFAULT_WEEKLY_LOSS_TARGET == 1.0
