@@ -1,224 +1,99 @@
-# Suivi V1 — Base Streamlit générique de suivi de poids
+# Suivi V1 — Application Streamlit de suivi de mesures
 
-## Présentation
+## 1. Présentation
 
-Suivi V1 est une application Streamlit générique destinée au suivi de mesures de poids. Elle fournit une base réutilisable pour charger des données, visualiser leur évolution, comparer les mesures à une trajectoire cible configurable, gérer un journal en session et produire des analyses descriptives ainsi que des projections indicatives.
+Suivi V1 est une application Streamlit générique permettant de suivre des mesures datées et d'analyser leur évolution dans le temps. Elle fournit un socle réutilisable pour charger des données, visualiser les tendances, comparer les mesures à des objectifs configurables et explorer des projections indicatives.
 
-Ce repository est conçu pour être adapté par chaque utilisateur ou équipe en remplaçant la configuration, les secrets et la source de données par ses propres valeurs locales ou privées.
+L'application permet notamment de :
 
-L’application peut être déployée sur Streamlit Community Cloud.
+- charger des mesures datées depuis une source CSV distante ou un fichier local ;
+- visualiser l'évolution des mesures sous forme de tableaux, graphiques et indicateurs ;
+- calculer des tendances, variations calendaires et moyennes mobiles ;
+- suivre des objectifs configurables et une trajectoire cible ;
+- produire des analyses descriptives sur la qualité, la régularité et la dynamique des données ;
+- explorer des projections indicatives à partir des mesures disponibles.
 
-## Principes de confidentialité
+## 2. Fonctionnalités
 
-Le README public ne doit contenir aucune donnée personnelle, aucune mesure réelle, aucune URL privée de données et aucun secret. Les données de suivi doivent rester dans une source privée ou dans des fichiers locaux non publiés.
+### Tableau de bord
 
-À ne jamais documenter publiquement :
+Le tableau de bord synthétise l'état courant des mesures chargées en session :
 
-- mesures de poids réelles ;
-- objectifs personnels réels ;
-- dates réelles de suivi ;
-- projections personnelles ;
-- données de santé ;
-- habitudes ou historiques individuels ;
-- URL privée d’export CSV ;
-- mot de passe ou secret Streamlit.
+- indicateurs principaux ;
+- variation récente ;
+- tendance globale ;
+- écart à l'objectif ou à la trajectoire cible ;
+- graphiques d'évolution ;
+- moyennes mobiles ;
+- objectifs et paliers ;
+- analyses secondaires de progression, volatilité et distribution.
 
-## Aperçu fonctionnel
+### Journal des mesures
 
-L’application fournit notamment :
+Le journal permet de gérer les données chargées dans la session Streamlit :
 
-- le suivi des mesures de poids dans le temps ;
-- l’affichage de variations récentes, de tendances et de moyennes mobiles ;
-- une progression vers un objectif final configurable ;
-- une trajectoire cible configurable et bornée par l’objectif final ;
-- un journal des mesures avec édition en session, validation et export CSV ;
-- un import CSV local en complément d’une source CSV distante optionnelle ;
-- des indicateurs de qualité des données, de régularité, de volatilité et d’anomalies ;
-- une détection de plateau ou de stagnation sur des fenêtres calendaires ;
-- des projections indicatives basées sur les mesures disponibles ;
-- des modèles statistiques avancés expérimentaux ;
-- une interface Streamlit configurée pour une consultation desktop ou mobile.
-
-## Trajectoire cible configurable
-
-La trajectoire cible repose sur des paramètres métier centralisés. Elle est indépendante de la dernière mesure saisie et sert de repère de comparaison.
-
-Les paramètres principaux sont :
-
-- date de départ ;
-- valeur initiale ;
-- rythme hebdomadaire cible ;
-- objectif final.
-
-Formule abstraite :
-
-```text
-target_value = start_value - elapsed_weeks × weekly_rate
-```
-
-La trajectoire est bornée par l’objectif final et s’arrête lorsque cet objectif est atteint. Aucune valeur concrète propre à une utilisation personnelle ne doit être publiée dans cette documentation.
-
-Exemple de configuration avec placeholders fictifs uniquement :
-
-```python
-TARGET_START_DATE = "YYYY-MM-DD"
-TARGET_START_WEIGHT = 0.0
-TARGET_WEEKLY_RATE = 0.0
-TARGET_FINAL_WEIGHT = 0.0
-```
-
-## Clarification des projections
-
-Le projet distingue trois notions :
-
-1. **Trajectoire cible configurable**
-   Repère déterministe issu des paramètres métier centralisés. Elle ne dépend pas de la tendance observée.
-
-2. **Projection selon les mesures**
-   Estimation calculée à partir de la tendance observée dans les données chargées. Elle peut être bloquée si le signal est trop fragile ou si la tendance ne va pas clairement vers l’objectif configuré.
-
-3. **Projection statistique avancée**
-   Résultat expérimental produit par des modèles statistiques ou de machine learning, par exemple SARIMAX, Auto-ARIMA ou ML quantile.
-
-Les projections restent indicatives et ne constituent pas une garantie. Les courbes visibles peuvent être contraintes pour s’arrêter lorsqu’elles atteignent l’objectif final configuré.
-
-## Pages de l’application
-
-La navigation expose les pages suivantes : **Dashboard**, **Journal**, **Prévisions**, **Insights** et **Paramètres**.
-
-### Dashboard
-
-Le tableau de bord présente les informations principales de suivi :
-
-- KPI de mesure actuelle, variations récentes, tendance et écart à la trajectoire ou à l’objectif ;
-- résumé du parcours chargé en session ;
-- insights automatiques non alarmistes ;
-- graphique d’évolution des mesures ;
-- moyennes mobiles calendaires ;
-- objectifs et paliers affichés ;
-- trajectoire cible configurable ;
-- analyses secondaires : effort actuel, vitesse, discipline, progression, volatilité, vue hebdomadaire, distribution et comparaisons.
-
-### Journal
-
-La page Journal permet de gérer les mesures chargées en session :
-
-- visualisation et édition des lignes via l’éditeur Streamlit ;
-- ajout ou suppression de lignes ;
-- validation des colonnes obligatoires, dates, poids invalides, doublons et valeurs potentiellement aberrantes ;
-- filtre de date pour aperçu ;
+- affichage tabulaire ;
+- édition des lignes ;
+- ajout ou suppression de mesures ;
+- validation des dates, valeurs, doublons et valeurs potentiellement aberrantes ;
+- filtrage par période ;
+- import CSV local ;
 - export CSV ;
-- conservation des colonnes personnalisées du CSV.
+- conservation des colonnes personnalisées.
 
-Les dates sont normalisées en dates pandas et les poids sont convertis en valeurs numériques. Les valeurs de poids doivent être positives pour être enregistrées sans erreur bloquante.
+### Variations calendaires
 
-### Prévisions
+Les variations sont calculées sur des fenêtres exprimées en jours calendaires. Cette approche tient compte de l'espacement réel entre les mesures et évite de confondre une fenêtre temporelle avec un simple nombre de lignes.
 
-La page Prévisions regroupe les estimations prospectives :
+### Moyennes mobiles
 
-- projection selon les mesures et scénarios optimiste, réaliste ou pessimiste ;
-- comparaison de modèles sur découpage chronologique ;
-- SARIMAX ;
-- Auto-ARIMA ;
-- ML quantile avec intervalle P10/P90 ;
-- analyses STL, ACF et PACF ;
-- leaderboard de baselines en backtest walk-forward ;
-- vitesses de variation sur fenêtres calendaires.
+L'application prend en charge des moyennes mobiles configurables afin de lisser les mesures et de rendre les tendances plus lisibles. Les paramètres de moyenne mobile peuvent être ajustés depuis les préférences de session.
 
-Les modèles avancés sont expérimentaux et leurs résultats doivent être interprétés avec prudence. Les courbes visibles de projection peuvent être contraintes par l’objectif final configuré.
+### Objectifs et paliers
 
-### Insights
+Les objectifs configurables servent de repères visuels et analytiques. Des paliers intermédiaires peuvent être affichés pour suivre la progression vers une valeur finale.
 
-La page Insights expose des analyses descriptives plus détaillées :
+### Trajectoire cible configurable
 
-- qualité des données ;
-- plateau et stagnation sur fenêtres calendaires ;
-- scores de discipline, cohérence et volatilité ;
-- segmentation en phases de perte, plateau ou reprise ;
-- ruptures de tendance ;
-- comparaisons par semaine ou par mois ;
-- patterns par jour de semaine ;
-- streaks ;
-- anomalies robustes et clustering.
+La trajectoire cible fournit un repère déterministe basé sur des paramètres métier centralisés. Elle est utilisée pour comparer les mesures observées à une progression attendue.
 
-Selon les données chargées, certaines analyses peuvent être limitées à une période récente ou appliquées à l’ensemble de l’historique disponible en session.
+### Qualité des données
 
-### Paramètres
+Le chargement et le journal signalent les problèmes de qualité courants :
 
-La page Paramètres permet de modifier des préférences stockées dans la session Streamlit :
+- colonnes obligatoires manquantes ;
+- dates invalides ;
+- valeurs non numériques ;
+- valeurs non positives ;
+- doublons de date ;
+- valeurs potentiellement aberrantes ;
+- irrégularité des mesures.
 
-- paliers ou objectifs affichés ;
-- type de moyenne mobile ;
-- fenêtre de moyenne mobile ;
-- stratégie de gestion des doublons journaliers ;
-- modèle par défaut ;
-- thème Plotly ;
-- diagnostic de session.
+### Plateau et stagnation
 
-Les valeurs affichées dans l’application dépendent de la configuration et des données chargées par l’utilisateur.
+Un moteur commun détecte les périodes de plateau ou de stagnation sur des fenêtres calendaires. Les résultats sont utilisés dans les pages d'analyse pour qualifier les phases d'évolution.
 
-## Fiabilité des calculs
+### Projections simples
 
-Plusieurs garde-fous limitent les interprétations trop optimistes :
+Les projections simples extrapolent une tendance observée à partir des mesures disponibles. Elles restent indicatives et peuvent être limitées lorsque les données sont insuffisantes, irrégulières ou incohérentes avec l'objectif configuré.
 
-- les pentes et vitesses sont calculées sur les jours calendaires réels, pas uniquement sur le nombre de lignes ;
-- les mesures irrégulières sont prises en compte via les dates ;
-- certaines analyses exigent un minimum de mesures avant d’afficher un résultat ;
-- l’application distingue les fenêtres en jours calendaires des fenêtres en nombre de mesures ;
-- les dates sont préparées pour éviter les problèmes de mélange timezone-aware et timezone-naive ;
-- la détection de plateau ou de stagnation passe par un moteur commun ;
-- l’alignement à la trajectoire cible utilise une tolérance configurable dans le code ;
-- les projections visibles peuvent être arrêtées à l’objectif final configuré ;
-- les lignes manquantes, les dates invalides, les poids invalides et les valeurs aberrantes potentielles sont signalés ou ignorés selon le contexte.
+### Modèles avancés
 
-Ces analyses ne sont pas des validations médicales. Elles servent à résumer des données de suivi et à produire des repères indicatifs.
+La page de prévisions inclut des modèles statistiques ou expérimentaux, notamment SARIMAX, Auto-ARIMA, ML quantile, analyses STL, ACF/PACF et comparaisons de baselines en backtest chronologique.
 
-## Sources et préparation des données
+### Import et export CSV
 
-### Sources
+Les données peuvent être chargées depuis une source CSV distante configurée ou importées localement depuis l'interface. Le journal permet également d'exporter les données de session au format CSV.
 
-L’application peut charger :
+### Authentification optionnelle
 
-- une source CSV distante configurée via les secrets Streamlit ou une valeur applicative ;
-- un CSV local importé depuis la sidebar, qui remplace les données de la session courante.
+Une protection par mot de passe peut être activée via les secrets Streamlit. Lorsqu'elle est désactivée, l'application démarre sans étape d'authentification.
 
-Aucune URL privée ou valeur de secret ne doit être publiée dans ce README.
-
-### Colonnes attendues
-
-Les colonnes obligatoires sont :
-
-- `Date` ;
-- `Poids (Kgs)`.
-
-Des colonnes optionnelles comme notes, calories, sommeil, hydratation ou condition de mesure peuvent être conservées si elles existent dans le CSV.
-
-### Nettoyage
-
-Le chargement et la validation appliquent les traitements suivants :
-
-- normalisation des noms de colonnes usuels vers `Date` et `Poids (Kgs)` ;
-- conversion des dates ;
-- conversion des poids avec virgule ou point décimal ;
-- suppression des lignes sans date ou poids valide lors du nettoyage strict ;
-- tri chronologique ;
-- conservation des colonnes additionnelles ;
-- détection des poids inférieurs ou égaux à zéro comme erreurs dans le journal ;
-- détection des doublons de date et valeurs potentiellement aberrantes.
-
-Selon la stratégie configurée, les doublons de date peuvent être résolus en gardant la dernière mesure, une moyenne journalière ou une médiane journalière.
-
-## Architecture du projet
+## 3. Architecture
 
 ```text
 Suivi_V1/
 ├── Suivi_V1.py
-├── README.md
-├── requirements.txt
-├── runtime.txt
-├── .streamlit/
-│   ├── config.toml
-│   └── secrets.example.toml
 ├── app/
 │   ├── auth.py
 │   ├── config.py
@@ -262,33 +137,122 @@ Suivi_V1/
     └── test_weight_summary.py
 ```
 
-### Fichiers principaux
+### Rôle des principaux modules
 
-- `Suivi_V1.py` : point d’entrée Streamlit, authentification, chargement des données, sidebar et navigation.
-- `app/config.py` : configuration applicative, colonnes attendues, valeurs par défaut et stratégies de doublons.
-- `app/auth.py` : protection optionnelle par mot de passe via secrets Streamlit.
-- `app/core/business.py` : paramètres métier centralisés et règles de trajectoire.
-- `app/core/target_trajectory.py` : construction et comparaison de la trajectoire cible.
-- `app/core/projection_constraints.py` : contraintes appliquées aux projections visibles.
-- `app/core/weight_summary.py` : synthèse du parcours, moyennes calendaires, variations et insights quotidiens.
-- `app/core/plateau.py` : moteur commun de détection de plateau ou stagnation.
-- `app/core/time_utils.py` : normalisation défensive des dates.
-- `app/core/formatting.py` : formatage français des dates, poids et nombres.
-- `app/core/analytics.py` : fonctions analytiques descriptives, scores, phases, scénarios et tendances.
-- `app/core/insights.py` : plateau, anomalies robustes et estimation d’ETA selon les mesures.
-- `app/core/forecasting.py` : prévisions SARIMAX et ML quantile.
-- `app/core/data.py` : nettoyage, validation, rapport qualité et résolution des doublons.
-- `app/core/session_state.py` : cycle de vie des données en session Streamlit.
-- `app/pages/` : pages visibles dans la navigation.
-- `app/ui/` : composants visuels et thème global.
-- `tests/` : tests automatisés couvrant le cœur analytique, les garde-fous et les pages Streamlit.
+- `Suivi_V1.py` : point d'entrée Streamlit, configuration de page, authentification, chargement des données, sidebar et navigation.
+- `app/core/business.py` : paramètres métier centralisés, objectif final et constantes de trajectoire.
+- `app/core/target_trajectory.py` : calcul de la trajectoire cible, alignement des mesures et comparaisons à la cible.
+- `app/core/projection_constraints.py` : contraintes d'affichage appliquées aux projections et arrêt à l'objectif configuré.
+- `app/core/plateau.py` : moteur de détection de plateau et de stagnation.
+- `app/core/time_utils.py` : normalisation défensive des dates et conversion des séries temporelles.
+- `app/core/formatting.py` : formatage des dates, valeurs et nombres pour l'interface.
+- `app/core/weight_summary.py` : synthèse des mesures, variations calendaires, moyennes mobiles et indicateurs de suivi.
+- `app/core/analytics.py` : fonctions descriptives, tendances, phases, scénarios, scores et comparaisons temporelles.
+- `app/core/insights.py` : analyses de plateau, anomalies robustes, ETA et synthèses analytiques.
+- `app/core/forecasting.py` : prévisions statistiques, modèles SARIMAX et modèles ML quantile.
+- `app/core/data.py` : chargement, nettoyage, validation, rapport qualité et résolution des doublons.
+- `app/core/session_state.py` : initialisation, lecture, écriture et réinitialisation des données en session Streamlit.
+- `app/pages/` : pages visibles de l'application : Dashboard, Journal, Prévisions, Insights et Paramètres.
+- `app/ui/` : composants d'interface, cartes, graphiques et thème visuel.
+- `tests/` : tests automatisés couvrant les calculs, garde-fous, composants Streamlit et comportements métier.
 
-## Installation locale
+## 4. Flux de données
 
-Commandes macOS/Linux :
+Le flux de données suit une chaîne simple :
+
+```text
+source CSV distante ou fichier local
+→ validation
+→ nettoyage
+→ normalisation
+→ données de session
+→ calculs analytiques
+→ visualisations
+```
+
+Étapes principales :
+
+1. La source CSV est chargée depuis une configuration distante ou un import local.
+2. Les colonnes attendues sont validées.
+3. Les dates et valeurs numériques sont converties dans des formats exploitables.
+4. Les lignes invalides sont signalées ou exclues selon le contexte d'utilisation.
+5. Les données sont triées chronologiquement et stockées dans la session Streamlit.
+6. Les modules analytiques calculent variations, tendances, moyennes, scores, projections et indicateurs.
+7. Les pages Streamlit affichent les résultats sous forme de KPI, tableaux, graphiques et messages d'analyse.
+
+## 5. Configuration métier
+
+La trajectoire cible utilise quatre paramètres :
+
+- une date de départ ;
+- une valeur initiale ;
+- un rythme hebdomadaire ;
+- un objectif final.
+
+Formule générique :
+
+```text
+target_value = start_value - elapsed_weeks × weekly_rate
+```
+
+La valeur cible est calculée à partir du nombre de semaines écoulées depuis la date de départ. La trajectoire est bornée par l'objectif final et s'arrête lorsque cet objectif est atteint.
+
+Exemple de paramètres génériques :
+
+```python
+TARGET_START_DATE = "YYYY-MM-DD"
+TARGET_START_WEIGHT = START_VALUE
+TARGET_WEEKLY_RATE = WEEKLY_RATE
+TARGET_FINAL_WEIGHT = FINAL_VALUE
+```
+
+## 6. Configuration technique
+
+### Secrets Streamlit
+
+Créer un fichier local de secrets :
+
+```text
+.streamlit/secrets.toml
+```
+
+Exemple de configuration :
+
+```toml
+data_url = "CSV_EXPORT_URL"
+
+[auth]
+required = true
+password = "APPLICATION_PASSWORD"
+```
+
+Le template `.streamlit/secrets.example.toml` peut servir de point de départ.
+
+### Configuration applicative
+
+Les paramètres applicatifs sont centralisés dans `app/config.py` et les constantes métier dans `app/core/business.py`. Les préférences modifiables depuis l'interface sont conservées dans la session Streamlit.
+
+### Colonnes CSV attendues
+
+Les colonnes obligatoires sont :
+
+- `Date` ;
+- `Poids (Kgs)`.
+
+Des colonnes additionnelles peuvent être présentes et conservées, par exemple des notes ou des attributs contextuels.
+
+## 7. Installation
+
+### Prérequis
+
+- Python compatible avec la version indiquée dans `runtime.txt` ;
+- `pip` ;
+- un environnement virtuel Python recommandé.
+
+### Installation locale
 
 ```bash
-git clone https://github.com/samirelhassani1998/Suivi_V1.git
+git clone REPOSITORY_URL
 cd Suivi_V1
 python -m venv .venv
 source .venv/bin/activate
@@ -303,49 +267,39 @@ Activation Windows :
 .venv\Scripts\activate
 ```
 
-## Configuration des secrets
+## 8. Tests
 
-Créer un fichier local non versionné :
-
-```text
-.streamlit/secrets.toml
-```
-
-à partir du template :
-
-```bash
-cp .streamlit/secrets.example.toml .streamlit/secrets.toml
-```
-
-Exemple avec placeholders uniquement :
-
-```toml
-data_url = "URL_D_EXPORT_CSV"
-
-[auth]
-required = true
-password = "VOTRE_MOT_DE_PASSE"
-```
-
-Ne jamais committer `.streamlit/secrets.toml` ni placer de vraie valeur dans la documentation.
-
-## Tests et vérifications
-
-Les tests automatisés sont basés sur `pytest` :
+Les tests automatisés utilisent `pytest` :
 
 ```bash
 pytest
 ```
 
-N’annoncez un résultat de test comme réussi qu’après l’avoir réellement exécuté dans l’environnement courant.
+Les tests couvrent notamment :
 
-## Déploiement
+- les fonctions analytiques ;
+- la trajectoire cible ;
+- les garde-fous de fiabilité ;
+- la synthèse des mesures ;
+- les utilitaires ;
+- le chargement des pages Streamlit.
 
-Le projet est conçu pour être exécuté avec Streamlit. Le runtime Python attendu par Streamlit Community Cloud est indiqué dans `runtime.txt`, et les dépendances Python sont listées dans `requirements.txt`.
+## 9. Déploiement
 
-Pour un déploiement public ou semi-public :
+L'application peut être déployée sur une plateforme compatible Streamlit.
 
-- configurer les secrets dans l’interface de la plateforme de déploiement ;
-- ne pas versionner de fichier contenant des secrets ;
-- protéger l’accès si les données chargées sont personnelles ou sensibles ;
-- vérifier que la documentation publique ne contient aucune donnée réelle.
+Étapes générales :
+
+1. publier le code applicatif ;
+2. définir les dépendances Python via `requirements.txt` ;
+3. définir la version Python via `runtime.txt` lorsque la plateforme le prend en charge ;
+4. configurer les secrets dans l'interface de déploiement ;
+5. définir la commande de lancement Streamlit :
+
+```bash
+streamlit run Suivi_V1.py
+```
+
+## 10. Limites d'interprétation
+
+Les analyses et projections fournies par l'application sont descriptives et indicatives. Elles dépendent de la qualité, de la régularité et du volume des mesures disponibles. Les modèles avancés doivent être interprétés comme des outils exploratoires plutôt que comme des garanties de résultat.
