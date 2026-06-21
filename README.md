@@ -1,80 +1,103 @@
-# Suivi V1 — Application Streamlit de suivi de poids
+# Suivi V1 — Base Streamlit générique de suivi de poids
 
 ## Présentation
 
-Suivi V1 est une application personnelle de suivi de poids développée avec Streamlit. Elle permet de consulter l’évolution des mesures, de suivre une trajectoire cible, d’éditer un journal de données et d’explorer des analyses descriptives ainsi que des projections indicatives.
+Suivi V1 est une application Streamlit générique destinée au suivi de mesures de poids. Elle fournit une base réutilisable pour charger des données, visualiser leur évolution, comparer les mesures à une trajectoire cible configurable, gérer un journal en session et produire des analyses descriptives ainsi que des projections indicatives.
 
-- Application déployée : <https://samirelhassani1998-suivi-v1-suivi-v1-knzeqy.streamlit.app/>
-- Repository : <https://github.com/samirelhassani1998/Suivi_V1>
+Ce repository est conçu pour être adapté par chaque utilisateur ou équipe en remplaçant la configuration, les secrets et la source de données par ses propres valeurs locales ou privées.
+
+L’application peut être déployée sur Streamlit Community Cloud.
+
+## Principes de confidentialité
+
+Le README public ne doit contenir aucune donnée personnelle, aucune mesure réelle, aucune URL privée de données et aucun secret. Les données de suivi doivent rester dans une source privée ou dans des fichiers locaux non publiés.
+
+À ne jamais documenter publiquement :
+
+- mesures de poids réelles ;
+- objectifs personnels réels ;
+- dates réelles de suivi ;
+- projections personnelles ;
+- données de santé ;
+- habitudes ou historiques individuels ;
+- URL privée d’export CSV ;
+- mot de passe ou secret Streamlit.
 
 ## Aperçu fonctionnel
 
 L’application fournit notamment :
 
-- le suivi du poids dans le temps avec poids réel, variations récentes et tendance ;
-- des moyennes mobiles calendaires, dont des vues sur plusieurs fenêtres ;
-- une progression vers l’objectif final et vers des paliers intermédiaires ;
-- une trajectoire cible officielle planifiée et plafonnée à l’objectif final ;
+- le suivi des mesures de poids dans le temps ;
+- l’affichage de variations récentes, de tendances et de moyennes mobiles ;
+- une progression vers un objectif final configurable ;
+- une trajectoire cible configurable et bornée par l’objectif final ;
 - un journal des mesures avec édition en session, validation et export CSV ;
-- un import CSV local en complément de la source Google Sheets configurée ;
+- un import CSV local en complément d’une source CSV distante optionnelle ;
 - des indicateurs de qualité des données, de régularité, de volatilité et d’anomalies ;
 - une détection de plateau ou de stagnation sur des fenêtres calendaires ;
-- des projections basées sur les mesures réellement observées ;
-- des modèles statistiques avancés expérimentaux : SARIMAX, Auto-ARIMA et ML quantile ;
-- une interface Streamlit configurée en mise en page large, utilisable sur desktop et mobile.
+- des projections indicatives basées sur les mesures disponibles ;
+- des modèles statistiques avancés expérimentaux ;
+- une interface Streamlit configurée pour une consultation desktop ou mobile.
 
-## Trajectoire cible officielle
+## Trajectoire cible configurable
 
-La trajectoire cible officielle est une règle métier fixe, indépendante de la dernière mesure saisie :
+La trajectoire cible repose sur des paramètres métier centralisés. Elle est indépendante de la dernière mesure saisie et sert de repère de comparaison.
 
-- date de départ : **26/05/2026** ;
-- poids de départ : **106,2 kg** ;
-- rythme cible : **baisse de 1 kg tous les 7 jours** ;
-- objectif final : **80 kg** ;
-- date cible planifiée : **25/11/2026** ;
-- aucune valeur de trajectoire n’existe avant le 26/05/2026 ;
-- la trajectoire ne descend jamais sous 80 kg ;
-- la série graphique s’arrête au point d’atteinte de 80 kg.
+Les paramètres principaux sont :
 
-Formule simplifiée :
+- date de départ ;
+- valeur initiale ;
+- rythme hebdomadaire cible ;
+- objectif final.
+
+Formule abstraite :
 
 ```text
-poids cible = 106,2 − (jours écoulés / 7)
+target_value = start_value - elapsed_weeks × weekly_rate
 ```
 
-avec un plancher à **80 kg**.
+La trajectoire est bornée par l’objectif final et s’arrête lorsque cet objectif est atteint. Aucune valeur concrète propre à une utilisation personnelle ne doit être publiée dans cette documentation.
+
+Exemple de configuration avec placeholders fictifs uniquement :
+
+```python
+TARGET_START_DATE = "YYYY-MM-DD"
+TARGET_START_WEIGHT = 0.0
+TARGET_WEEKLY_RATE = 0.0
+TARGET_FINAL_WEIGHT = 0.0
+```
 
 ## Clarification des projections
 
-Le projet distingue trois notions qui ne doivent pas être confondues :
+Le projet distingue trois notions :
 
-1. **Date cible planifiée**  
-   Date issue de la trajectoire officielle fixe décrite ci-dessus. Elle ne dépend pas de la tendance observée.
+1. **Trajectoire cible configurable**
+   Repère déterministe issu des paramètres métier centralisés. Elle ne dépend pas de la tendance observée.
 
-2. **Projection selon les mesures**  
-   Estimation calculée à partir de la tendance réellement observée dans les données disponibles. Elle peut être bloquée si le signal est trop fragile ou si la tendance ne va pas clairement vers l’objectif.
+2. **Projection selon les mesures**
+   Estimation calculée à partir de la tendance observée dans les données chargées. Elle peut être bloquée si le signal est trop fragile ou si la tendance ne va pas clairement vers l’objectif configuré.
 
-3. **Projection statistique avancée**  
+3. **Projection statistique avancée**
    Résultat expérimental produit par des modèles statistiques ou de machine learning, par exemple SARIMAX, Auto-ARIMA ou ML quantile.
 
-Les projections restent indicatives : elles ne constituent pas une garantie. Les projections visibles sont contraintes pour s’arrêter lorsqu’elles atteignent **80 kg** et aucune courbe visible ne doit afficher de valeur sous **80 kg**. Les sorties brutes des modèles peuvent toutefois rester utilisées en interne pour l’évaluation ou la construction des intervalles.
+Les projections restent indicatives et ne constituent pas une garantie. Les courbes visibles peuvent être contraintes pour s’arrêter lorsqu’elles atteignent l’objectif final configuré.
 
 ## Pages de l’application
 
-La navigation actuelle expose uniquement les pages suivantes : **Dashboard**, **Journal**, **Prévisions**, **Insights** et **Paramètres**.
+La navigation expose les pages suivantes : **Dashboard**, **Journal**, **Prévisions**, **Insights** et **Paramètres**.
 
-### Tableau de bord
+### Dashboard
 
 Le tableau de bord présente les informations principales de suivi :
 
-- KPI de poids actuel, variations récentes, tendance et écart à la trajectoire ou à l’objectif ;
-- résumé du parcours et lecture rapide ;
+- KPI de mesure actuelle, variations récentes, tendance et écart à la trajectoire ou à l’objectif ;
+- résumé du parcours chargé en session ;
 - insights automatiques non alarmistes ;
-- graphique d’évolution du poids réel ;
+- graphique d’évolution des mesures ;
 - moyennes mobiles calendaires ;
 - objectifs et paliers affichés ;
-- trajectoire cible officielle avec date cible planifiée ;
-- analyses secondaires dans des sections, onglets ou expanders : effort actuel, vitesse, discipline, progression, volatilité, vue hebdomadaire, distribution et comparaisons.
+- trajectoire cible configurable ;
+- analyses secondaires : effort actuel, vitesse, discipline, progression, volatilité, vue hebdomadaire, distribution et comparaisons.
 
 ### Journal
 
@@ -102,7 +125,7 @@ La page Prévisions regroupe les estimations prospectives :
 - leaderboard de baselines en backtest walk-forward ;
 - vitesses de variation sur fenêtres calendaires.
 
-Les modèles avancés sont expérimentaux et leurs résultats doivent être interprétés avec prudence. Les courbes visibles de projection sont contraintes pour ne pas descendre sous 80 kg et pour s’arrêter à l’atteinte de cet objectif.
+Les modèles avancés sont expérimentaux et leurs résultats doivent être interprétés avec prudence. Les courbes visibles de projection peuvent être contraintes par l’objectif final configuré.
 
 ### Insights
 
@@ -113,44 +136,42 @@ La page Insights expose des analyses descriptives plus détaillées :
 - scores de discipline, cohérence et volatilité ;
 - segmentation en phases de perte, plateau ou reprise ;
 - ruptures de tendance ;
-- meilleures et pires semaines ;
-- comparaison semaine/mois ;
+- comparaisons par semaine ou par mois ;
 - patterns par jour de semaine ;
 - streaks ;
 - anomalies robustes et clustering.
 
-Lorsque l’application détecte une période d’effort récente après une interruption, l’analyse peut être limitée à l’effort actuel ou appliquée à l’historique complet.
+Selon les données chargées, certaines analyses peuvent être limitées à une période récente ou appliquées à l’ensemble de l’historique disponible en session.
 
 ### Paramètres
 
-La page Paramètres permet de modifier les préférences stockées dans la session Streamlit :
+La page Paramètres permet de modifier des préférences stockées dans la session Streamlit :
 
-- taille en centimètres, utilisée notamment pour l’IMC ;
-- cinq paliers ou objectifs affichés ;
-- type de moyenne mobile : simple ou exponentielle ;
-- fenêtre de moyenne mobile, exprimée en nombre de mesures pour les fonctions de rolling classiques, tandis que le tableau de bord utilise aussi des moyennes calendaires dédiées ;
-- stratégie de gestion des doublons journaliers : garder la dernière mesure, moyenne journalière ou médiane journalière ;
+- paliers ou objectifs affichés ;
+- type de moyenne mobile ;
+- fenêtre de moyenne mobile ;
+- stratégie de gestion des doublons journaliers ;
 - modèle par défaut ;
 - thème Plotly ;
 - diagnostic de session.
 
-Le champ “Poids objectif final” affiché en haut du formulaire est désactivé. En pratique, l’objectif final de session est synchronisé avec l’Objectif 5 ; l’objectif officiel de la trajectoire métier reste **80 kg**.
+Les valeurs affichées dans l’application dépendent de la configuration et des données chargées par l’utilisateur.
 
 ## Fiabilité des calculs
 
 Plusieurs garde-fous limitent les interprétations trop optimistes :
 
 - les pentes et vitesses sont calculées sur les jours calendaires réels, pas uniquement sur le nombre de lignes ;
-- les mesures irrégulières sont prises en compte via les dates réelles ;
+- les mesures irrégulières sont prises en compte via les dates ;
 - certaines analyses exigent un minimum de mesures avant d’afficher un résultat ;
 - l’application distingue les fenêtres en jours calendaires des fenêtres en nombre de mesures ;
 - les dates sont préparées pour éviter les problèmes de mélange timezone-aware et timezone-naive ;
-- la détection de plateau/stagnation passe par un moteur commun ;
-- l’alignement à la trajectoire cible utilise une tolérance de **0,5 kg** ;
-- les projections visibles sont arrêtées à **80 kg** ;
+- la détection de plateau ou de stagnation passe par un moteur commun ;
+- l’alignement à la trajectoire cible utilise une tolérance configurable dans le code ;
+- les projections visibles peuvent être arrêtées à l’objectif final configuré ;
 - les lignes manquantes, les dates invalides, les poids invalides et les valeurs aberrantes potentielles sont signalés ou ignorés selon le contexte.
 
-Ces analyses ne sont pas des validations médicales. Elles servent à résumer les données personnelles de suivi et à produire des repères indicatifs.
+Ces analyses ne sont pas des validations médicales. Elles servent à résumer des données de suivi et à produire des repères indicatifs.
 
 ## Sources et préparation des données
 
@@ -158,10 +179,10 @@ Ces analyses ne sont pas des validations médicales. Elles servent à résumer l
 
 L’application peut charger :
 
-- une source Google Sheets exportée en CSV, configurée par `st.secrets["data_url"]` ou par une valeur par défaut du code ;
+- une source CSV distante configurée via les secrets Streamlit ou une valeur applicative ;
 - un CSV local importé depuis la sidebar, qui remplace les données de la session courante.
 
-Aucune URL privée ou secret ne doit être publié dans ce README.
+Aucune URL privée ou valeur de secret ne doit être publiée dans ce README.
 
 ### Colonnes attendues
 
@@ -177,7 +198,7 @@ Des colonnes optionnelles comme notes, calories, sommeil, hydratation ou conditi
 Le chargement et la validation appliquent les traitements suivants :
 
 - normalisation des noms de colonnes usuels vers `Date` et `Poids (Kgs)` ;
-- conversion des dates avec priorité au format jour/mois/année ;
+- conversion des dates ;
 - conversion des poids avec virgule ou point décimal ;
 - suppression des lignes sans date ou poids valide lors du nettoyage strict ;
 - tri chronologique ;
@@ -185,13 +206,14 @@ Le chargement et la validation appliquent les traitements suivants :
 - détection des poids inférieurs ou égaux à zéro comme erreurs dans le journal ;
 - détection des doublons de date et valeurs potentiellement aberrantes.
 
-Au chargement depuis Google Sheets, les doublons de date sont résolus automatiquement en gardant la dernière mesure du jour. Dans les paramètres, l’utilisateur peut choisir une stratégie de doublons en session : garder la dernière mesure, moyenne journalière ou médiane journalière.
+Selon la stratégie configurée, les doublons de date peuvent être résolus en gardant la dernière mesure, une moyenne journalière ou une médiane journalière.
 
 ## Architecture du projet
 
 ```text
 Suivi_V1/
 ├── Suivi_V1.py
+├── README.md
 ├── requirements.txt
 ├── runtime.txt
 ├── .streamlit/
@@ -245,11 +267,11 @@ Suivi_V1/
 - `Suivi_V1.py` : point d’entrée Streamlit, authentification, chargement des données, sidebar et navigation.
 - `app/config.py` : configuration applicative, colonnes attendues, valeurs par défaut et stratégies de doublons.
 - `app/auth.py` : protection optionnelle par mot de passe via secrets Streamlit.
-- `app/core/business.py` : constantes métier officielles, dont trajectoire cible, objectif final et règles de stagnation.
-- `app/core/target_trajectory.py` : construction et comparaison de la trajectoire cible officielle.
-- `app/core/projection_constraints.py` : arrêt des projections visibles au plancher de 80 kg.
+- `app/core/business.py` : paramètres métier centralisés et règles de trajectoire.
+- `app/core/target_trajectory.py` : construction et comparaison de la trajectoire cible.
+- `app/core/projection_constraints.py` : contraintes appliquées aux projections visibles.
 - `app/core/weight_summary.py` : synthèse du parcours, moyennes calendaires, variations et insights quotidiens.
-- `app/core/plateau.py` : moteur commun de détection de plateau/stagnation.
+- `app/core/plateau.py` : moteur commun de détection de plateau ou stagnation.
 - `app/core/time_utils.py` : normalisation défensive des dates.
 - `app/core/formatting.py` : formatage français des dates, poids et nombres.
 - `app/core/analytics.py` : fonctions analytiques descriptives, scores, phases, scénarios et tendances.
@@ -305,7 +327,7 @@ required = true
 password = "VOTRE_MOT_DE_PASSE"
 ```
 
-Ne jamais committer `.streamlit/secrets.toml` ni y placer de vraie valeur dans la documentation.
+Ne jamais committer `.streamlit/secrets.toml` ni placer de vraie valeur dans la documentation.
 
 ## Tests et vérifications
 
@@ -319,4 +341,11 @@ N’annoncez un résultat de test comme réussi qu’après l’avoir réellemen
 
 ## Déploiement
 
-Le projet est conçu pour être exécuté avec Streamlit. Le runtime Python attendu par Streamlit Cloud est indiqué dans `runtime.txt`, et les dépendances Python sont listées dans `requirements.txt`.
+Le projet est conçu pour être exécuté avec Streamlit. Le runtime Python attendu par Streamlit Community Cloud est indiqué dans `runtime.txt`, et les dépendances Python sont listées dans `requirements.txt`.
+
+Pour un déploiement public ou semi-public :
+
+- configurer les secrets dans l’interface de la plateforme de déploiement ;
+- ne pas versionner de fichier contenant des secrets ;
+- protéger l’accès si les données chargées sont personnelles ou sensibles ;
+- vérifier que la documentation publique ne contient aucune donnée réelle.
