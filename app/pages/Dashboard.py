@@ -21,6 +21,7 @@ from app.core.analytics import (
     weight_velocity,
     weight_volatility,
 )
+from app.core.business import STAGNATION_MIN_MEASUREMENTS
 from app.core.data import data_quality_report
 from app.core.formatting import format_fr_kg, format_fr_number, format_fr_unit
 from app.core.insights import detect_plateau
@@ -238,8 +239,7 @@ def _render_daily_overview(summary: dict, target_weight: float, trajectory_statu
         insight_card(
             "Trajectoire cible",
             (
-                f"Objectif {_format_fr_kg(trajectory_status['final_target_weight'])} estimé autour du "
-                f"{trajectory_status['eta_date'].strftime('%d/%m/%Y')}, sur la base d’une baisse de "
+                f"Date cible planifiée : {trajectory_status['eta_date'].strftime('%d/%m/%Y')} pour l’objectif {_format_fr_kg(trajectory_status['final_target_weight'])}, sur la base d’une baisse de "
                 f"{_format_fr_kg(trajectory_status['weekly_loss_target'])} par semaine depuis le "
                 f"{trajectory_status['start_date'].strftime('%d/%m/%Y')} à "
                 f"{_format_fr_kg(trajectory_status['start_weight'])}. "
@@ -320,8 +320,7 @@ def _render_advanced_kpis(
             f"🎯 Trajectoire cible : {_format_fr_kg(trajectory_status['scheduled_weight'])} attendus au "
             f"{trajectory_status['current_date'].strftime('%d/%m/%Y')}. "
             f"{_trajectory_position_sentence(trajectory_status)} "
-            f"Objectif {_format_fr_kg(trajectory_status['final_target_weight'])} estimé autour du "
-            f"{trajectory_status['eta_date'].strftime('%d/%m/%Y')}."
+            f"Date cible planifiée : {trajectory_status['eta_date'].strftime('%d/%m/%Y')}."
         )
     elif has_effort_period:
         effort_initial_weight = float(effort_df["Poids (Kgs)"].iloc[0])
@@ -358,7 +357,7 @@ def _render_advanced_kpis(
 
     plateau = detect_plateau(analysis_df, window=14)
     nb_mesures_plateau = plateau.get("nb_mesures", 0)
-    if nb_mesures_plateau >= 3:
+    if nb_mesures_plateau >= STAGNATION_MIN_MEASUREMENTS:
         if plateau["status"] == "plateau probable":
             alert_banner(f"➡️ Plateau probable détecté ({nb_mesures_plateau} mesures, pente={plateau['slope']:.3f})", "warning")
         elif plateau["status"] == "baisse active":

@@ -16,6 +16,8 @@ from app.core.analytics import prospective_scenarios, weight_velocity
 from app.core.evaluation import evaluate_baselines
 from app.core.features import build_features
 from app.core.forecasting import forecast_with_ml, forecast_with_sarimax
+from app.core.formatting import format_fr_date, format_fr_kg, format_fr_kg_per_week, format_fr_number
+from app.core.projection_constraints import constrain_interval_dataframe
 from app.core.insights import estimate_target_eta
 from app.core.session_state import get_filtered_or_working_data
 from app.core.targets import get_target_weights
@@ -65,6 +67,7 @@ def _model_comparison(df: pd.DataFrame) -> None:
 
 def _sarima_block(df: pd.DataFrame, horizon: int) -> None:
     st.subheader("SARIMA / SARIMAX")
+    st.caption("Projection statistique avancée — résultat expérimental basé sur le modèle sélectionné.")
     try:
         pred = forecast_with_sarimax(df, horizon=horizon)
         if pred.empty:
@@ -85,13 +88,15 @@ def _sarima_block(df: pd.DataFrame, horizon: int) -> None:
 
 def _auto_arima_block(df: pd.DataFrame, horizon: int) -> None:
     st.subheader("Auto-ARIMA")
+    st.caption("Projection statistique avancée — résultat expérimental basé sur le modèle sélectionné.")
     try:
         from pmdarima import auto_arima
 
         model = auto_arima(df["Poids (Kgs)"], seasonal=False, error_action="ignore", suppress_warnings=True)
         fc, conf = model.predict(n_periods=horizon, return_conf_int=True)
         dates = pd.date_range(df["Date"].max() + pd.Timedelta(days=1), periods=horizon, freq="D")
-        out = pd.DataFrame({"Date": dates, "prevision": fc, "borne_basse": conf[:, 0], "borne_haute": conf[:, 1]})
+        raw = pd.DataFrame({"Date": dates, "prevision": fc, "borne_basse": conf[:, 0], "borne_haute": conf[:, 1]})
+        out = constrain_interval_dataframe(raw)
         fig = go.Figure()
         fig.add_scatter(x=df["Date"], y=df["Poids (Kgs)"], name="Historique")
         fig.add_scatter(x=out["Date"], y=out["prevision"], name="Auto-ARIMA", line=dict(color="#8E44AD"))
@@ -107,6 +112,7 @@ def _auto_arima_block(df: pd.DataFrame, horizon: int) -> None:
 
 def _ml_quantile_block(df: pd.DataFrame, horizon: int) -> None:
     st.subheader("Prévision ML quantile")
+    st.caption("Projection statistique avancée — résultat expérimental basé sur le modèle sélectionné.")
     try:
         pred = forecast_with_ml(df, horizon=horizon, height_m=st.session_state.get("height_m", 1.82))
         if pred.empty:
@@ -168,12 +174,12 @@ def _scenarios_block(df: pd.DataFrame) -> None:
         with scenario_cols[i]:
             icon = scenario_icons.get(name, "⚪")
             st.markdown(f"### {icon} {name.title()}")
-            st.metric("Vitesse", f"{data['velocity_kg_week']:+.2f} kg/sem")
-            st.caption(f"Dans 30j : **{data['proj_30j']:.1f} kg**")
-            st.caption(f"Dans 60j : **{data['proj_60j']:.1f} kg**")
-            st.caption(f"Dans 90j : **{data['proj_90j']:.1f} kg**")
+            st.metric("Vitesse", format_fr_kg_per_week(data["velocity_kg_week"], decimals=2, sign=True))
+            for label, key in [("30j", "proj_30j"), ("60j", "proj_60j"), ("90j", "proj_90j")]:
+                if data.get(key) is not None:
+                    st.caption(f"Dans {label} : **{format_fr_kg(data[key])}**")
             if data.get("eta_date"):
-                st.success(f"Objectif ({target_weight} kg) : **{data['eta_date'].strftime('%d/%m/%Y')}** ({data['eta_days']}j)")
+                st.success(f"Projection selon vos mesures : objectif estimé autour du **{format_fr_date(data['eta_date'])}** ({data['eta_days']}j)")
             elif data.get("eta_days") == 0:
                 st.success("🎉 Objectif déjà atteint !")
             else:
@@ -188,11 +194,11 @@ def _scenarios_block(df: pd.DataFrame) -> None:
     current = float(df["Poids (Kgs)"].iloc[-1])
 
     for name, data in scenarios.items():
-        dates = [last_date, last_date + pd.Timedelta(days=30), last_date + pd.Timedelta(days=60), last_date + pd.Timedelta(days=90)]
-        values = [current, data["proj_30j"], data["proj_60j"], data["proj_90j"]]
+        dates = data.get("projection_dates", [last_date])
+        values = data.get("projection_values", [current])
         fig_proj.add_scatter(x=dates, y=values, name=f"{name.title()}", line=dict(color=colors.get(name, "#999"), dash="dash", width=2))
 
-    fig_proj.add_hline(y=target_weight, line_dash="dot", line_color="green", annotation_text=f"Objectif: {target_weight} kg")
+    fig_proj.add_hline(y=target_weight, line_dash="dot", line_color="green", annotation_text=f"Objectif: {format_fr_kg(target_weight, trim_zeros=True)}")
     fig_proj.update_layout(title="Projections à 90 jours", hovermode="x unified")
     st.plotly_chart(fig_proj, use_container_width=True)
 
@@ -243,15 +249,15 @@ def main() -> None:
     effort_df = effort["effort_df"] if effort["is_subset"] and len(effort["effort_df"]) >= 3 else None
     eta = estimate_target_eta(df, target_weight, effort_df=effort_df)
 
-    st.subheader("🎯 Estimation de date objectif")
+    st.subheader("🎯 Projection selon vos mesures")
     if eta.get("credible"):
         eta_date = eta.get("eta")
         if eta_date:
-            st.write(f"Date cible estimée : **{eta_date.date()}**")
+            st.write(f"Projection selon vos mesures : objectif estimé autour du **{format_fr_date(eta_date)}**")
             eta_min = eta.get("eta_min")
             eta_max = eta.get("eta_max")
             if eta_min and eta_max:
-                st.caption(f"Plage plausible: {eta_min.date()} → {eta_max.date()} | Confiance {eta.get('confidence', 0):.0%}")
+                st.caption(f"Plage plausible : {format_fr_date(eta_min)} → {format_fr_date(eta_max)} | Confiance {format_fr_number(eta.get('confidence', 0) * 100, 0)} %")
     else:
         alert_banner(str(eta.get("message", "Estimation indisponible")), "warning")
         st.caption("⚠️ L'ETA est volontairement bloqué quand le signal est jugé fragile par les garde-fous.")
@@ -263,7 +269,7 @@ def main() -> None:
         for name, sc in scenarios.items():
             icon = {"optimiste": "🟢", "réaliste": "🟡", "pessimiste": "🔴"}.get(name, "⚪")
             if sc.get("credible"):
-                st.caption(f"{icon} **{name.title()}** : objectif le {sc['eta'].strftime('%d/%m/%Y')} ({sc['days_remaining']}j) — rythme: {sc['kg_per_week']:+.3f} kg/sem")
+                st.caption(f"{icon} **{name.title()}** : Projection selon vos mesures autour du {format_fr_date(sc['eta'])} ({sc['days_remaining']}j) — rythme : {format_fr_kg_per_week(sc['kg_per_week'], decimals=3, sign=True)}")
             else:
                 st.caption(f"{icon} **{name.title()}** : {sc.get('message', 'N/A')} (pente: {sc.get('slope', 0):+.4f})")
 
@@ -277,7 +283,7 @@ def main() -> None:
         with vel_cols[i]:
             if v is not None:
                 color = "inverse"
-                kpi_card(f"Vitesse {w}j", f"{v:+.2f} kg/sem")
+                kpi_card(f"Vitesse {w}j", format_fr_kg_per_week(v, decimals=2, sign=True))
             else:
                 kpi_card(f"Vitesse {w}j", "N/A")
 

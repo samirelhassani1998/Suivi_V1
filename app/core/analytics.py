@@ -26,6 +26,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from app.core.projection_constraints import truncate_projection_at_floor
+
 from app.core.business import FINAL_TARGET_WEIGHT_KG
 
 
@@ -454,25 +456,28 @@ def prospective_scenarios(df: pd.DataFrame, target_weight: float) -> dict[str, d
         if velocity is None:
             continue
         floor = max(float(target_weight), FINAL_TARGET_WEIGHT_KG)
-        proj_30 = max(current + velocity * (30 / 7), floor)
-        proj_60 = max(current + velocity * (60 / 7), floor)
-        proj_90 = max(current + velocity * (90 / 7), floor)
+        projection_dates = [last_date, last_date + pd.Timedelta(days=30), last_date + pd.Timedelta(days=60), last_date + pd.Timedelta(days=90)]
+        raw_values = [current, current + velocity * (30 / 7), current + velocity * (60 / 7), current + velocity * (90 / 7)]
+        truncated = truncate_projection_at_floor(projection_dates, raw_values, floor)
+        points = list(zip(truncated.dates, truncated.values))
+        by_day = {int(round((d - last_date).total_seconds() / 86400)): v for d, v in points}
 
         eta_days = None
         eta_date = None
-        if velocity < -0.01 and current > target_weight:
-            remaining = current - target_weight
-            eta_days = int(remaining / abs(velocity) * 7)
-            eta_date = last_date + pd.Timedelta(days=eta_days)
+        if truncated.stop_date is not None:
+            eta_days = int(round((truncated.stop_date - last_date).total_seconds() / 86400))
+            eta_date = truncated.stop_date
         elif current <= target_weight:
             eta_days = 0
             eta_date = last_date
 
         scenarios[name] = {
             "velocity_kg_week": round(velocity, 3),
-            "proj_30j": round(proj_30, 2),
-            "proj_60j": round(proj_60, 2),
-            "proj_90j": round(proj_90, 2),
+            "proj_30j": round(by_day[30], 2) if 30 in by_day else None,
+            "proj_60j": round(by_day[60], 2) if 60 in by_day else None,
+            "proj_90j": round(by_day[90], 2) if 90 in by_day else None,
+            "projection_dates": truncated.dates,
+            "projection_values": truncated.values,
             "eta_days": eta_days,
             "eta_date": eta_date,
         }
