@@ -235,6 +235,74 @@ def detect_stagnation_periods(df: pd.DataFrame, window_days: int = 14, tolerance
                 periods[-1] = candidate
     return periods[-3:]
 
+
+def generate_daily_insights(df: pd.DataFrame, target_weight: float) -> list[str]:
+    """Generate short, non-alarmist insights for the dashboard."""
+    data = prepare_weight_series(df)
+    if data.empty:
+        return ["Aucune mesure valide n’est disponible pour générer des insights."]
+    if len(data) == 1:
+        return ["Ajoutez au moins une deuxième mesure pour calculer les variations."]
+
+    current = float(data[WEIGHT_COL].iloc[-1])
+    delta_7 = delta_since_days(data, 7)
+    delta_30 = delta_since_days(data, 30)
+    trend, explanation = classify_trend(delta_30, delta_7)
+    target_weight = float(target_weight)
+
+    insights: list[str] = []
+    recent_period = _current_tracking_period(data)
+    if len(recent_period) >= 2:
+        recent_delta = float(recent_period[WEIGHT_COL].iloc[-1] - recent_period[WEIGHT_COL].iloc[0])
+        recent_days = int((recent_period[DATE_COL].iloc[-1] - recent_period[DATE_COL].iloc[0]).days)
+        start_str = recent_period[DATE_COL].iloc[0].strftime("%d/%m/%Y")
+        if recent_period[DATE_COL].iloc[0] > data[DATE_COL].iloc[0]:
+            insights.append(
+                f"Depuis la reprise du {start_str}, votre poids affiche une {_format_delta_text(recent_delta)} "
+                f"en {recent_days} jours."
+            )
+
+    if not insights:
+        if delta_7.value is not None:
+            insights.append(f"Sur 7 jours, votre poids affiche une {_format_delta_text(delta_7.value)}.")
+        else:
+            insights.append(explanation)
+
+    if delta_30.value is not None:
+        if delta_30.value < -0.3:
+            insights.append(f"Sur 30 jours, la tendance reste orientée à la baisse ({format_fr_kg(abs(delta_30.value))}).")
+        elif delta_30.value > 0.3:
+            insights.append(f"Sur 30 jours, les dernières mesures montrent une hausse de {format_fr_kg(delta_30.value)}.")
+        else:
+            insights.append("Sur 30 jours, votre poids reste globalement stable.")
+    elif delta_7.value is not None and abs(delta_7.value) <= 0.25:
+        insights.append("Sur 7 jours, la variation reste faible : continuez le suivi pour confirmer la tendance.")
+
+    next_step = math.floor(current / 5) * 5
+    if current > next_step and next_step > target_weight:
+        insights.append(f"Prochain palier : passer sous {format_fr_kg(next_step, trim_zeros=True)}.")
+
+    gap = current - target_weight
+    if gap > 0:
+        insights.append(f"Il reste {format_fr_kg(gap)} avant l’objectif final configuré.")
+    else:
+        insights.append("L’objectif final configuré est atteint ou dépassé.")
+
+    has_significant_drop = (delta_7.value is not None and delta_7.value <= -0.3) or (
+        delta_30.value is not None and delta_30.value <= -0.5
+    )
+    periods = detect_stagnation_periods(data)
+    if periods and trend != "Baisse" and not has_significant_drop:
+        last = periods[-1]
+        insights.append(
+            f"Stabilité possible : {last['days']} jours avec une amplitude limitée à {format_fr_kg(last['amplitude'])}."
+        )
+
+    if trend == "À confirmer":
+        insights.append("Les calculs restent prudents car l’historique récent est encore limité.")
+    return insights[:5]
+
+
 def summarize_weight_journey(df: pd.DataFrame, target_weight: float) -> dict[str, Any]:
     """Build all daily dashboard metrics in one maintainable place."""
     data = prepare_weight_series(df)
