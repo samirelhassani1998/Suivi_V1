@@ -5,11 +5,19 @@ from typing import Any
 
 import pandas as pd
 
+from app.core.business import (
+    ALIGNMENT_TOLERANCE_KG,
+    FINAL_TARGET_WEIGHT_KG,
+    TARGET_TRAJECTORY_START_DATE,
+    TARGET_TRAJECTORY_START_WEIGHT_KG,
+    WEEKLY_LOSS_TARGET_KG,
+)
 
-DEFAULT_TARGET_TRAJECTORY_START_DATE = pd.Timestamp("2026-05-26")
-DEFAULT_TARGET_TRAJECTORY_START_WEIGHT = 106.2
-DEFAULT_WEEKLY_LOSS_TARGET = 1.0
-DEFAULT_FINAL_TARGET_WEIGHT = 80.0
+
+DEFAULT_TARGET_TRAJECTORY_START_DATE = TARGET_TRAJECTORY_START_DATE
+DEFAULT_TARGET_TRAJECTORY_START_WEIGHT = TARGET_TRAJECTORY_START_WEIGHT_KG
+DEFAULT_WEEKLY_LOSS_TARGET = WEEKLY_LOSS_TARGET_KG
+DEFAULT_FINAL_TARGET_WEIGHT = FINAL_TARGET_WEIGHT_KG
 
 DATE_COL = "Date"
 WEIGHT_COL = "Poids (Kgs)"
@@ -117,10 +125,16 @@ def build_target_trajectory(
     }
 
 
-def target_weight_on_date(start_weight: float, date: pd.Timestamp, config: TargetTrajectoryConfig) -> float:
-    """Return the scheduled target weight for a date, capped at final target."""
+def target_weight_on_date(start_weight: float, date: pd.Timestamp, config: TargetTrajectoryConfig) -> float | None:
+    """Return the scheduled target weight for a date, capped at final target.
+
+    No trajectory value exists before the fixed business start date.
+    """
     start_date = pd.Timestamp(config.start_date).normalize()
-    elapsed_days = max((pd.Timestamp(date).normalize() - start_date).days, 0)
+    current_date = pd.Timestamp(date).normalize()
+    if current_date < start_date:
+        return None
+    elapsed_days = (current_date - start_date).total_seconds() / 86400
     scheduled = float(start_weight) - (elapsed_days / 7.0 * config.weekly_loss_target)
     return max(scheduled, config.final_target_weight)
 
@@ -143,6 +157,8 @@ def compare_to_target_trajectory(
     current_date = pd.Timestamp(latest[DATE_COL])
     current_weight = float(latest[WEIGHT_COL])
     scheduled_weight = target_weight_on_date(float(trajectory["start_weight"]), current_date, config)
+    if scheduled_weight is None:
+        return {**trajectory, "available": False, "message": "Aucune trajectoire avant le 26/05/2026."}
     gap_kg = current_weight - scheduled_weight
 
     start_weight = float(trajectory["start_weight"])
@@ -152,12 +168,12 @@ def compare_to_target_trajectory(
     progress_pct = max(0.0, min(100.0, progress_pct))
 
     days_delta = gap_kg / (config.weekly_loss_target / 7.0) if config.weekly_loss_target > 0 else None
-    if gap_kg > 0.1:
-        status = "retard"
-    elif gap_kg < -0.1:
-        status = "avance"
+    if gap_kg > ALIGNMENT_TOLERANCE_KG:
+        status = "au-dessus de la trajectoire"
+    elif gap_kg < -ALIGNMENT_TOLERANCE_KG:
+        status = "en dessous de la trajectoire"
     else:
-        status = "aligné"
+        status = "aligné avec la trajectoire"
 
     return {
         **trajectory,
@@ -167,5 +183,6 @@ def compare_to_target_trajectory(
         "gap_kg": gap_kg,
         "days_delta": days_delta,
         "status": status,
+        "alignment_tolerance_kg": ALIGNMENT_TOLERANCE_KG,
         "progress_pct": progress_pct,
     }

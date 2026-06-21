@@ -26,6 +26,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from app.core.business import FINAL_TARGET_WEIGHT_KG
+
 
 # ---------------------------------------------------------------------------
 # 1. Vitesse de perte / gain (kg/semaine)
@@ -303,13 +305,14 @@ def _segment_block(data: pd.DataFrame, min_days: int = 7) -> list[Phase]:
     while i + window <= len(data):
         end_idx = min(i + window, len(data))
         chunk = data.iloc[i:end_idx]
-        x = np.arange(len(chunk))
-        slope = float(np.polyfit(x, chunk["Poids (Kgs)"], 1)[0])
+        x = (chunk["Date"] - chunk["Date"].min()).dt.total_seconds() / 86400
+        slope = float(np.polyfit(x, chunk["Poids (Kgs)"], 1)[0]) if float(x.max()) > 0 else 0.0
 
         # Étendre la phase tant que la tendance reste la même
         while end_idx < len(data):
             next_chunk = data.iloc[i:end_idx + 1]
-            next_slope = float(np.polyfit(np.arange(len(next_chunk)), next_chunk["Poids (Kgs)"], 1)[0])
+            next_x = (next_chunk["Date"] - next_chunk["Date"].min()).dt.total_seconds() / 86400
+            next_slope = float(np.polyfit(next_x, next_chunk["Poids (Kgs)"], 1)[0]) if float(next_x.max()) > 0 else 0.0
             if _same_trend(slope, next_slope):
                 end_idx += 1
                 slope = next_slope
@@ -317,9 +320,10 @@ def _segment_block(data: pd.DataFrame, min_days: int = 7) -> list[Phase]:
                 break
 
         chunk = data.iloc[i:end_idx]
-        if abs(slope) < 0.02:
+        slope_week = slope * 7
+        if abs(slope_week) < 0.14:
             phase_type = "plateau"
-        elif slope < 0:
+        elif slope_week < 0:
             phase_type = "perte"
         else:
             phase_type = "reprise"
@@ -328,7 +332,7 @@ def _segment_block(data: pd.DataFrame, min_days: int = 7) -> list[Phase]:
             start=chunk["Date"].iloc[0],
             end=chunk["Date"].iloc[-1],
             phase_type=phase_type,
-            slope=round(slope, 4),
+            slope=round(slope_week, 4),
             mean_weight=round(float(chunk["Poids (Kgs)"].mean()), 2),
             duration_days=int((chunk["Date"].iloc[-1] - chunk["Date"].iloc[0]).days) + 1,
         ))
@@ -449,9 +453,10 @@ def prospective_scenarios(df: pd.DataFrame, target_weight: float) -> dict[str, d
     for name, velocity in [("optimiste", best_v), ("réaliste", median_v), ("pessimiste", worst_v)]:
         if velocity is None:
             continue
-        proj_30 = current + velocity * (30 / 7)
-        proj_60 = current + velocity * (60 / 7)
-        proj_90 = current + velocity * (90 / 7)
+        floor = max(float(target_weight), FINAL_TARGET_WEIGHT_KG)
+        proj_30 = max(current + velocity * (30 / 7), floor)
+        proj_60 = max(current + velocity * (60 / 7), floor)
+        proj_90 = max(current + velocity * (90 / 7), floor)
 
         eta_days = None
         eta_date = None
