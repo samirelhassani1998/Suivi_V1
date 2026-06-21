@@ -120,3 +120,35 @@ def test_core_targets_compatibility_helper_still_accepts_mapping():
     session_state = {"target_weights": (100.0, 95.0, 90.0, 85.0)}
     assert get_target_weights(session_state) == DEFAULT_TARGETS
     assert session_state["target_weights"] == DEFAULT_TARGETS
+
+
+def test_irregular_eta_uses_real_calendar_days_not_measurement_indices():
+    from app.core.insights import estimate_target_eta
+    dates = pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-07", "2026-01-09", "2026-01-19", "2026-01-20", "2026-01-21"])
+    # exact -0.2 kg/day over irregular intervals
+    weights = [100 - 0.2 * (d - dates[0]).days for d in dates]
+    df = pd.DataFrame({"Date": dates, "Poids (Kgs)": weights})
+    eta = estimate_target_eta(df, target_weight=94.0)
+    assert eta["credible"] is True
+    assert abs(float(eta["slope_30d"]) - (-0.2)) < 0.001
+
+
+def test_plateau_handles_empty_single_null_unsorted_and_duplicates():
+    from app.core.insights import detect_plateau
+    assert detect_plateau(pd.DataFrame(columns=["Date", "Poids (Kgs)"]))["status"] == "indisponible"
+    one = pd.DataFrame({"Date": ["2026-01-01"], "Poids (Kgs)": [100.0]})
+    assert detect_plateau(one)["status"] == "indisponible"
+    messy = pd.DataFrame({"Date": ["2026-01-03", "2026-01-01", "2026-01-01", None], "Poids (Kgs)": [99.8, 100.0, None, 101.0]})
+    assert "status" in detect_plateau(messy, window=30)
+
+
+def test_prospective_scenarios_never_go_below_final_target():
+    from app.core.analytics import prospective_scenarios
+    dates = pd.date_range("2026-01-01", periods=40, freq="D")
+    df = pd.DataFrame({"Date": dates, "Poids (Kgs)": np.linspace(90, 81, len(dates))})
+    scenarios = prospective_scenarios(df, target_weight=80.0)
+    assert scenarios
+    for item in scenarios.values():
+        assert item["proj_30j"] >= 80.0
+        assert item["proj_60j"] >= 80.0
+        assert item["proj_90j"] >= 80.0

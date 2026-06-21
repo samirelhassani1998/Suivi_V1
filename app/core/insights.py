@@ -6,29 +6,69 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest
 
+from app.core.business import FINAL_TARGET_WEIGHT_KG, StagnationConfig
 
-def detect_plateau(df: pd.DataFrame, window: int = 14) -> dict[str, float | str]:
-    """Détecte un plateau sur les `window` derniers jours calendaires."""
-    if len(df) < 3:
-        return {"status": "données insuffisantes", "slope": 0.0, "volatility": 0.0}
-    data = df.sort_values("Date")
-    cutoff = data["Date"].max() - pd.Timedelta(days=window)
-    recent = data[data["Date"] >= cutoff]
-    if len(recent) < 3:
-        return {"status": "données insuffisantes", "slope": 0.0, "volatility": 0.0}
-    x = np.arange(len(recent))
-    slope = float(np.polyfit(x, recent["Poids (Kgs)"], 1)[0])
-    vol = float(recent["Poids (Kgs)"].std())
-    if abs(slope) < 0.03 and vol < 0.5:
-        status = "plateau probable"
-    elif slope <= -0.03:
+
+def _prepare_time_series(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "Date" not in df.columns or "Poids (Kgs)" not in df.columns:
+        return pd.DataFrame(columns=["Date", "Poids (Kgs)"])
+    data = df[["Date", "Poids (Kgs)"]].copy()
+    data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
+    data["Poids (Kgs)"] = pd.to_numeric(data["Poids (Kgs)"], errors="coerce")
+    return data.dropna(subset=["Date", "Poids (Kgs)"]).sort_values("Date").reset_index(drop=True)
+
+
+def _slope_kg_per_day(data: pd.DataFrame) -> float | None:
+    if len(data) < 2:
+        return None
+    x_days = (data["Date"] - data["Date"].min()).dt.total_seconds() / 86400
+    if float(x_days.max()) <= 0:
+        return None
+    return float(np.polyfit(x_days, data["Poids (Kgs)"], 1)[0])
+
+
+def detect_plateau(df: pd.DataFrame, window: int = 14) -> dict[str, object]:
+    """Détecte stagnation/plateau sur une fenêtre calendaire réelle."""
+    config = StagnationConfig(window_days=window)
+    data = _prepare_time_series(df)
+    if data.empty:
+        return {"status": "indisponible", "reason": "aucune mesure", "slope": 0.0, "slope_kg_week": 0.0, "nb_mesures": 0}
+    cutoff = data["Date"].max() - pd.Timedelta(days=config.window_days)
+    recent = data[data["Date"] >= cutoff].copy()
+    if len(recent) < config.min_measurements:
+        return {"status": "indisponible", "reason": "mesures insuffisantes", "slope": 0.0, "slope_kg_week": 0.0, "nb_mesures": len(recent), "period_days": config.window_days}
+    slope_day = _slope_kg_per_day(recent)
+    if slope_day is None:
+        return {"status": "indisponible", "reason": "durée insuffisante", "slope": 0.0, "slope_kg_week": 0.0, "nb_mesures": len(recent)}
+    slope_week = slope_day * 7
+    variation = float(recent["Poids (Kgs)"].iloc[-1] - recent["Poids (Kgs)"].iloc[0])
+    amplitude = float(recent["Poids (Kgs)"].max() - recent["Poids (Kgs)"].min())
+    if slope_week <= -config.max_abs_slope_kg_per_week or variation <= -config.max_amplitude_kg:
         status = "baisse active"
-    elif slope >= 0.03:
+        confidence = "moyenne"
+    elif abs(slope_week) <= config.max_abs_slope_kg_per_week and amplitude <= config.max_amplitude_kg:
+        status = "plateau probable"
+        confidence = "moyenne"
+    elif slope_week >= config.max_abs_slope_kg_per_week:
         status = "reprise de poids probable"
+        confidence = "moyenne"
     else:
         status = "signal mixte"
-    return {"status": status, "slope": slope, "volatility": vol, "nb_mesures": len(recent)}
-
+        confidence = "faible"
+    return {
+        "status": status,
+        "reason": None,
+        "period_start": recent["Date"].iloc[0],
+        "period_end": recent["Date"].iloc[-1],
+        "period_days": int((recent["Date"].iloc[-1] - recent["Date"].iloc[0]).days),
+        "nb_mesures": len(recent),
+        "variation_kg": variation,
+        "amplitude": amplitude,
+        "volatility": float(recent["Poids (Kgs)"].std()),
+        "slope": slope_week,
+        "slope_kg_week": slope_week,
+        "confidence": confidence,
+    }
 
 def detect_anomalies_robust(df: pd.DataFrame, use_iforest: bool = False) -> pd.DataFrame:
     out = df.copy()
@@ -53,9 +93,10 @@ def detect_anomalies_robust(df: pd.DataFrame, use_iforest: bool = False) -> pd.D
 
 
 def estimate_target_eta(df: pd.DataFrame, target_weight: float, effort_df: pd.DataFrame | None = None) -> dict[str, object]:
-    if len(df) < 7:
+    if len(_prepare_time_series(df)) < 7:
         return {"credible": False, "message": "Données insuffisantes"}
-    data = df.sort_values("Date")
+    data = _prepare_time_series(df)
+    target_weight = max(float(target_weight), FINAL_TARGET_WEIGHT_KG)
     current = float(data["Poids (Kgs)"].iloc[-1])
     last_date = data["Date"].max()
 
@@ -70,8 +111,9 @@ def estimate_target_eta(df: pd.DataFrame, target_weight: float, effort_df: pd.Da
         subset = data[data["Date"] >= cutoff]
         if len(subset) < 3:
             continue
-        x = np.arange(len(subset))
-        slope, intercept = np.polyfit(x, subset["Poids (Kgs)"], 1)
+        slope = _slope_kg_per_day(subset)
+        if slope is None:
+            continue
         if slope >= -0.005:
             scenarios[name] = {"slope": round(slope, 4), "credible": False,
                                "message": "Tendance insuffisante sur cette fenêtre"}
@@ -108,8 +150,9 @@ def estimate_target_eta(df: pd.DataFrame, target_weight: float, effort_df: pd.Da
             "scenarios": scenarios,
         }
 
-    x = np.arange(len(primary_data))
-    slope, intercept = np.polyfit(x, primary_data["Poids (Kgs)"], 1)
+    slope = _slope_kg_per_day(primary_data)
+    if slope is None:
+        return {"credible": False, "message": "Durée insuffisante pour calculer une projection.", "scenarios": scenarios}
 
     # Garde-fou 1 : tendance insuffisante
     if slope >= -0.005:

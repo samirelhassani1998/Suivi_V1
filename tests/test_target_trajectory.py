@@ -64,7 +64,7 @@ def test_compare_to_target_trajectory_reports_gap_status_and_progress():
 
     assert result["scheduled_weight"] == 105.2
     assert math.isclose(result["gap_kg"], -0.2)
-    assert result["status"] == "avance"
+    assert result["status"] == "aligné avec la trajectoire"
     assert math.isclose(result["progress_pct"], (106.2 - 105.0) / 26.2 * 100)
 
 
@@ -86,3 +86,21 @@ def test_target_trajectory_supports_explicit_business_parameters():
     assert math.isclose(result["target_days"], 35.0)
     assert result["eta_date"] == pd.Timestamp("2026-08-05")
     assert DEFAULT_WEEKLY_LOSS_TARGET == 1.0
+
+
+def test_target_weight_on_date_required_business_points():
+    from app.core.target_trajectory import target_weight_on_date, TargetTrajectoryConfig
+    config = TargetTrajectoryConfig()
+    assert target_weight_on_date(106.2, pd.Timestamp("2026-05-25"), config) is None
+    assert target_weight_on_date(106.2, pd.Timestamp("2026-05-26"), config) == 106.2
+    assert target_weight_on_date(106.2, pd.Timestamp("2026-06-02"), config) == 105.2
+    assert target_weight_on_date(106.2, pd.Timestamp("2026-06-09"), config) == 104.2
+    assert target_weight_on_date(106.2, pd.Timestamp("2027-01-01"), config) == 80.0
+
+
+def test_alignment_status_uses_half_kg_tolerance():
+    base = pd.Timestamp("2026-06-02")
+    cases = [(105.8, "au-dessus de la trajectoire"), (105.5, "aligné avec la trajectoire"), (104.9, "aligné avec la trajectoire"), (104.6, "en dessous de la trajectoire")]
+    for weight, status in cases:
+        df = pd.DataFrame({"Date": [base], "Poids (Kgs)": [weight]})
+        assert compare_to_target_trajectory(df)["status"] == status

@@ -22,6 +22,7 @@ from app.core.analytics import (
     weight_volatility,
 )
 from app.core.data import data_quality_report
+from app.core.formatting import format_fr_kg, format_fr_number, format_fr_unit
 from app.core.insights import detect_plateau
 from app.core.session_state import get_filtered_or_working_data
 from app.core.target_trajectory import (
@@ -72,7 +73,7 @@ def _add_target_lines(
     x_range = [x_values.min(), x_values.max()]
     for idx, target in enumerate(target_values, start=1):
         color = colors[(idx - 1) % len(colors)]
-        label = f"{label_prefix} {idx} : {float(target):.1f} kg"
+        label = f"{label_prefix} {idx} : {format_fr_kg(target)}"
         fig.add_scatter(
             x=x_range,
             y=[float(target), float(target)],
@@ -88,7 +89,7 @@ def _add_single_target_line(fig: go.Figure, target: float, x_values: pd.Series |
     """Add the single objective used by the default dashboard view."""
     if len(x_values) == 0:
         return
-    label = f"Objectif principal : {float(target):.1f} kg"
+    label = f"Objectif principal : {format_fr_kg(target)}"
     fig.add_scatter(
         x=[x_values.min(), x_values.max()],
         y=[float(target), float(target)],
@@ -100,31 +101,26 @@ def _add_single_target_line(fig: go.Figure, target: float, x_values: pd.Series |
 
 
 def _targets_caption(targets: tuple[float, ...]) -> str:
-    goals = " · ".join(f"Objectif {idx}: {target:.1f} kg" for idx, target in enumerate(targets, start=1))
+    goals = " · ".join(f"Objectif {idx}: {format_fr_kg(target)}" for idx, target in enumerate(targets, start=1))
     return f"🎯 Objectifs affichés : {goals}."
 
 
 def _format_delta(value: float | None, suffix: str = " kg") -> str:
-    if value is None:
-        return "N/A"
-    return f"{value:+.2f}{suffix}"
+    unit = suffix.strip()
+    return format_fr_unit(value, unit, decimals=2, sign=True)
 
 
 def _format_value(value: float | None, suffix: str = " kg") -> str:
-    if value is None:
-        return "N/A"
-    return f"{value:.2f}{suffix}"
+    unit = suffix.strip()
+    return format_fr_unit(value, unit, decimals=2)
 
 
 def _format_fr_number(value: float, decimals: int = 1, *, trim_zeros: bool = True) -> str:
-    formatted = f"{float(value):.{decimals}f}"
-    if trim_zeros:
-        formatted = formatted.rstrip("0").rstrip(".")
-    return formatted.replace(".", ",")
+    return format_fr_number(value, decimals=decimals, trim_zeros=trim_zeros)
 
 
 def _format_fr_kg(value: float, decimals: int = 1, *, trim_zeros: bool = True) -> str:
-    return f"{_format_fr_number(value, decimals=decimals, trim_zeros=trim_zeros)} kg"
+    return format_fr_kg(value, decimals=decimals, trim_zeros=trim_zeros)
 
 
 def _trajectory_gap_label(trajectory_status: dict) -> str:
@@ -132,9 +128,9 @@ def _trajectory_gap_label(trajectory_status: dict) -> str:
     status = trajectory_status.get("status")
     gap_text = _format_fr_kg(abs(gap), decimals=1)
 
-    if status == "avance":
+    if status == "en dessous de la trajectoire":
         return f"{gap_text} en dessous"
-    if status == "aligné":
+    if status == "aligné avec la trajectoire":
         return "Aligné"
     return f"{gap_text} au-dessus"
 
