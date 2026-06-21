@@ -8,6 +8,7 @@ from statsmodels.tsa.statespace.sarimax import SARIMAX
 
 from app.core.features import build_features
 from app.core.models import get_quantile_models
+from app.core.projection_constraints import constrain_interval_dataframe
 
 
 def _training_matrix(df: pd.DataFrame, height_m: float) -> tuple[pd.DataFrame, pd.Series]:
@@ -49,7 +50,8 @@ def forecast_with_ml(df: pd.DataFrame, horizon: int, height_m: float) -> pd.Data
         p90 = float(models["q90"].predict(Xf)[0])
         rows.append({"Date": d, "Poids (Kgs)": p50, "prevision": p50, "borne_basse": p10, "borne_haute": p90, "confiance": 0.8})
 
-    return pd.DataFrame(rows)[["Date", "prevision", "borne_basse", "borne_haute", "confiance"]]
+    raw = pd.DataFrame(rows)[["Date", "prevision", "borne_basse", "borne_haute", "confiance"]]
+    return constrain_interval_dataframe(raw)
 
 
 def forecast_with_sarimax(df: pd.DataFrame, horizon: int) -> pd.DataFrame:
@@ -60,10 +62,11 @@ def forecast_with_sarimax(df: pd.DataFrame, horizon: int) -> pd.DataFrame:
     pred = fitted.get_forecast(steps=horizon)
     ci = pred.conf_int(alpha=0.1)
     dates = pd.date_range(df["Date"].max() + pd.Timedelta(days=1), periods=horizon, freq="D")
-    return pd.DataFrame({
+    raw = pd.DataFrame({
         "Date": dates,
         "prevision": pred.predicted_mean.values,
         "borne_basse": ci.iloc[:, 0].values,
         "borne_haute": ci.iloc[:, 1].values,
         "confiance": 0.9,
     })
+    return constrain_interval_dataframe(raw)

@@ -7,18 +7,15 @@ import pandas as pd
 from sklearn.ensemble import IsolationForest
 
 from app.core.business import FINAL_TARGET_WEIGHT_KG, StagnationConfig
+from app.core.plateau import evaluate_plateau_window, prepare_plateau_series
 
 
 def _prepare_time_series(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty or "Date" not in df.columns or "Poids (Kgs)" not in df.columns:
-        return pd.DataFrame(columns=["Date", "Poids (Kgs)"])
-    data = df[["Date", "Poids (Kgs)"]].copy()
-    data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
-    data["Poids (Kgs)"] = pd.to_numeric(data["Poids (Kgs)"], errors="coerce")
-    return data.dropna(subset=["Date", "Poids (Kgs)"]).sort_values("Date").reset_index(drop=True)
+    return prepare_plateau_series(df)
 
 
 def _slope_kg_per_day(data: pd.DataFrame) -> float | None:
+    data = prepare_plateau_series(data)
     if len(data) < 2:
         return None
     x_days = (data["Date"] - data["Date"].min()).dt.total_seconds() / 86400
@@ -32,43 +29,9 @@ def detect_plateau(df: pd.DataFrame, window: int = 14) -> dict[str, object]:
     config = StagnationConfig(window_days=window)
     data = _prepare_time_series(df)
     if data.empty:
-        return {"status": "indisponible", "reason": "aucune mesure", "slope": 0.0, "slope_kg_week": 0.0, "nb_mesures": 0}
+        return evaluate_plateau_window(data, config)
     cutoff = data["Date"].max() - pd.Timedelta(days=config.window_days)
-    recent = data[data["Date"] >= cutoff].copy()
-    if len(recent) < config.min_measurements:
-        return {"status": "indisponible", "reason": "mesures insuffisantes", "slope": 0.0, "slope_kg_week": 0.0, "nb_mesures": len(recent), "period_days": config.window_days}
-    slope_day = _slope_kg_per_day(recent)
-    if slope_day is None:
-        return {"status": "indisponible", "reason": "durée insuffisante", "slope": 0.0, "slope_kg_week": 0.0, "nb_mesures": len(recent)}
-    slope_week = slope_day * 7
-    variation = float(recent["Poids (Kgs)"].iloc[-1] - recent["Poids (Kgs)"].iloc[0])
-    amplitude = float(recent["Poids (Kgs)"].max() - recent["Poids (Kgs)"].min())
-    if slope_week <= -config.max_abs_slope_kg_per_week or variation <= -config.max_amplitude_kg:
-        status = "baisse active"
-        confidence = "moyenne"
-    elif abs(slope_week) <= config.max_abs_slope_kg_per_week and amplitude <= config.max_amplitude_kg:
-        status = "plateau probable"
-        confidence = "moyenne"
-    elif slope_week >= config.max_abs_slope_kg_per_week:
-        status = "reprise de poids probable"
-        confidence = "moyenne"
-    else:
-        status = "signal mixte"
-        confidence = "faible"
-    return {
-        "status": status,
-        "reason": None,
-        "period_start": recent["Date"].iloc[0],
-        "period_end": recent["Date"].iloc[-1],
-        "period_days": int((recent["Date"].iloc[-1] - recent["Date"].iloc[0]).days),
-        "nb_mesures": len(recent),
-        "variation_kg": variation,
-        "amplitude": amplitude,
-        "volatility": float(recent["Poids (Kgs)"].std()),
-        "slope": slope_week,
-        "slope_kg_week": slope_week,
-        "confidence": confidence,
-    }
+    return evaluate_plateau_window(data[data["Date"] >= cutoff], config)
 
 def detect_anomalies_robust(df: pd.DataFrame, use_iforest: bool = False) -> pd.DataFrame:
     out = df.copy()
@@ -132,8 +95,8 @@ def estimate_target_eta(df: pd.DataFrame, target_weight: float, effort_df: pd.Da
     # Primary estimate: prefer effort period if available, else 30 calendar days
     primary_data = None
     primary_source = "30j"
-    if effort_df is not None and len(effort_df) >= 3:
-        primary_data = effort_df.sort_values("Date")
+    if effort_df is not None and len(_prepare_time_series(effort_df)) >= 3:
+        primary_data = _prepare_time_series(effort_df)
         primary_source = "effort"
     else:
         cutoff_30 = last_date - pd.Timedelta(days=30)
@@ -164,10 +127,10 @@ def estimate_target_eta(df: pd.DataFrame, target_weight: float, effort_df: pd.Da
         }
 
     # Garde-fou 2 : si < 7 mesures dans l'effort, signal trop fragile
-    if effort_df is not None and len(effort_df) < 7:
+    if effort_df is not None and len(_prepare_time_series(effort_df)) < 7:
         return {
             "credible": False,
-            "message": f"Phase de démarrage ({len(effort_df)} mesures) — l'ETA sera fiable à partir de 7 mesures.",
+            "message": f"Phase de démarrage ({len(_prepare_time_series(effort_df))} mesures) — l'ETA sera fiable à partir de 7 mesures.",
             "slope_30d": round(slope, 4),
             "source": primary_source,
             "scenarios": scenarios,
