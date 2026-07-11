@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import pandas as pd
 
+from app.core.time_utils import normalize_datetime_series
+
 
 def _canonical_for_change_detection(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     if "Date" in out.columns:
-        out["Date"] = pd.to_datetime(out["Date"], errors="coerce").dt.normalize()
+        out["Date"] = normalize_datetime_series(out["Date"], normalize_day=True)
     if "Poids (Kgs)" in out.columns:
         out["Poids (Kgs)"] = pd.to_numeric(out["Poids (Kgs)"].astype(str).str.replace(",", ".", regex=False), errors="coerce")
     return out.reset_index(drop=True)
