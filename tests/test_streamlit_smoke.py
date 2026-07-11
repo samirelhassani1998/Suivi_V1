@@ -84,7 +84,7 @@ def test_predictions_render_multiple_sections_even_if_submodel_fails():
     assert not at.exception
     rendered_text = " ".join([str(s.value) for s in at.subheader] + [str(m.value) for m in at.markdown])
     assert "Leaderboard" in rendered_text
-    assert "Estimation de date objectif" in rendered_text
+    assert "Projection selon vos mesures" in rendered_text
     tab_labels = [t.label for t in at.tabs]
     assert any("SARIMA" in t for t in tab_labels)
     assert any("Auto-ARIMA" in t for t in tab_labels)
@@ -123,8 +123,10 @@ def test_has_unsaved_changes_detects_real_dataframe_differences():
     added = pd.concat([saved, pd.DataFrame({"Date": [pd.Timestamp("2026-01-03")], "Poids (Kgs)": [79.6]})], ignore_index=True)
     assert has_unsaved_changes(added, saved) is True
     assert has_unsaved_changes(saved.iloc[:1], saved) is True
-    typed = pd.DataFrame({"Date": ["2026-01-01", "2026-01-02"], "Poids (Kgs)": ["80,0", "79,8"]})
+    typed = pd.DataFrame({"Date": ["2026-01-01", "2026-01-02"], "Poids (Kgs)": ["80", "79,8"]})
     assert has_unsaved_changes(typed, saved) is False
+    typed_decimal = pd.DataFrame({"Date": ["2026-01-01", "2026-01-02"], "Poids (Kgs)": ["80,0", "79,8"]})
+    assert has_unsaved_changes(typed_decimal, saved) is False
     french_date = pd.DataFrame({"Date": ["01/01/2026", "02/01/2026"], "Poids (Kgs)": [80, 79.8]})
     assert has_unsaved_changes(french_date, saved) is False
     november_date = pd.DataFrame({"Date": ["01/11/2026"], "Poids (Kgs)": [80]})

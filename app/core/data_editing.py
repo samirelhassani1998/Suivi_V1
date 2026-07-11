@@ -10,7 +10,12 @@ def _canonical_for_change_detection(df: pd.DataFrame) -> pd.DataFrame:
     if "Date" in out.columns:
         out["Date"] = normalize_datetime_series(out["Date"], normalize_day=True)
     if "Poids (Kgs)" in out.columns:
-        out["Poids (Kgs)"] = pd.to_numeric(out["Poids (Kgs)"].astype(str).str.replace(",", ".", regex=False), errors="coerce")
+        out["Poids (Kgs)"] = (
+            pd.to_numeric(
+                out["Poids (Kgs)"].astype(str).str.replace(",", ".", regex=False),
+                errors="coerce",
+            ).astype("float64")
+        )
     return out.reset_index(drop=True)
 
 
