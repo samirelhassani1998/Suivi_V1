@@ -16,17 +16,19 @@ def _empty_df() -> pd.DataFrame:
 
 
 def get_filtered_or_working_data() -> pd.DataFrame:
-    return st.session_state.get(
-        "filtered_data",
-        st.session_state.get("working_data", pd.DataFrame(columns=DEFAULT_WEIGHT_COLUMNS)),
-    )
+    """Retourne une copie de la vue filtrée ou des données de travail."""
+    if "filtered_data" in st.session_state and not st.session_state["filtered_data"].empty:
+        return st.session_state["filtered_data"].copy(deep=True)
+    return st.session_state.get("working_data", _empty_df()).copy(deep=True)
 
 
 def ensure_session_defaults() -> None:
-    """Initialise les clés de session une seule fois."""
+    """Initialise les clés de session une seule fois sans écraser les edits."""
     st.session_state.setdefault("source_data", _empty_df())
     st.session_state.setdefault("working_data", _empty_df())
     st.session_state.setdefault("filtered_data", _empty_df())
+    st.session_state.setdefault("analysis_data", _empty_df())
+    st.session_state.setdefault("data_quality", {})
 
     st.session_state.setdefault("target_weights", DEFAULT_TARGETS)
     get_target_weights(st.session_state)
@@ -35,29 +37,41 @@ def ensure_session_defaults() -> None:
     st.session_state.setdefault("theme", "plotly")
 
 
-def set_source_data(df: pd.DataFrame, source_name: str) -> None:
-    clean = df.copy()
-    st.session_state["source_data"] = clean
-    st.session_state["working_data"] = clean.copy()
-    st.session_state["filtered_data"] = clean.copy()
-    # compat héritage V2
-    st.session_state["raw_data"] = clean.copy()
+def set_source_data(df: pd.DataFrame, source_name: str, quality: dict | None = None) -> None:
+    """Remplace explicitement la source et réinitialise la copie éditable."""
+    clean = df.copy(deep=True)
+    st.session_state["source_data"] = clean.copy(deep=True)
+    st.session_state["working_data"] = clean.copy(deep=True)
+    st.session_state["filtered_data"] = clean.copy(deep=True)
+    st.session_state["analysis_data"] = _empty_df()
+    st.session_state["raw_data"] = clean.copy(deep=True)
     st.session_state["data_source"] = source_name
+    if quality is not None:
+        q = dict(quality)
+        q["source"] = source_name
+        st.session_state["data_quality"] = q
 
 
 def reset_working_to_source() -> None:
-    source = st.session_state.get("source_data", _empty_df())
-    st.session_state["working_data"] = source.copy()
-    st.session_state["filtered_data"] = source.copy()
-    st.session_state["raw_data"] = source.copy()
+    source = st.session_state.get("source_data", _empty_df()).copy(deep=True)
+    st.session_state["working_data"] = source.copy(deep=True)
+    st.session_state["filtered_data"] = source.copy(deep=True)
+    st.session_state["analysis_data"] = _empty_df()
+    st.session_state["raw_data"] = source.copy(deep=True)
 
 
 def set_working_data(df: pd.DataFrame) -> None:
-    work = df.copy()
-    st.session_state["working_data"] = work
-    st.session_state["filtered_data"] = work.copy()
-    st.session_state["raw_data"] = work.copy()
+    work = df.copy(deep=True)
+    st.session_state["working_data"] = work.copy(deep=True)
+    st.session_state["filtered_data"] = work.copy(deep=True)
+    st.session_state["analysis_data"] = _empty_df()
+    st.session_state["raw_data"] = work.copy(deep=True)
+
+
+def set_filtered_data(df: pd.DataFrame) -> None:
+    """Stocke une vue temporaire sans modifier source_data ni working_data."""
+    st.session_state["filtered_data"] = df.copy(deep=True)
 
 
 def get_working_data() -> pd.DataFrame:
-    return st.session_state.get("working_data", _empty_df()).copy()
+    return st.session_state.get("working_data", _empty_df()).copy(deep=True)

@@ -10,6 +10,7 @@ def _state(at: AppTest) -> None:
             "Date": pd.date_range("2026-01-01", periods=80),
             "Poids (Kgs)": [95 - i * 0.08 for i in range(80)],
             "Extra Col": [f"v{i}" for i in range(80)],
+            "Moment": ["08:00" for _ in range(80)],
         }
     )
     at.session_state["source_data"] = df.copy()
@@ -18,6 +19,7 @@ def _state(at: AppTest) -> None:
     at.session_state["raw_data"] = df.copy()
     at.session_state["target_weights"] = (100.0, 95.0, 90.0, 85.0, 80.0)
     at.session_state["fast_mode"] = True
+    at.session_state["data_quality"] = {"source": "test", "raw_rows": 80, "valid_rows": 80, "invalid_rows": 0, "duplicate_dates": 0, "columns_kept": len(df.columns), "extra_columns": ["Extra Col", "Moment"]}
 
 
 def test_dashboard_renders_kpis_and_sections():
@@ -36,6 +38,9 @@ def test_journal_loads_and_keeps_state_on_navigation():
     at.run(timeout=10)
     assert not at.exception
     assert len(at.dataframe) >= 1
+    assert len(at.data_editor) == 1
+    assert "Extra Col" in at.session_state["working_data"].columns
+    assert any("Qualité données" in str(info.value) for info in at.info)
     button_labels = [b.label for b in at.button]
     assert "Enregistrer les modifications" in button_labels
 
@@ -52,6 +57,7 @@ def test_journal_loads_and_keeps_state_on_navigation():
     at_back.run()
     assert not at_back.exception
     assert len(at_back.session_state["working_data"]) == 80
+    assert "Extra Col" in at_back.session_state["working_data"].columns
 
 
 def test_predictions_render_multiple_sections_even_if_submodel_fails():
