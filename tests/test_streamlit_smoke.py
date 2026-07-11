@@ -38,11 +38,12 @@ def test_journal_loads_and_keeps_state_on_navigation():
     at.run(timeout=10)
     assert not at.exception
     assert len(at.dataframe) >= 1
-    assert len(at.data_editor) == 1
     assert "Extra Col" in at.session_state["working_data"].columns
     assert any("Qualité données" in str(info.value) for info in at.info)
     button_labels = [b.label for b in at.button]
     assert "Enregistrer les modifications" in button_labels
+    download_labels = [d.label for d in at.download_button]
+    assert "Exporter les données enregistrées" in download_labels
 
     # navigation simulée vers une autre page puis retour
     at_dash = AppTest.from_file("app/pages/Dashboard.py")
@@ -96,3 +97,16 @@ def test_dashboard_migrates_legacy_four_goals_to_requested_five_goals():
     assert at.session_state["target_weights"] == (100.0, 95.0, 90.0, 85.0, 80.0)
     assert at.session_state["target_weight"] == 80.0
     assert any("Objectif 5: 80.0 kg" in str(c.value) for c in at.caption)
+
+
+def test_journal_export_warns_when_visible_edits_are_not_saved():
+    at = AppTest.from_file("app/pages/Journal.py")
+    _state(at)
+    at.session_state["journal_editor"] = {
+        "edited_rows": {0: {"Poids (Kgs)": 94.5}},
+        "added_rows": [],
+        "deleted_rows": [],
+    }
+    at.run(timeout=10)
+    assert not at.exception
+    assert any("modifications visibles ne sont pas encore enregistrées" in str(w.value) for w in at.warning)

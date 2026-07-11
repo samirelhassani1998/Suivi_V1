@@ -144,6 +144,30 @@ def validate_journal(df: pd.DataFrame) -> ValidationResult:
     return ValidationResult(errors=errors, warnings=warnings, cleaned=cleaned, quality=quality)
 
 
+def _moment_order_key(values: pd.Series) -> pd.Series:
+    """Return sortable moment keys; unknown values keep stable source order.
+
+    Text order: nuit < matin < midi < après-midi < soir. Clock-like values
+    (08:00, 20:00) are sorted by minutes since midnight.
+    """
+    text_order = {
+        "nuit": 0.0,
+        "matin": 8 * 60.0,
+        "midi": 12 * 60.0,
+        "apres-midi": 15 * 60.0,
+        "après-midi": 15 * 60.0,
+        "aprem": 15 * 60.0,
+        "soir": 20 * 60.0,
+    }
+    raw = values.astype(str).str.strip().str.lower()
+    mapped = raw.map(text_order)
+    clock = pd.to_datetime(raw, errors="coerce", format="%H:%M")
+    fallback_clock = pd.to_datetime(raw, errors="coerce")
+    minutes = clock.dt.hour * 60 + clock.dt.minute
+    minutes = minutes.where(clock.notna(), fallback_clock.dt.hour * 60 + fallback_clock.dt.minute)
+    return mapped.fillna(minutes)
+
+
 def _timestamp_sort_columns(data: pd.DataFrame) -> list[str]:
     for col in ["Timestamp", "Horodatage", "DateTime", "Datetime"]:
         if col in data.columns:
@@ -151,15 +175,20 @@ def _timestamp_sort_columns(data: pd.DataFrame) -> list[str]:
             return ["Date", "__suivi_time_key", "__suivi_order"]
     for col in ["Moment", "Heure", "Time"]:
         if col in data.columns:
-            data["__suivi_time_key"] = pd.to_datetime(data["Date"].dt.strftime("%Y-%m-%d") + " " + data[col].astype(str), errors="coerce")
+            data["__suivi_time_key"] = _moment_order_key(data[col])
             return ["Date", "__suivi_time_key", "__suivi_order"]
     return ["Date", "__suivi_order"]
 
 
 def resolve_duplicates(df: pd.DataFrame, strategy: str) -> pd.DataFrame:
-    data = df.copy()
+    data = df.copy(deep=True)
     if data.empty:
         return data
+    if "Date" in data.columns:
+        data["Date"] = _parse_dates(data["Date"])
+        data = data.dropna(subset=["Date"]).copy()
+    if data.empty:
+        return data.drop(columns=["__suivi_order", "__suivi_time_key"], errors="ignore")
     data["__suivi_order"] = np.arange(len(data))
     if strategy == "garder_la_derniere":
         sorted_data = data.sort_values(_timestamp_sort_columns(data), kind="mergesort")

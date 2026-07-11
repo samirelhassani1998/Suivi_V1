@@ -69,7 +69,7 @@ def fixed_start_measurement(_df: pd.DataFrame, config: TargetTrajectoryConfig) -
 
 
 def build_target_trajectory(
-    df: pd.DataFrame,
+    df: pd.DataFrame | None = None,
     config: TargetTrajectoryConfig | None = None,
 ) -> dict[str, Any]:
     """Build a capped target trajectory from a fixed date to the final target.
@@ -84,6 +84,9 @@ def build_target_trajectory(
     if config.weekly_loss_target <= 0:
         return {"available": False, "message": "Le rythme cible doit être positif."}
 
+    compat_dataframe_return = df is None
+    if df is None:
+        df = pd.DataFrame(columns=[DATE_COL, WEIGHT_COL])
     measurement = fixed_start_measurement(df, config)
 
     start_date = pd.Timestamp(config.start_date).normalize()
@@ -111,6 +114,8 @@ def build_target_trajectory(
             values[-1] = final_target
 
     trajectory = pd.DataFrame({DATE_COL: dates, "Poids cible (kg)": values})
+    if compat_dataframe_return:
+        return trajectory.rename(columns={"Poids cible (kg)": "Poids cible"})
     return {
         "available": True,
         "config": config,

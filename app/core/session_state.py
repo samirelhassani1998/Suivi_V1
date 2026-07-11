@@ -17,8 +17,8 @@ def _empty_df() -> pd.DataFrame:
 
 def get_filtered_or_working_data() -> pd.DataFrame:
     """Retourne une copie de la vue filtrée ou des données de travail."""
-    if "filtered_data" in st.session_state and not st.session_state["filtered_data"].empty:
-        return st.session_state["filtered_data"].copy(deep=True)
+    if st.session_state.get("filter_active", False):
+        return st.session_state.get("filtered_data", _empty_df()).copy(deep=True)
     return st.session_state.get("working_data", _empty_df()).copy(deep=True)
 
 
@@ -27,6 +27,7 @@ def ensure_session_defaults() -> None:
     st.session_state.setdefault("source_data", _empty_df())
     st.session_state.setdefault("working_data", _empty_df())
     st.session_state.setdefault("filtered_data", _empty_df())
+    st.session_state.setdefault("filter_active", False)
     st.session_state.setdefault("analysis_data", _empty_df())
     st.session_state.setdefault("data_quality", {})
 
@@ -42,7 +43,8 @@ def set_source_data(df: pd.DataFrame, source_name: str, quality: dict | None = N
     clean = df.copy(deep=True)
     st.session_state["source_data"] = clean.copy(deep=True)
     st.session_state["working_data"] = clean.copy(deep=True)
-    st.session_state["filtered_data"] = clean.copy(deep=True)
+    st.session_state["filtered_data"] = _empty_df()
+    st.session_state["filter_active"] = False
     st.session_state["analysis_data"] = _empty_df()
     st.session_state["raw_data"] = clean.copy(deep=True)
     st.session_state["data_source"] = source_name
@@ -55,7 +57,8 @@ def set_source_data(df: pd.DataFrame, source_name: str, quality: dict | None = N
 def reset_working_to_source() -> None:
     source = st.session_state.get("source_data", _empty_df()).copy(deep=True)
     st.session_state["working_data"] = source.copy(deep=True)
-    st.session_state["filtered_data"] = source.copy(deep=True)
+    st.session_state["filtered_data"] = _empty_df()
+    st.session_state["filter_active"] = False
     st.session_state["analysis_data"] = _empty_df()
     st.session_state["raw_data"] = source.copy(deep=True)
 
@@ -63,7 +66,8 @@ def reset_working_to_source() -> None:
 def set_working_data(df: pd.DataFrame) -> None:
     work = df.copy(deep=True)
     st.session_state["working_data"] = work.copy(deep=True)
-    st.session_state["filtered_data"] = work.copy(deep=True)
+    st.session_state["filtered_data"] = _empty_df()
+    st.session_state["filter_active"] = False
     st.session_state["analysis_data"] = _empty_df()
     st.session_state["raw_data"] = work.copy(deep=True)
 
@@ -71,6 +75,13 @@ def set_working_data(df: pd.DataFrame) -> None:
 def set_filtered_data(df: pd.DataFrame) -> None:
     """Stocke une vue temporaire sans modifier source_data ni working_data."""
     st.session_state["filtered_data"] = df.copy(deep=True)
+    st.session_state["filter_active"] = True
+
+
+def clear_filter() -> None:
+    """Désactive explicitement la vue filtrée."""
+    st.session_state["filtered_data"] = _empty_df()
+    st.session_state["filter_active"] = False
 
 
 def get_working_data() -> pd.DataFrame:

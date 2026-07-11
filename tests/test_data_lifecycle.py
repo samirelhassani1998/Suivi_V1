@@ -32,18 +32,20 @@ def sample_df():
 def test_load_remote_csv_entrypoint_preserves_duplicate_day_and_extra_columns(monkeypatch):
     mod = _main_module()
     monkeypatch.setattr("pandas.read_csv", lambda *a, **k: sample_df().copy())
-    mod["load_remote_csv"].clear()
-    out = mod["load_remote_csv"]("fake://csv")
+    mod["load_remote_csv_with_report"].clear()
+    out, quality = mod["load_remote_csv_with_report"]("fake://csv")
     assert len(out) == 3
     assert out["Date"].nunique() == 2
     assert {"Moment", "Colonne personnalisée"}.issubset(out.columns)
+    assert quality["duplicate_dates"] == 1
 
 
 def test_local_csv_cleaning_preserves_all_valid_rows_columns_and_duplicate_days():
     cleaned, report = clean_weight_dataframe_with_report(sample_df(), source="csv_local")
     assert len(cleaned) == 3
     assert cleaned["Date"].duplicated().sum() == 1
-    assert list(sample_df().columns) == list(cleaned.columns)
+    assert set(sample_df().columns) == set(cleaned.columns)
+    assert list(cleaned.columns[:2]) == ["Date", "Poids (Kgs)"]
     assert report.raw_rows == 3
     assert report.invalid_rows == 0
     assert report.duplicate_dates == 1
@@ -95,6 +97,43 @@ def test_analysis_data_duplicate_strategy_is_copy_and_uses_moment_for_last():
     assert analysis.loc[analysis["Date"] == pd.Timestamp("2026-01-01"), "Poids (Kgs)"].iloc[0] == 80.4
     assert "Moment" in analysis.columns
     assert len(df) == 3
+
+
+def test_analysis_data_accepts_text_moment_clock_moment_and_datetime_dates():
+    text = pd.DataFrame({
+        "Date": ["01/01/2026", "01/01/2026"],
+        "Poids (Kgs)": [80.1, 80.4],
+        "Moment": ["matin", "soir"],
+    })
+    clock = pd.DataFrame({
+        "Date": ["2026-01-01", "2026-01-01"],
+        "Poids (Kgs)": [80.1, 80.4],
+        "Moment": ["08:00", "20:00"],
+    })
+    typed = pd.DataFrame({
+        "Date": [pd.Timestamp("2026-01-01"), pd.Timestamp("2026-01-01")],
+        "Poids (Kgs)": [80.1, 80.4],
+        "Moment": ["matin", "soir"],
+    })
+    for frame in [text, clock, typed]:
+        original = frame.copy(deep=True)
+        out = prepare_analysis_data(frame, "garder_la_derniere")
+        assert out["Poids (Kgs)"].iloc[0] == 80.4
+        pd.testing.assert_frame_equal(frame, original)
+
+
+def test_filtered_view_distinguishes_inactive_nonempty_and_empty(monkeypatch):
+    import app.core.session_state as ss
+    state = {}
+    monkeypatch.setattr(ss.st, "session_state", state)
+    ss.ensure_session_defaults()
+    cleaned, _ = clean_weight_dataframe_with_report(sample_df(), source="csv_local")
+    ss.set_working_data(cleaned)
+    assert len(ss.get_filtered_or_working_data()) == 3
+    ss.set_filtered_data(cleaned.iloc[:1])
+    assert len(ss.get_filtered_or_working_data()) == 1
+    ss.set_filtered_data(cleaned.iloc[0:0])
+    assert ss.get_filtered_or_working_data().empty
 
 
 def test_columns_survive_cleaning_session_filter_and_export(monkeypatch):

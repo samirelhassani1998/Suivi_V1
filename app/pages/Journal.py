@@ -23,6 +23,10 @@ def _format_dates_for_display(df: pd.DataFrame) -> pd.DataFrame:
     return display
 
 
+def _dataframes_equal(left: pd.DataFrame, right: pd.DataFrame) -> bool:
+    return left.reset_index(drop=True).equals(right.reset_index(drop=True))
+
+
 def main() -> None:
     df = _ensure_df()
     page_hero(
@@ -72,8 +76,13 @@ def main() -> None:
                 set_working_data(report.cleaned)
                 st.success("Modifications enregistrées dans la session.")
     with c2:
+        if not _dataframes_equal(report.cleaned, get_working_data()):
+            st.warning(
+                "Des modifications visibles ne sont pas encore enregistrées.\n"
+                "Enregistrez-les avant l’export pour les inclure."
+            )
         st.download_button(
-            "Exporter CSV",
+            "Exporter les données enregistrées",
             data=get_working_data().to_csv(index=False).encode("utf-8"),
             file_name="journal_poids.csv",
             mime="text/csv",
@@ -84,4 +93,3 @@ def main() -> None:
 
 
 main()
-
