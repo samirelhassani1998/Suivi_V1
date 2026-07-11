@@ -9,6 +9,7 @@ from app.core.formatting import format_fr_date, format_fr_kg, format_fr_kg_per_w
 from app.core.insights import detect_plateau
 from app.core.plateau import evaluate_plateau_window
 from app.core.projection_constraints import constrain_interval_dataframe, truncate_projection_at_floor
+from app.core.time_utils import normalize_datetime_series
 from app.core.target_trajectory import build_target_trajectory
 from app.core.weight_summary import detect_stagnation_periods, projection_to_target
 
@@ -24,6 +25,20 @@ def test_target_trajectory_official_points_and_floor():
     assert (traj["Poids cible"] >= 80.0).all()
     assert traj["Date"].min() >= pd.Timestamp("2026-05-26")
     assert len(traj[traj["Poids cible"] == 80.0]) == 1
+
+
+def test_normalize_datetime_series_distinguishes_iso_and_french_dates():
+    parse = lambda value: normalize_datetime_series([value]).iloc[0]
+    assert parse("2026-01-11") == pd.Timestamp("2026-01-11")
+    assert parse("11/01/2026") == pd.Timestamp("2026-01-11")
+    assert parse("01/11/2026") == pd.Timestamp("2026-11-01")
+    assert parse(pd.Timestamp("2026-01-11")) == pd.Timestamp("2026-01-11")
+    aware = parse(pd.Timestamp("2026-01-11 01:00", tz="Europe/Paris"))
+    assert aware == pd.Timestamp("2026-01-11 00:00")
+    mixed = pd.Series(["2026-01-11", "01/11/2026"], index=["iso", "fr"])
+    parsed = normalize_datetime_series(mixed)
+    assert parsed.index.tolist() == ["iso", "fr"]
+    assert parsed.tolist() == [pd.Timestamp("2026-01-11"), pd.Timestamp("2026-11-01")]
 
 
 def test_truncate_projection_cases():
@@ -42,6 +57,27 @@ def test_truncate_projection_cases():
     assert truncate_projection_at_floor([], []).values == []
     aware = truncate_projection_at_floor([pd.Timestamp("2026-01-01", tz="Europe/Paris"), pd.Timestamp("2026-01-02", tz="UTC")], [82, 79])
     assert aware.values[-1] == 80.0
+
+
+def test_prospective_scenario_projection_contracts():
+    cases = [
+        (np.linspace(90, 81, 40), True),
+        (np.linspace(90, 86, 40), True),
+        (np.linspace(90, 89, 40), False),
+        (np.linspace(79, 78, 40), True),
+    ]
+    for weights, may_reach in cases:
+        df = pd.DataFrame({"Date": pd.date_range("2026-01-01", periods=len(weights)), "Poids (Kgs)": weights})
+        scenarios = prospective_scenarios(df, target_weight=80.0)
+        assert scenarios
+        for data in scenarios.values():
+            for key in ["proj_30j", "proj_60j", "proj_90j"]:
+                assert data[key] is not None
+                assert data[key] >= 80.0
+            assert None not in data["projection_values"]
+            if data["eta_date"] is not None:
+                assert data["projection_dates"][-1] == data["eta_date"]
+                assert data["projection_values"][-1] == 80.0
 
 
 def test_scenario_stops_at_j47_without_horizontal_tail():
@@ -71,8 +107,13 @@ def test_plateau_shared_engine_thresholds_and_duplicate_dates():
     assert detect_plateau(three)["nb_mesures"] == 3
     assert detect_plateau(three)["status"] == "indisponible"
     assert STAGNATION_MIN_MEASUREMENTS == 4
-    four = pd.DataFrame({"Date": pd.date_range("2026-01-01", periods=4, freq="5D"), "Poids (Kgs)": [90, 90.1, 90.0, 90.1]})
+    four = pd.DataFrame({"Date": pd.date_range("2026-01-01", periods=4, freq="4D"), "Poids (Kgs)": [90, 90.1, 90.0, 90.1]})
     assert detect_plateau(four)["status"] == evaluate_plateau_window(four)["status"]
+    spanning = pd.DataFrame({"Date": pd.date_range("2026-01-01", periods=4, freq="5D"), "Poids (Kgs)": [90, 90.1, 90.0, 90.1]})
+    spanning_res = detect_plateau(spanning, window=14)
+    assert spanning_res["status"] == "indisponible"
+    assert spanning_res["reason"] == "mesures insuffisantes"
+    assert spanning_res["nb_mesures"] == 3
     falling = pd.DataFrame({"Date": pd.date_range("2026-01-01", periods=4, freq="5D"), "Poids (Kgs)": [90, 89, 88, 87]})
     assert detect_plateau(falling)["status"] != "plateau probable"
     dup = pd.DataFrame({"Date": ["2026-01-01", "2026-01-01"], "Poids (Kgs)": [90, 90]})

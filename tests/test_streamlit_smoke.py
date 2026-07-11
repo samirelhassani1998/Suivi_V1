@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import pandas as pd
+
+from app.core.formatting import format_fr_kg
+from app.core.data_editing import has_unsaved_changes
 from streamlit.testing.v1 import AppTest
 
 
@@ -27,8 +30,12 @@ def test_dashboard_renders_kpis_and_sections():
     _state(at)
     at.run(timeout=10)
     assert not at.exception
-    assert any("Dashboard" in h.value for h in at.title)
+    markdown_values = [str(m.value) for m in at.markdown]
+    assert any("Dashboard" in value for value in markdown_values)
     assert len(at.metric) >= 3
+    assert len(at.plotly_chart) >= 1
+    chart_text = " ".join(str(chart.value) for chart in at.plotly_chart)
+    assert "Poids" in chart_text
     assert any("objectif" in str(c.value).lower() for c in at.caption)
 
 
@@ -66,9 +73,9 @@ def test_predictions_render_multiple_sections_even_if_submodel_fails():
     _state(at)
     at.run(timeout=10)
     assert not at.exception
-    subheaders = [s.value for s in at.subheader]
-    assert any("Leaderboard" in s for s in subheaders)
-    assert any("Estimation de date objectif" in s for s in subheaders)
+    rendered_text = " ".join([str(s.value) for s in at.subheader] + [str(m.value) for m in at.markdown])
+    assert "Leaderboard" in rendered_text
+    assert "Estimation de date objectif" in rendered_text
     tab_labels = [t.label for t in at.tabs]
     assert any("SARIMA" in t for t in tab_labels)
     assert any("Auto-ARIMA" in t for t in tab_labels)
@@ -96,17 +103,18 @@ def test_dashboard_migrates_legacy_four_goals_to_requested_five_goals():
     assert not at.exception
     assert at.session_state["target_weights"] == (100.0, 95.0, 90.0, 85.0, 80.0)
     assert at.session_state["target_weight"] == 80.0
-    assert any("Objectif 5: 80.0 kg" in str(c.value) for c in at.caption)
+    assert any(f"Objectif 5: {format_fr_kg(80.0)}" in str(c.value) for c in at.caption)
 
 
-def test_journal_export_warns_when_visible_edits_are_not_saved():
-    at = AppTest.from_file("app/pages/Journal.py")
-    _state(at)
-    at.session_state["journal_editor"] = {
-        "edited_rows": {0: {"Poids (Kgs)": 94.5}},
-        "added_rows": [],
-        "deleted_rows": [],
-    }
-    at.run(timeout=10)
-    assert not at.exception
-    assert any("modifications visibles ne sont pas encore enregistrées" in str(w.value) for w in at.warning)
+def test_has_unsaved_changes_detects_real_dataframe_differences():
+    saved = pd.DataFrame({"Date": [pd.Timestamp("2026-01-01"), pd.Timestamp("2026-01-02")], "Poids (Kgs)": [80.0, 79.8]})
+    assert has_unsaved_changes(saved.copy(), saved) is False
+    changed = saved.copy(); changed.loc[0, "Poids (Kgs)"] = 80.2
+    assert has_unsaved_changes(changed, saved) is True
+    added = pd.concat([saved, pd.DataFrame({"Date": [pd.Timestamp("2026-01-03")], "Poids (Kgs)": [79.6]})], ignore_index=True)
+    assert has_unsaved_changes(added, saved) is True
+    assert has_unsaved_changes(saved.iloc[:1], saved) is True
+    typed = pd.DataFrame({"Date": ["2026-01-01", "2026-01-02"], "Poids (Kgs)": ["80,0", "79,8"]})
+    assert has_unsaved_changes(typed, saved) is False
+    reindexed = saved.copy(); reindexed.index = [10, 11]
+    assert has_unsaved_changes(reindexed, saved) is False

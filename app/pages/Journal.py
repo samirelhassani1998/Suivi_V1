@@ -4,6 +4,7 @@ import pandas as pd
 import streamlit as st
 
 from app.core.data import validate_journal
+from app.core.data_editing import has_unsaved_changes
 from app.core.session_state import get_working_data, set_working_data
 from app.ui.components import alert_banner, empty_state, page_hero, section_header
 
@@ -23,9 +24,9 @@ def _format_dates_for_display(df: pd.DataFrame) -> pd.DataFrame:
     return display
 
 
-def _dataframes_equal(left: pd.DataFrame, right: pd.DataFrame) -> bool:
-    return left.reset_index(drop=True).equals(right.reset_index(drop=True))
 
+def _dataframes_equal(left: pd.DataFrame, right: pd.DataFrame) -> bool:
+    return not has_unsaved_changes(left, right)
 
 def main() -> None:
     df = _ensure_df()

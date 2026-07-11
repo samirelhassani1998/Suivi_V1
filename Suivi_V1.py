@@ -20,17 +20,15 @@ def load_remote_csv_with_report(url: str) -> tuple[pd.DataFrame, dict]:
     return cleaned, quality.to_dict()
 
 
-load_remote_csv = load_remote_csv_with_report
-
+def load_remote_csv(url: str) -> pd.DataFrame:
+    df, _ = load_remote_csv_with_report(url)
+    return df.copy(deep=True)
 
 
 def _show_quality_message() -> None:
-    if st.session_state.get("_quality_message_rendered", False):
-        return
     q = st.session_state.get("data_quality", {})
     if not q:
         return
-    st.session_state["_quality_message_rendered"] = True
     st.info(
         f"Qualité données ({q.get('source', 'n/a')}): "
         f"{q.get('raw_rows', 0)} lues, {q.get('valid_rows', 0)} valides conservées, "
@@ -62,7 +60,6 @@ def init_data_once() -> None:
 
 
 def sidebar_controls() -> None:
-    st.session_state["_quality_message_rendered"] = False
     st.sidebar.markdown(
         """
         <div class="suivi-sidebar-card">
@@ -73,8 +70,6 @@ def sidebar_controls() -> None:
         unsafe_allow_html=True,
     )
 
-    _show_quality_message()
-
     with st.sidebar.expander("Données", expanded=True):
         st.caption("Synchronisez la source principale ou annulez les modifications de session.")
         if st.button("Recharger Google Sheets", use_container_width=True):
@@ -82,7 +77,6 @@ def sidebar_controls() -> None:
             try:
                 _load_from_source()
                 st.success("Données rechargées depuis Google Sheets.")
-                _show_quality_message()
             except Exception as exc:
                 st.error(f"Échec du rechargement source: {exc}")
 
@@ -96,7 +90,8 @@ def sidebar_controls() -> None:
         if uploaded is not None and st.button("Valider l’import CSV", use_container_width=True):
             _import_local_csv(uploaded)
             st.success("CSV importé dans la session.")
-            _show_quality_message()
+
+    _show_quality_message()
 
 
 
