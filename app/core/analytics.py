@@ -462,6 +462,13 @@ def prospective_scenarios(df: pd.DataFrame, target_weight: float) -> dict[str, d
         points = list(zip(truncated.dates, truncated.values))
         by_day = {int(round((d - last_date).total_seconds() / 86400)): v for d, v in points}
 
+        def _projection_value(day: int) -> float:
+            if day in by_day:
+                return float(by_day[day])
+            if truncated.stop_date is not None:
+                return float(floor)
+            return float(current + velocity * (day / 7))
+
         eta_days = None
         eta_date = None
         if truncated.stop_date is not None:
@@ -473,9 +480,9 @@ def prospective_scenarios(df: pd.DataFrame, target_weight: float) -> dict[str, d
 
         scenarios[name] = {
             "velocity_kg_week": round(velocity, 3),
-            "proj_30j": round(by_day[30], 2) if 30 in by_day else None,
-            "proj_60j": round(by_day[60], 2) if 60 in by_day else None,
-            "proj_90j": round(by_day[90], 2) if 90 in by_day else None,
+            "proj_30j": round(_projection_value(30), 2),
+            "proj_60j": round(_projection_value(60), 2),
+            "proj_90j": round(_projection_value(90), 2),
             "projection_dates": truncated.dates,
             "projection_values": truncated.values,
             "eta_days": eta_days,
@@ -1232,5 +1239,4 @@ def next_milestone(current_weight: float, targets: tuple[float, ...], velocity: 
         "eta_days": eta_days,
         "eta_confidence": eta_confidence,
     }
-
 

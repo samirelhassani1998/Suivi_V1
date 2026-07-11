@@ -13,18 +13,24 @@ from app.ui.theme import apply_global_theme
 
 
 @st.cache_data(ttl=300)
-def load_remote_csv(url: str) -> pd.DataFrame:
+def load_remote_csv_with_report(url: str) -> tuple[pd.DataFrame, dict]:
     raw = pd.read_csv(url)
-    cleaned, _ = clean_weight_dataframe_with_report(raw, source="google_sheets")
+    cleaned, quality = clean_weight_dataframe_with_report(raw, source="google_sheets")
     # Conserver toutes les mesures source, y compris plusieurs lignes le même jour.
-    return cleaned
+    return cleaned, quality.to_dict()
+
+
+load_remote_csv = load_remote_csv_with_report
 
 
 
 def _show_quality_message() -> None:
+    if st.session_state.get("_quality_message_rendered", False):
+        return
     q = st.session_state.get("data_quality", {})
     if not q:
         return
+    st.session_state["_quality_message_rendered"] = True
     st.info(
         f"Qualité données ({q.get('source', 'n/a')}): "
         f"{q.get('raw_rows', 0)} lues, {q.get('valid_rows', 0)} valides conservées, "
@@ -36,9 +42,8 @@ def _show_quality_message() -> None:
 def _load_from_source() -> None:
     data_url = st.secrets.get("data_url", DATA_URL)
     st.session_state["data_url"] = data_url
-    raw = pd.read_csv(data_url)
-    df, quality = clean_weight_dataframe_with_report(raw, source="google_sheets")
-    set_source_data(df, "google_sheets", quality.to_dict())
+    df, quality = load_remote_csv_with_report(data_url)
+    set_source_data(df, "google_sheets", quality)
 
 
 def _import_local_csv(uploaded_file) -> None:
@@ -57,6 +62,7 @@ def init_data_once() -> None:
 
 
 def sidebar_controls() -> None:
+    st.session_state["_quality_message_rendered"] = False
     st.sidebar.markdown(
         """
         <div class="suivi-sidebar-card">
@@ -72,7 +78,7 @@ def sidebar_controls() -> None:
     with st.sidebar.expander("Données", expanded=True):
         st.caption("Synchronisez la source principale ou annulez les modifications de session.")
         if st.button("Recharger Google Sheets", use_container_width=True):
-            load_remote_csv.clear()
+            load_remote_csv_with_report.clear()
             try:
                 _load_from_source()
                 st.success("Données rechargées depuis Google Sheets.")
