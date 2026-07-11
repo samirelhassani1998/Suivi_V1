@@ -32,6 +32,7 @@ def test_normalize_datetime_series_distinguishes_iso_and_french_dates():
     assert parse("2026-01-11") == pd.Timestamp("2026-01-11")
     assert parse("11/01/2026") == pd.Timestamp("2026-01-11")
     assert parse("01/11/2026") == pd.Timestamp("2026-11-01")
+    assert parse("2026-11-01T12:30:00Z") == pd.Timestamp("2026-11-01 12:30:00")
     assert parse(pd.Timestamp("2026-01-11")) == pd.Timestamp("2026-01-11")
     aware = parse(pd.Timestamp("2026-01-11 01:00", tz="Europe/Paris"))
     assert aware == pd.Timestamp("2026-01-11 00:00")

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 
 from app.core.formatting import format_fr_kg
@@ -33,9 +35,15 @@ def test_dashboard_renders_kpis_and_sections():
     markdown_values = [str(m.value) for m in at.markdown]
     assert any("Dashboard" in value for value in markdown_values)
     assert len(at.metric) >= 3
-    assert len(at.plotly_chart) >= 1
-    chart_text = " ".join(str(chart.value) for chart in at.plotly_chart)
-    assert "Poids" in chart_text
+    plotly_elements = at.get("plotly_chart")
+    assert len(plotly_elements) >= 1
+    trace_names = []
+    for chart in plotly_elements:
+        spec = json.loads(chart.proto.spec)
+        trace_names.extend(trace.get("name", "") for trace in spec.get("data", []))
+    normalized_trace_names = " ".join(trace_names).lower()
+    assert "poids" in normalized_trace_names
+    assert "objectif" in normalized_trace_names or "cible" in normalized_trace_names
     assert any("objectif" in str(c.value).lower() for c in at.caption)
 
 
@@ -49,7 +57,8 @@ def test_journal_loads_and_keeps_state_on_navigation():
     assert any("Qualité données" in str(info.value) for info in at.info)
     button_labels = [b.label for b in at.button]
     assert "Enregistrer les modifications" in button_labels
-    download_labels = [d.label for d in at.download_button]
+    downloads = at.get("download_button")
+    download_labels = [d.label for d in downloads]
     assert "Exporter les données enregistrées" in download_labels
 
     # navigation simulée vers une autre page puis retour
@@ -116,5 +125,17 @@ def test_has_unsaved_changes_detects_real_dataframe_differences():
     assert has_unsaved_changes(saved.iloc[:1], saved) is True
     typed = pd.DataFrame({"Date": ["2026-01-01", "2026-01-02"], "Poids (Kgs)": ["80,0", "79,8"]})
     assert has_unsaved_changes(typed, saved) is False
+    french_date = pd.DataFrame({"Date": ["01/01/2026", "02/01/2026"], "Poids (Kgs)": [80, 79.8]})
+    assert has_unsaved_changes(french_date, saved) is False
+    november_date = pd.DataFrame({"Date": ["01/11/2026"], "Poids (Kgs)": [80]})
+    november_ts = pd.DataFrame({"Date": [pd.Timestamp("2026-11-01")], "Poids (Kgs)": [80.0]})
+    assert has_unsaved_changes(november_date, november_ts) is False
     reindexed = saved.copy(); reindexed.index = [10, 11]
     assert has_unsaved_changes(reindexed, saved) is False
+    reordered = saved.iloc[::-1].reset_index(drop=True)
+    assert has_unsaved_changes(reordered, saved) is True
+    custom_saved = saved.assign(Note=["a", "b"])
+    custom_changed = custom_saved.copy(); custom_changed.loc[1, "Note"] = "c"
+    assert has_unsaved_changes(custom_changed, custom_saved) is True
+    different_date = saved.copy(); different_date.loc[1, "Date"] = pd.Timestamp("2026-01-03")
+    assert has_unsaved_changes(different_date, saved) is True
