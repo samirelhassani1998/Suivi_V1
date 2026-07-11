@@ -407,3 +407,40 @@ Créer des fixtures synthétiques : vide, une mesure, 5 mesures, 30 jours régul
 - Ajout d'un test de non-régression : `test_clean_weight_dataframe_preserves_multiple_measurements_same_day`.
 
 Les anomalies majeures, moyennes et mineures listées ci-dessus sont documentées mais non corrigées automatiquement, conformément à la consigne de limiter les changements aux anomalies critiques/bloquantes.
+
+## Lot 0 — État après sécurisation du cycle de vie des données
+
+### Cycle confirmé
+
+```text
+CSV distant ou local
+→ clean_weight_dataframe_with_report()
+→ source_data (copie fidèle validée, non éditée)
+→ working_data (copie éditable Journal)
+→ filtered_data (vue temporaire copiée)
+→ analysis_data / copies analytiques dédiées
+→ pages analytiques
+→ export depuis working_data
+```
+
+### Anomalies corrigées
+
+- Les accès à `filtered_data` retournaient une référence mutable pouvant modifier indirectement l'état de session : ils retournent maintenant une copie profonde.
+- Les remplacements de source réinitialisent explicitement `source_data`, `working_data`, `filtered_data`, `raw_data` et vident `analysis_data`; `ensure_session_defaults()` n'écrase plus les éditions existantes.
+- Les lignes invalides ne sont plus supprimées silencieusement : le rapport liste le nombre de lignes rejetées, leurs indices et les raisons.
+- Les poids nuls ou négatifs sont rejetés pendant le nettoyage, au même titre que dates invalides et poids non numériques.
+- Les stratégies de mesures multiples le même jour sont confinées à `prepare_analysis_data()` / `resolve_duplicates()` et ne mutent jamais la source, le travail ou le filtre.
+- La stratégie “garder la dernière” utilise `Timestamp`, `Heure`, `Moment` ou équivalent si présent; sinon l'ordre stable d'origine départage les mesures.
+- L'export Journal utilise les données de travail persistées plutôt qu'une édition non validée.
+
+### Tests ajoutés
+
+- Test direct de `load_remote_csv()` avec `pandas.read_csv` mocké.
+- Tests import local, colonnes additionnelles, mesures multiples, lignes invalides et raisons de rejet.
+- Tests session simulant rerun/navigation et isolation `source_data` / `working_data` / `filtered_data`.
+- Test analytique vérifiant que les agrégations de doublons opèrent sur une copie.
+- Tests AppTest renforcés sur présence du Journal, colonnes additionnelles, informations qualité et persistance.
+
+### Limites restantes
+
+- L'environnement local actuel ne contient pas `numpy`, `pandas` ni `streamlit`; l'installation depuis le registre Python échoue avec `403 Forbidden`. La validation complète doit donc s'exécuter dans GitHub Actions ou dans un environnement avec accès aux dépendances.

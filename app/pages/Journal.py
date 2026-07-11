@@ -34,6 +34,14 @@ def main() -> None:
     if df.empty:
         empty_state("Commencez par ajouter une première ligne.")
 
+    q = st.session_state.get("data_quality", {})
+    if q:
+        st.info(
+            f"Qualité données ({q.get('source', 'n/a')}): {q.get('raw_rows', 0)} lues, "
+            f"{q.get('valid_rows', 0)} valides conservées, {q.get('invalid_rows', 0)} invalides, "
+            f"{q.get('duplicate_dates', 0)} dates dupliquées, {q.get('columns_kept', 0)} colonnes conservées. "
+            f"Colonnes additionnelles: {', '.join(q.get('extra_columns', [])) or 'aucune'}."
+        )
     st.info("Le journal conserve toutes les colonnes du CSV. Les lignes invalides sont signalées avant enregistrement.")
 
     section_header("Édition des mesures", "Filtrez une période, éditez les lignes puis enregistrez en session.", "🧾")
@@ -66,7 +74,7 @@ def main() -> None:
     with c2:
         st.download_button(
             "Exporter CSV",
-            data=edited.to_csv(index=False).encode("utf-8"),
+            data=get_working_data().to_csv(index=False).encode("utf-8"),
             file_name="journal_poids.csv",
             mime="text/csv",
         )
