@@ -33,10 +33,15 @@ def test_load_remote_csv_entrypoint_preserves_duplicate_day_and_extra_columns(mo
     mod = _main_module()
     monkeypatch.setattr("pandas.read_csv", lambda *a, **k: sample_df().copy())
     mod["load_remote_csv_with_report"].clear()
-    out, quality = mod["load_remote_csv_with_report"]("fake://csv")
+    result = mod["load_remote_csv_with_report"]("fake://csv")
+    assert isinstance(result, tuple)
+    assert len(result) == 2
+
+    out, quality = result
     wrapped = mod["load_remote_csv"]("fake://csv")
+
     assert isinstance(wrapped, pd.DataFrame)
-    assert isinstance((out, quality), tuple)
+    assert isinstance(quality, dict)
     assert len(out) == 3
     assert len(wrapped) == 3
     assert out["Date"].nunique() == 2
