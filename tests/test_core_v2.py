@@ -41,6 +41,22 @@ def test_import_preserves_row_count_and_columns():
     assert ["Extra 1", "Extra 2"] == [c for c in out.columns if c.startswith("Extra")]
 
 
+def test_clean_weight_dataframe_preserves_multiple_measurements_same_day():
+    raw = pd.DataFrame(
+        {
+            "Date": ["01/01/2026", "01/01/2026", "02/01/2026"],
+            "Poids (Kgs)": [80.1, 80.4, 80.0],
+            "Moment": ["matin", "soir", "matin"],
+        }
+    )
+
+    out = clean_weight_dataframe(raw)
+
+    assert len(out) == 3
+    assert out["Date"].nunique() == 2
+    assert out["Moment"].tolist() == ["matin", "soir", "matin"]
+
+
 def test_duplicate_strategy_works_with_extra_columns():
     raw = pd.DataFrame(
         {
