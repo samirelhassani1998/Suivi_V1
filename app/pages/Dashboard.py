@@ -115,12 +115,34 @@ def _format_value(value: float | None, suffix: str = " kg") -> str:
     return format_fr_unit(value, unit, decimals=2)
 
 
-def _format_fr_number(value: float, decimals: int = 1, *, trim_zeros: bool = True) -> str:
-    return format_fr_number(value, decimals=decimals, trim_zeros=trim_zeros)
+def _format_fr_number(
+    value,
+    decimals: int = 1,
+    *,
+    sign: bool = False,
+    trim_zeros: bool = True,
+) -> str:
+    return format_fr_number(
+        value,
+        decimals=decimals,
+        sign=sign,
+        trim_zeros=trim_zeros,
+    )
 
 
-def _format_fr_kg(value: float, decimals: int = 1, *, trim_zeros: bool = True) -> str:
-    return format_fr_kg(value, decimals=decimals, trim_zeros=trim_zeros)
+def _format_fr_kg(
+    value,
+    decimals: int = 1,
+    *,
+    sign: bool = False,
+    trim_zeros: bool = True,
+) -> str:
+    return format_fr_kg(
+        value,
+        decimals=decimals,
+        sign=sign,
+        trim_zeros=trim_zeros,
+    )
 
 
 def _trajectory_gap_label(trajectory_status: dict) -> str:

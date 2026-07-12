@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import pandas as pd
+import pytest
 
 from app.core.formatting import format_fr_kg
 from app.core.data_editing import has_unsaved_changes
@@ -26,6 +27,95 @@ def _state(at: AppTest) -> None:
     at.session_state["fast_mode"] = True
     at.session_state["data_quality"] = {"source": "test", "raw_rows": 80, "valid_rows": 80, "invalid_rows": 0, "duplicate_dates": 0, "columns_kept": len(df.columns), "extra_columns": ["Extra Col", "Moment"]}
 
+
+def _active_trajectory_state(at: AppTest, *, offset_kg: float = 0.0) -> None:
+    dates = pd.date_range(
+        "2026-07-11",
+        periods=40,
+        freq="D",
+    )
+
+    weights = [
+        102.0 - index * 0.15
+        for index in range(len(dates))
+    ]
+    weights[-1] += offset_kg
+
+    df = pd.DataFrame(
+        {
+            "Date": dates,
+            "Poids (Kgs)": weights,
+            "Moment": ["08:00"] * len(dates),
+            "Extra Col": [
+                f"v{index}"
+                for index in range(len(dates))
+            ],
+        }
+    )
+
+    at.session_state["source_data"] = df.copy()
+    at.session_state["working_data"] = df.copy()
+    at.session_state["filtered_data"] = pd.DataFrame()
+    at.session_state["filter_active"] = False
+    at.session_state["raw_data"] = df.copy()
+    at.session_state["target_weights"] = (
+        100.0,
+        95.0,
+        90.0,
+        85.0,
+        80.0,
+    )
+    at.session_state["fast_mode"] = True
+    at.session_state["data_quality"] = {
+        "source": "test",
+        "raw_rows": len(df),
+        "valid_rows": len(df),
+        "invalid_rows": 0,
+        "duplicate_dates": 0,
+        "columns_kept": len(df.columns),
+        "extra_columns": ["Moment", "Extra Col"],
+    }
+
+
+def test_dashboard_renders_active_target_trajectory_without_exception():
+    at = AppTest.from_file(
+        "app/pages/Dashboard.py"
+    )
+
+    _active_trajectory_state(at)
+    at.run(timeout=15)
+
+    assert not at.exception
+
+    rendered = " ".join(
+        str(element.value)
+        for element in at.markdown
+    )
+
+    assert "Trajectoire cible" in rendered
+    assert "Rythme moyen requis" in rendered
+    assert "Écart" in rendered
+    assert "statut" in rendered
+
+
+@pytest.mark.parametrize(
+    ("offset_kg", "expected_status"),
+    [
+        (-2.0, "en avance"),
+        (0.0, "en retard"),
+    ],
+)
+def test_dashboard_renders_active_target_trajectory_status_variants_without_exception(offset_kg, expected_status):
+    at = AppTest.from_file("app/pages/Dashboard.py")
+
+    _active_trajectory_state(at, offset_kg=offset_kg)
+    at.run(timeout=15)
+
+    assert not at.exception
+
+    rendered = " ".join(str(element.value) for element in at.markdown)
+    assert "Trajectoire cible" in rendered
+    assert f"statut : {expected_status}" in rendered
 
 def test_dashboard_renders_kpis_and_sections():
     at = AppTest.from_file("app/pages/Dashboard.py")
