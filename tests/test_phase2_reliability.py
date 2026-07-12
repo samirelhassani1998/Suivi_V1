@@ -121,6 +121,26 @@ def test_plateau_shared_engine_thresholds_and_duplicate_dates():
     assert detect_stagnation_periods(four, window_days=14) != []
 
 
+def test_format_fr_kg_signed_values():
+    assert format_fr_kg(
+        1.25,
+        decimals=2,
+        sign=True,
+    ) == "+1,25 kg"
+
+    assert format_fr_kg(
+        -1.25,
+        decimals=2,
+        sign=True,
+    ) == "−1,25 kg"
+
+    assert format_fr_kg(
+        0,
+        decimals=1,
+        sign=True,
+    ) == "0,0 kg"
+
+
 def test_formatting_and_projection_tolerance():
     assert format_fr_kg(103.5) == "103,5 kg"
     assert format_fr_kg(1.9, sign=True) == "+1,9 kg"

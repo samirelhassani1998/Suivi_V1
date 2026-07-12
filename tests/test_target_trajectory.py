@@ -81,9 +81,46 @@ def test_compare_to_target_trajectory_reports_gap_status_and_progress():
     assert math.isclose(result["progress_pct"], (102.0 - 90.0) / 22.0 * 100)
 
 
-def test_alignment_status_uses_configurable_tolerance():
-    base = pd.Timestamp("2026-07-11")
-    cases = [(101.6, "en avance"), (101.8, "aligné"), (102.2, "aligné"), (102.4, "en retard")]
-    for weight, status in cases:
-        df = pd.DataFrame({"Date": [base], "Poids (Kgs)": [weight]})
-        assert compare_to_target_trajectory(df)["status"] == status
+@pytest.mark.parametrize(
+    ("offset_kg", "expected_status"),
+    [
+        (-0.40, "en avance"),
+        (-0.30, "aligné"),
+        (-0.20, "aligné"),
+        (0.00, "aligné"),
+        (0.20, "aligné"),
+        (0.30, "aligné"),
+        (0.40, "en retard"),
+    ],
+)
+def test_alignment_status_uses_configurable_tolerance(offset_kg, expected_status):
+    # La tolérance de ±0,30 kg est inclusive: les bornes exactes restent alignées.
+    start_date = pd.Timestamp("2026-07-11")
+    comparison_date = pd.Timestamp("2026-07-12")
+    start_weight = 102.0
+
+    scheduled = target_weight_on_date(
+        comparison_date,
+        start_date,
+        pd.Timestamp("2026-11-11"),
+        start_weight,
+        80.0,
+    )
+
+    df = pd.DataFrame(
+        {
+            "Date": [
+                start_date,
+                comparison_date,
+            ],
+            "Poids (Kgs)": [
+                start_weight,
+                scheduled + offset_kg,
+            ],
+        }
+    )
+
+    result = compare_to_target_trajectory(df)
+
+    assert result["gap_kg"] == pytest.approx(offset_kg, abs=1e-9)
+    assert result["status"] == expected_status
