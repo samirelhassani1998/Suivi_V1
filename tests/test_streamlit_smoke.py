@@ -44,6 +44,19 @@ def test_dashboard_renders_kpis_and_sections():
     normalized_trace_names = " ".join(trace_names).lower()
     assert "poids" in normalized_trace_names
     assert "objectif" in normalized_trace_names or "cible" in normalized_trace_names
+    target_traces = []
+    for chart in plotly_elements:
+        spec = json.loads(chart.proto.spec)
+        target_traces.extend(
+            trace for trace in spec.get("data", [])
+            if "Trajectoire cible vers 80 kg au 11/11/2026" in trace.get("name", "")
+        )
+    assert target_traces
+    trace = target_traces[0]
+    assert trace["x"][0].startswith("2026-07-11")
+    assert trace["x"][-1].startswith("2026-11-11")
+    assert trace["y"][-1] == 80.0
+    assert all(not x.startswith("2026-11-12") for x in trace["x"])
     assert any("objectif" in str(c.value).lower() for c in at.caption)
 
 

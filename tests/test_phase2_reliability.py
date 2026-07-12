@@ -15,17 +15,16 @@ from app.core.weight_summary import detect_stagnation_periods, projection_to_tar
 
 
 def test_target_trajectory_official_points_and_floor():
-    traj = build_target_trajectory()
-    assert traj["Date"].iloc[0] == pd.Timestamp("2026-05-26")
-    assert traj["Poids cible"].iloc[0] == 106.2
-    assert float(traj.loc[traj["Date"] == pd.Timestamp("2026-06-02"), "Poids cible"].iloc[0]) == 105.2
-    assert float(traj.loc[traj["Date"] == pd.Timestamp("2026-06-09"), "Poids cible"].iloc[0]) == 104.2
-    assert traj["Date"].iloc[-1] == pd.Timestamp("2026-11-25 09:36:00")
+    df = pd.DataFrame({"Date": [pd.Timestamp("2026-07-11")], "Poids (Kgs)": [102.0]})
+    traj = build_target_trajectory(df)["trajectory"].rename(columns={"Poids cible (kg)": "Poids cible"})
+    assert traj["Date"].iloc[0] == pd.Timestamp("2026-07-11")
+    assert traj["Poids cible"].iloc[0] == 102.0
+    assert traj["Date"].iloc[-1] == pd.Timestamp("2026-11-11")
     assert traj["Poids cible"].iloc[-1] == 80.0
+    assert len(traj) == 124
     assert (traj["Poids cible"] >= 80.0).all()
-    assert traj["Date"].min() >= pd.Timestamp("2026-05-26")
+    assert traj["Date"].max() == pd.Timestamp("2026-11-11")
     assert len(traj[traj["Poids cible"] == 80.0]) == 1
-
 
 def test_normalize_datetime_series_distinguishes_iso_and_french_dates():
     parse = lambda value: normalize_datetime_series([value]).iloc[0]

@@ -1,106 +1,89 @@
 import math
 
 import pandas as pd
+import pytest
 
 from app.core.target_trajectory import (
     DEFAULT_FINAL_TARGET_WEIGHT,
+    DEFAULT_TARGET_TRAJECTORY_END_DATE,
     DEFAULT_TARGET_TRAJECTORY_START_DATE,
-    DEFAULT_TARGET_TRAJECTORY_START_WEIGHT,
-    DEFAULT_WEEKLY_LOSS_TARGET,
     TargetTrajectoryConfig,
     build_target_trajectory,
     compare_to_target_trajectory,
+    required_weekly_loss,
+    target_weight_on_date,
 )
 
 
-def test_target_trajectory_starts_on_fixed_reference_point_and_stops_at_80():
-    df = pd.DataFrame(
-        {
-            "Date": pd.to_datetime(["2025-01-01", "2026-06-01", "2026-06-10"]),
-            "Poids (Kgs)": [120.0, 105.0, 102.0],
-        }
-    )
+def _df(weights=(102.0,)):
+    return pd.DataFrame({"Date": [pd.Timestamp("2026-07-11") for _ in weights], "Poids (Kgs)": list(weights)})
 
-    result = build_target_trajectory(df)
+
+def test_target_trajectory_exact_bounds_floor_and_no_horizontal_tail():
+    result = build_target_trajectory(_df())
     trajectory = result["trajectory"]
-
-    assert result["available"] is True
+    assert trajectory["Date"].iloc[0] == pd.Timestamp("2026-07-11")
+    assert trajectory["Date"].iloc[-1] == pd.Timestamp("2026-11-11")
+    assert trajectory["Poids cible (kg)"].iloc[-1] == 80.0
+    assert len(trajectory) == 124
+    assert (trajectory["Poids cible (kg)"] >= 80.0).all()
+    assert (trajectory["Poids cible (kg)"] == 80.0).sum() == 1
+    assert trajectory["Date"].max() == pd.Timestamp("2026-11-11")
     assert result["start_date"] == DEFAULT_TARGET_TRAJECTORY_START_DATE
-    assert result["start_measurement_date"] == DEFAULT_TARGET_TRAJECTORY_START_DATE
-    assert result["start_weight"] == DEFAULT_TARGET_TRAJECTORY_START_WEIGHT
-    assert trajectory["Date"].iloc[0] == DEFAULT_TARGET_TRAJECTORY_START_DATE
-    assert trajectory["Poids cible (kg)"].iloc[0] == DEFAULT_TARGET_TRAJECTORY_START_WEIGHT
-    assert trajectory["Poids cible (kg)"].min() == DEFAULT_FINAL_TARGET_WEIGHT
-    assert trajectory["Poids cible (kg)"].iloc[-1] == DEFAULT_FINAL_TARGET_WEIGHT
-    assert math.isclose(result["target_days"], 183.4)
-    assert result["eta_date"] == DEFAULT_TARGET_TRAJECTORY_START_DATE + pd.Timedelta(days=183.4)
-    assert trajectory["Date"].iloc[-1] == result["eta_date"]
+    assert result["end_date"] == DEFAULT_TARGET_TRAJECTORY_END_DATE
 
 
-def test_target_trajectory_does_not_infer_start_from_nearby_measurements():
-    df = pd.DataFrame(
-        {
-            "Date": pd.to_datetime(["2026-05-29", "2026-06-04"]),
-            "Poids (Kgs)": [106.0, 104.0],
-        }
-    )
+def test_required_weekly_loss_is_derived_from_start_weight_and_duration():
+    start_weight = 102.0
+    result = build_target_trajectory(_df([start_weight]))
+    expected_rate = (start_weight - 80.0) / (123 / 7)
+    assert result["required_weekly_loss"] == pytest.approx(expected_rate, abs=1e-9)
+    assert required_weekly_loss(start_weight) == pytest.approx(expected_rate, abs=1e-9)
 
+
+def test_target_weight_on_date_uses_exact_time_proportion_and_stops_outside_bounds():
+    start = pd.Timestamp("2026-07-11")
+    end = pd.Timestamp("2026-11-11")
+    assert target_weight_on_date(pd.Timestamp("2026-07-10"), start, end, 102.0, 80.0) is None
+    assert target_weight_on_date(start, start, end, 102.0, 80.0) == 102.0
+    mid = target_weight_on_date(pd.Timestamp("2026-09-11"), start, end, 102.0, 80.0)
+    expected = 102.0 + (62 * 86400 / (123 * 86400)) * (80.0 - 102.0)
+    assert mid == pytest.approx(expected, abs=1e-9)
+    assert target_weight_on_date(end, start, end, 102.0, 80.0) == 80.0
+    assert target_weight_on_date(pd.Timestamp("2026-11-12"), start, end, 102.0, 80.0) is None
+
+
+def test_build_target_trajectory_uses_previous_measurement_when_start_date_missing():
+    df = pd.DataFrame({"Date": pd.to_datetime(["2026-07-01", "2026-07-12"]), "Poids (Kgs)": [103.0, 101.0]})
     result = build_target_trajectory(df)
+    assert result["start_date"] == pd.Timestamp("2026-07-11")
+    assert result["start_measurement_date"] == pd.Timestamp("2026-07-01")
+    assert result["start_weight"] == 103.0
+    assert result["start_weight_source"] == "previous"
+    assert result["trajectory"]["Date"].iloc[0] == pd.Timestamp("2026-07-11")
 
-    assert result["start_date"] == pd.Timestamp("2026-05-26")
-    assert result["start_measurement_date"] == pd.Timestamp("2026-05-26")
-    assert result["start_weight"] == 106.2
+
+def test_multiple_start_measurements_respect_duplicate_strategy_without_mutating_source():
+    df = pd.DataFrame({"Date": pd.to_datetime(["2026-07-11", "2026-07-11"]), "Poids (Kgs)": [102.4, 101.8], "Moment": ["matin", "soir"]})
+    before = df.copy(deep=True)
+    result = build_target_trajectory(df, TargetTrajectoryConfig(duplicate_strategy="garder_la_derniere"))
+    assert result["start_weight"] == 101.8
+    pd.testing.assert_frame_equal(df, before)
 
 
 def test_compare_to_target_trajectory_reports_gap_status_and_progress():
-    df = pd.DataFrame(
-        {
-            "Date": pd.to_datetime(["2026-05-26", "2026-06-02"]),
-            "Poids (Kgs)": [106.2, 105.0],
-        }
-    )
-
+    df = pd.DataFrame({"Date": pd.to_datetime(["2026-07-11", "2026-09-11"]), "Poids (Kgs)": [102.0, 90.0]})
     result = compare_to_target_trajectory(df)
-
-    assert result["scheduled_weight"] == 105.2
-    assert math.isclose(result["gap_kg"], -0.2)
-    assert result["status"] == "aligné avec la trajectoire"
-    assert math.isclose(result["progress_pct"], (106.2 - 105.0) / 26.2 * 100)
-
-
-def test_target_trajectory_supports_explicit_business_parameters():
-    df = pd.DataFrame({"Date": pd.to_datetime(["2026-07-01"]), "Poids (Kgs)": [90.0]})
-    config = TargetTrajectoryConfig.from_values(
-        "2026-07-01",
-        weekly_loss_target=1.0,
-        final_target_weight=85.0,
-        start_weight=90.0,
-    )
-
-    result = build_target_trajectory(df, config)
-
-    assert result["start_date"] == pd.Timestamp("2026-07-01")
-    assert result["start_weight"] == 90.0
-    assert result["weekly_loss_target"] == 1.0
-    assert result["final_target_weight"] == 85.0
-    assert math.isclose(result["target_days"], 35.0)
-    assert result["eta_date"] == pd.Timestamp("2026-08-05")
-    assert DEFAULT_WEEKLY_LOSS_TARGET == 1.0
+    expected_scheduled = 102.0 + (62 / 123) * (80.0 - 102.0)
+    assert result["scheduled_weight"] == pytest.approx(expected_scheduled, abs=1e-9)
+    assert result["gap_kg"] == pytest.approx(90.0 - expected_scheduled, abs=1e-9)
+    assert result["status"] == "en avance"
+    assert math.isclose(result["progress_pct"], (102.0 - 90.0) / 22.0 * 100)
 
 
-def test_target_weight_on_date_required_business_points():
-    from app.core.target_trajectory import target_weight_on_date, TargetTrajectoryConfig
-    config = TargetTrajectoryConfig()
-    assert target_weight_on_date(106.2, pd.Timestamp("2026-05-25"), config) is None
-    assert target_weight_on_date(106.2, pd.Timestamp("2026-05-26"), config) == 106.2
-    assert target_weight_on_date(106.2, pd.Timestamp("2026-06-02"), config) == 105.2
-    assert target_weight_on_date(106.2, pd.Timestamp("2026-06-09"), config) == 104.2
-    assert target_weight_on_date(106.2, pd.Timestamp("2027-01-01"), config) == 80.0
-
-
-def test_alignment_status_uses_half_kg_tolerance():
-    base = pd.Timestamp("2026-06-02")
-    cases = [(105.8, "au-dessus de la trajectoire"), (105.5, "aligné avec la trajectoire"), (104.9, "aligné avec la trajectoire"), (104.6, "en dessous de la trajectoire")]
+def test_alignment_status_uses_configurable_tolerance():
+    base = pd.Timestamp("2026-07-11")
+    cases = [(101.6, "en avance"), (101.8, "aligné"), (102.2, "aligné"), (102.4, "en retard")]
     for weight, status in cases:
         df = pd.DataFrame({"Date": [base], "Poids (Kgs)": [weight]})
         assert compare_to_target_trajectory(df)["status"] == status
