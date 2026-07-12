@@ -5,11 +5,12 @@ from typing import Final
 
 import pandas as pd
 
-TARGET_TRAJECTORY_START_DATE: Final[pd.Timestamp] = pd.Timestamp("2026-05-26")
-TARGET_TRAJECTORY_START_WEIGHT_KG: Final[float] = 106.2
-WEEKLY_LOSS_TARGET_KG: Final[float] = 1.0
+TARGET_TRAJECTORY_START_DATE: Final[pd.Timestamp] = pd.Timestamp("2026-07-11")
+TARGET_TRAJECTORY_END_DATE: Final[pd.Timestamp] = pd.Timestamp("2026-11-11")
+TARGET_TRAJECTORY_START_WEIGHT_KG: Final[float] = 97.5714286
+TARGET_TRAJECTORY_TOTAL_DURATION_DAYS: Final[int] = 123
 FINAL_TARGET_WEIGHT_KG: Final[float] = 80.0
-ALIGNMENT_TOLERANCE_KG: Final[float] = 0.5
+ALIGNMENT_TOLERANCE_KG: Final[float] = 0.3
 INTERRUPTION_THRESHOLD_DAYS: Final[int] = 21
 MIN_MEASUREMENTS_REQUIRED: Final[int] = 2
 

@@ -55,7 +55,7 @@ Les objectifs configurables servent de repères visuels et analytiques. Des pali
 
 ### Trajectoire cible configurable
 
-La trajectoire cible fournit un repère déterministe basé sur des paramètres métier centralisés. Elle est utilisée pour comparer les mesures observées à une progression attendue.
+La trajectoire cible fournit un repère déterministe entre le 11/07/2026 et le 11/11/2026, avec un point quotidien inclusif et un objectif final exact de 80,0 kg. Son poids de départ est résolu depuis les données du 11/07/2026 ou, à défaut, depuis la dernière mesure antérieure disponible puis le poids de référence configuré ; le rythme hebdomadaire requis est calculé automatiquement à partir de ces bornes.
 
 ### Qualité des données
 

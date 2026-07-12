@@ -30,7 +30,6 @@ from app.core.target_trajectory import (
     DEFAULT_FINAL_TARGET_WEIGHT,
     DEFAULT_TARGET_TRAJECTORY_START_DATE,
     DEFAULT_TARGET_TRAJECTORY_START_WEIGHT,
-    DEFAULT_WEEKLY_LOSS_TARGET,
     TargetTrajectoryConfig,
     build_target_trajectory,
     compare_to_target_trajectory,
@@ -50,7 +49,7 @@ from app.ui.components import (
 )
 
 
-TARGET_TRAJECTORY_CHART_KEY = "dashboard-target-trajectory-1kg-week"
+TARGET_TRAJECTORY_CHART_KEY = "dashboard-target-trajectory-to-80kg"
 
 
 def _df() -> pd.DataFrame:
@@ -129,18 +128,18 @@ def _trajectory_gap_label(trajectory_status: dict) -> str:
     status = trajectory_status.get("status")
     gap_text = _format_fr_kg(abs(gap), decimals=1)
 
-    if status == "en dessous de la trajectoire":
-        return f"{gap_text} en dessous"
-    if status == "aligné avec la trajectoire":
+    if status == "en avance":
+        return f"{gap_text} en avance"
+    if status == "aligné":
         return "Aligné"
-    return f"{gap_text} au-dessus"
+    return f"{gap_text} en retard"
 
 
 def _trajectory_position_sentence(trajectory_status: dict) -> str:
     status = trajectory_status.get("status")
     if status == "aligné":
         return "Vous êtes actuellement aligné avec la trajectoire cible."
-    return f"Vous êtes actuellement à {_trajectory_gap_label(trajectory_status)} de la trajectoire cible."
+    return f"Vous êtes actuellement {_trajectory_gap_label(trajectory_status)} sur la trajectoire cible."
 
 
 def _metric_help_for_period(period) -> str:
@@ -239,13 +238,15 @@ def _render_daily_overview(summary: dict, target_weight: float, trajectory_statu
         insight_card(
             "Trajectoire cible",
             (
-                f"Date cible planifiée : {trajectory_status['eta_date'].strftime('%d/%m/%Y')} pour l’objectif {_format_fr_kg(trajectory_status['final_target_weight'])}, sur la base d’une baisse de "
-                f"{_format_fr_kg(trajectory_status['weekly_loss_target'])} par semaine depuis le "
-                f"{trajectory_status['start_date'].strftime('%d/%m/%Y')} à "
-                f"{_format_fr_kg(trajectory_status['start_weight'])}. "
+                f"Départ : {_format_fr_kg(trajectory_status['start_weight'])} le {trajectory_status['start_date'].strftime('%d/%m/%Y')}. "
+                f"Objectif : {_format_fr_kg(trajectory_status['final_target_weight'])} le {trajectory_status['end_date'].strftime('%d/%m/%Y')}. "
+                f"Durée : {trajectory_status['total_duration_days']} jours. "
+                f"Rythme moyen requis : {_format_fr_kg(trajectory_status['required_weekly_loss'], decimals=2)} par semaine. "
+                f"Poids cible théorique au {trajectory_status['current_date'].strftime('%d/%m/%Y')} : {_format_fr_kg(trajectory_status['scheduled_weight'])}. "
+                f"Écart : {_format_fr_kg(trajectory_status['gap_kg'], sign=True)} — statut : {trajectory_status['status']}. "
                 f"{_trajectory_position_sentence(trajectory_status)}"
             ),
-            tone="success" if trajectory_status.get("status") in {"avance", "aligné"} else "warning",
+            tone="success" if trajectory_status.get("status") in {"en avance", "aligné"} else "warning",
             icon="🎯",
         )
 
@@ -320,7 +321,7 @@ def _render_advanced_kpis(
             f"🎯 Trajectoire cible : {_format_fr_kg(trajectory_status['scheduled_weight'])} attendus au "
             f"{trajectory_status['current_date'].strftime('%d/%m/%Y')}. "
             f"{_trajectory_position_sentence(trajectory_status)} "
-            f"Date cible planifiée : {trajectory_status['eta_date'].strftime('%d/%m/%Y')}."
+            f"Date cible : {trajectory_status['end_date'].strftime('%d/%m/%Y')}."
         )
     elif has_effort_period:
         effort_initial_weight = float(effort_df["Poids (Kgs)"].iloc[0])
@@ -477,9 +478,8 @@ def _render_main_weight_chart(
             show_forecast = st.checkbox("Trajectoire cible", value=True)
             st.caption("Les objectifs et la trajectoire font partie de la lecture par défaut ; désactivez-les ici si besoin.")
             st.caption(
-                f"Paramètres trajectoire : départ {trajectory_config.start_date.strftime('%d/%m/%Y')} "
-                f"à {_format_fr_kg(trajectory_config.start_weight)} · "
-                f"-{trajectory_config.weekly_loss_target:g} kg/sem · objectif {trajectory_config.final_target_weight:g} kg"
+                f"Paramètres trajectoire : départ {trajectory_config.start_date.strftime('%d/%m/%Y')} · "
+                f"objectif {_format_fr_kg(trajectory_config.final_target_weight)} au {trajectory_config.end_date.strftime('%d/%m/%Y')}"
             )
 
     df["MA_7J"] = moving_average_by_days(df, 7)
@@ -528,14 +528,16 @@ def _render_main_weight_chart(
     target_trajectory = build_target_trajectory(df, trajectory_config)
     if show_forecast and target_trajectory.get("available"):
         trajectory_df = target_trajectory["trajectory"]
-        label = f"Trajectoire cible (-{trajectory_config.weekly_loss_target:g} kg/semaine)"
+        rate = target_trajectory["required_weekly_loss"]
+        rate_label = format_fr_kg(rate, decimals=2, trim_zeros=False).replace(" kg", " kg/semaine")
+        label = f"Trajectoire cible vers 80 kg au 11/11/2026 ({rate_label})"
         fig.add_scatter(
             x=trajectory_df["Date"],
             y=trajectory_df["Poids cible (kg)"],
             mode="lines",
             name=label,
             line=dict(color="#0f766e", width=2.35, dash="dashdot"),
-            hovertemplate="Date : %{x|%d/%m/%Y}<br>Trajectoire cible : %{y:.1f} kg<extra></extra>",
+            hovertemplate="Date : %{x|%d/%m/%Y}<br>Trajectoire cible : %{y:.1f} kg<br>Perte requise : " + rate_label + "<extra></extra>",
         )
 
     fig.update_layout(xaxis_title="Date", yaxis_title="Poids (kg)")
@@ -549,19 +551,19 @@ def _trajectory_config_controls() -> TargetTrajectoryConfig:
     """Return the fixed business trajectory configuration and document it in the sidebar."""
     with st.sidebar.expander("Trajectoire cible", expanded=False):
         st.caption(
-            "La trajectoire cible est ancrée sur la mesure de référence du "
-            f"{DEFAULT_TARGET_TRAJECTORY_START_DATE.strftime('%d/%m/%Y')} à "
-            f"{_format_fr_kg(DEFAULT_TARGET_TRAJECTORY_START_WEIGHT)}."
+            "La trajectoire cible démarre le "
+            f"{DEFAULT_TARGET_TRAJECTORY_START_DATE.strftime('%d/%m/%Y')} et atteint "
+            f"{_format_fr_kg(DEFAULT_FINAL_TARGET_WEIGHT)} le 11/11/2026."
         )
         st.caption(
-            f"Elle descend de {_format_fr_kg(DEFAULT_WEEKLY_LOSS_TARGET)} par semaine "
-            f"et s’arrête à {_format_fr_kg(DEFAULT_FINAL_TARGET_WEIGHT)}."
+            "Le poids de départ est pris dans les données du jour de départ ; "
+            "à défaut, la dernière mesure antérieure ou le poids de référence configuré est utilisé."
         )
     return TargetTrajectoryConfig.from_values(
         DEFAULT_TARGET_TRAJECTORY_START_DATE,
-        DEFAULT_WEEKLY_LOSS_TARGET,
-        DEFAULT_FINAL_TARGET_WEIGHT,
+        final_target_weight=DEFAULT_FINAL_TARGET_WEIGHT,
         start_weight=DEFAULT_TARGET_TRAJECTORY_START_WEIGHT,
+        duplicate_strategy=st.session_state.get("duplicate_strategy", "garder_la_derniere"),
     )
 
 def main() -> None:
