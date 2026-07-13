@@ -21,7 +21,7 @@ from app.core.analytics import (
     weight_velocity,
     weight_volatility,
 )
-from app.core.business import STAGNATION_MIN_MEASUREMENTS
+from app.core.business import TARGET_TRAJECTORY_TOTAL_DURATION_DAYS, STAGNATION_MIN_MEASUREMENTS
 from app.core.data import data_quality_report
 from app.core.formatting import format_fr_kg, format_fr_number, format_fr_unit
 from app.core.insights import detect_plateau
@@ -552,14 +552,14 @@ def _render_main_weight_chart(
         trajectory_df = target_trajectory["trajectory"]
         rate = target_trajectory["required_weekly_loss"]
         rate_label = format_fr_kg(rate, decimals=2, trim_zeros=False).replace(" kg", " kg/semaine")
-        label = f"Trajectoire cible vers 80 kg au 11/11/2026 ({rate_label})"
+        label = f"Trajectoire cible vers 80 kg au 11/11/2026 — {rate_label}"
         fig.add_scatter(
             x=trajectory_df["Date"],
             y=trajectory_df["Poids cible (kg)"],
             mode="lines",
             name=label,
             line=dict(color="#0f766e", width=2.35, dash="dashdot"),
-            hovertemplate="Date : %{x|%d/%m/%Y}<br>Trajectoire cible : %{y:.1f} kg<br>Perte requise : " + rate_label + "<extra></extra>",
+            hovertemplate="Date : %{x|%d/%m/%Y}<br>Poids cible : %{y:.1f} kg<br>Perte moyenne requise : " + rate_label + "<extra></extra>",
         )
 
     fig.update_layout(xaxis_title="Date", yaxis_title="Poids (kg)")
@@ -577,9 +577,13 @@ def _trajectory_config_controls() -> TargetTrajectoryConfig:
             f"{DEFAULT_TARGET_TRAJECTORY_START_DATE.strftime('%d/%m/%Y')} et atteint "
             f"{_format_fr_kg(DEFAULT_FINAL_TARGET_WEIGHT)} le 11/11/2026."
         )
+        st.caption(f"Départ : {_format_fr_kg(DEFAULT_TARGET_TRAJECTORY_START_WEIGHT)} le {DEFAULT_TARGET_TRAJECTORY_START_DATE.strftime('%d/%m/%Y')}")
+        st.caption(f"Objectif : {_format_fr_kg(DEFAULT_FINAL_TARGET_WEIGHT, trim_zeros=False)} le 11/11/2026")
+        st.caption(f"Durée : {TARGET_TRAJECTORY_TOTAL_DURATION_DAYS} jours")
+        st.caption("Rythme moyen requis : 1,50 kg/semaine")
         st.caption(
-            "Le poids de départ est pris dans les données du jour de départ ; "
-            "à défaut, la dernière mesure antérieure ou le poids de référence configuré est utilisé."
+            "Règle métier fixe : les mesures CSV servent uniquement à comparer le poids réel, "
+            "jamais à modifier le départ ou la pente."
         )
     return TargetTrajectoryConfig.from_values(
         DEFAULT_TARGET_TRAJECTORY_START_DATE,

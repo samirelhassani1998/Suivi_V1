@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from app.config import OPTIONAL_COLUMNS, REQUIRED_COLUMNS
+from app.core.time_utils import normalize_datetime_series
 
 
 @dataclass
@@ -64,16 +65,15 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _parse_dates(values: pd.Series) -> pd.Series:
-    txt = values.astype(str).str.strip().str.replace("'", "", regex=False)
-    dt = pd.to_datetime(txt, errors="coerce", dayfirst=True)
-    miss = dt.isna()
+    parsed = normalize_datetime_series(values, dayfirst=True, normalize_day=True)
+    miss = parsed.isna()
     if miss.any():
-        dt.loc[miss] = pd.to_datetime(txt.loc[miss], errors="coerce", dayfirst=False)
-    numeric = pd.to_numeric(txt, errors="coerce")
-    serial = dt.isna() & numeric.notna() & numeric.between(20000, 80000)
-    if serial.any():
-        dt.loc[serial] = pd.to_datetime(numeric.loc[serial], unit="D", origin="1899-12-30", errors="coerce")
-    return dt
+        txt = values.astype(str).str.strip().str.replace("'", "", regex=False)
+        numeric = pd.to_numeric(txt, errors="coerce")
+        serial = parsed.isna() & numeric.notna() & numeric.between(20000, 80000)
+        if serial.any():
+            parsed.loc[serial] = pd.to_datetime(numeric.loc[serial], unit="D", origin="1899-12-30", errors="coerce").dt.normalize()
+    return parsed
 
 
 def _ordered_columns(df: pd.DataFrame) -> list[str]:

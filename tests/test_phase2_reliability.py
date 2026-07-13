@@ -15,19 +15,19 @@ from app.core.weight_summary import detect_stagnation_periods, projection_to_tar
 
 
 def test_target_trajectory_official_points_and_floor():
-    df = pd.DataFrame({"Date": [pd.Timestamp("2026-07-11")], "Poids (Kgs)": [102.0]})
+    df = pd.DataFrame({"Date": [pd.Timestamp("2026-07-12")], "Poids (Kgs)": [102.0]})
     traj = build_target_trajectory(df)["trajectory"].rename(columns={"Poids cible (kg)": "Poids cible"})
-    assert traj["Date"].iloc[0] == pd.Timestamp("2026-07-11")
-    assert traj["Poids cible"].iloc[0] == 102.0
+    assert traj["Date"].iloc[0] == pd.Timestamp("2026-07-12")
+    assert traj["Poids cible"].iloc[0] == 106.1
     assert traj["Date"].iloc[-1] == pd.Timestamp("2026-11-11")
     assert traj["Poids cible"].iloc[-1] == 80.0
-    assert len(traj) == 124
+    assert len(traj) == 123
     assert (traj["Poids cible"] >= 80.0).all()
     assert traj["Date"].max() == pd.Timestamp("2026-11-11")
     assert len(traj[traj["Poids cible"] == 80.0]) == 1
 
 def test_normalize_datetime_series_distinguishes_iso_and_french_dates():
-    parse = lambda value: normalize_datetime_series([value]).iloc[0]
+    parse = lambda value: normalize_datetime_series([value], dayfirst=True, normalize_day=True).iloc[0]
     assert parse("2026-01-11") == pd.Timestamp("2026-01-11")
     assert parse("11/01/2026") == pd.Timestamp("2026-01-11")
     assert parse("01/11/2026") == pd.Timestamp("2026-11-01")
@@ -36,7 +36,7 @@ def test_normalize_datetime_series_distinguishes_iso_and_french_dates():
     aware = parse(pd.Timestamp("2026-01-11 01:00", tz="Europe/Paris"))
     assert aware == pd.Timestamp("2026-01-11 00:00")
     mixed = pd.Series(["2026-01-11", "01/11/2026"], index=["iso", "fr"])
-    parsed = normalize_datetime_series(mixed)
+    parsed = normalize_datetime_series(mixed, dayfirst=True, normalize_day=True)
     assert parsed.index.tolist() == ["iso", "fr"]
     assert parsed.tolist() == [pd.Timestamp("2026-01-11"), pd.Timestamp("2026-11-01")]
 
