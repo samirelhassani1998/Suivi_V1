@@ -9,6 +9,8 @@ from app.config import ALL_COLUMNS
 from app.core.targets import DEFAULT_TARGETS, get_target_weights
 
 DEFAULT_WEIGHT_COLUMNS = ["Date", "Poids (Kgs)"]
+DEFAULT_ZOOM_TARGET_START_DATE = pd.Timestamp("2026-07-12")
+DEFAULT_ZOOM_TARGET_END_DATE = pd.Timestamp("2026-11-11")
 
 
 def _empty_df() -> pd.DataFrame:
@@ -36,6 +38,8 @@ def ensure_session_defaults() -> None:
     st.session_state.setdefault("ma_type", "Simple")
     st.session_state.setdefault("window_size", 7)
     st.session_state.setdefault("theme", "plotly")
+    st.session_state.setdefault("zoom_target_start_date", DEFAULT_ZOOM_TARGET_START_DATE)
+    st.session_state.setdefault("zoom_target_end_date", DEFAULT_ZOOM_TARGET_END_DATE)
 
 
 def set_source_data(df: pd.DataFrame, source_name: str, quality: dict | None = None) -> None:

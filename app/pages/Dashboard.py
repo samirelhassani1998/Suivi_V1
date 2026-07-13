@@ -25,7 +25,12 @@ from app.core.business import TARGET_TRAJECTORY_TOTAL_DURATION_DAYS, STAGNATION_
 from app.core.data import data_quality_report
 from app.core.formatting import format_fr_kg, format_fr_number, format_fr_unit
 from app.core.insights import detect_plateau
-from app.core.session_state import get_filtered_or_working_data
+from app.core.session_state import (
+    DEFAULT_ZOOM_TARGET_END_DATE,
+    DEFAULT_ZOOM_TARGET_START_DATE,
+    ensure_session_defaults,
+    get_filtered_or_working_data,
+)
 from app.core.target_trajectory import (
     DEFAULT_FINAL_TARGET_WEIGHT,
     DEFAULT_TARGET_TRAJECTORY_START_DATE,
@@ -50,6 +55,7 @@ from app.ui.components import (
 
 
 TARGET_TRAJECTORY_CHART_KEY = "dashboard-target-trajectory-to-80kg"
+TARGET_TRAJECTORY_ZOOM_CHART_KEY = "dashboard-target-trajectory-zoom"
 
 
 def _df() -> pd.DataFrame:
@@ -462,6 +468,114 @@ def _render_objective_gap_chart(df: pd.DataFrame, target_weight: float) -> None:
     st.plotly_chart(fig_gap, use_container_width=True)
 
 
+def filter_weight_period(
+    df: pd.DataFrame,
+    start_date: pd.Timestamp | None = None,
+    end_date: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """Return weight rows inside the inclusive date window without mutating the input."""
+    filtered = df.copy()
+    if start_date is not None:
+        filtered = filtered[filtered["Date"] >= pd.Timestamp(start_date)]
+    if end_date is not None:
+        filtered = filtered[filtered["Date"] <= pd.Timestamp(end_date)]
+    return filtered.copy()
+
+
+def build_weight_chart(
+    df: pd.DataFrame,
+    *,
+    title: str,
+    target_weight: float,
+    targets: tuple[float, ...],
+    trajectory_config: TargetTrajectoryConfig,
+    start_date: pd.Timestamp | None = None,
+    end_date: pd.Timestamp | None = None,
+    show_secondary_targets: bool = True,
+    show_long_term_trend: bool = False,
+    show_forecast: bool = True,
+    show_moving_average: bool = True,
+    ma_window_label: str = "7 jours",
+) -> tuple[go.Figure, pd.DataFrame]:
+    """Build the dashboard weight chart for either full history or a zoomed period."""
+    chart_df = filter_weight_period(df, start_date, end_date)
+    ma_col = "MA_7J" if ma_window_label == "7 jours" else "MA_30J"
+    ma_label = f"Moyenne mobile {ma_window_label}"
+
+    full_df = df.copy()
+    full_df["MA_7J"] = moving_average_by_days(full_df, 7)
+    full_df["MA_30J"] = moving_average_by_days(full_df, 30)
+    ma_df = filter_weight_period(full_df, start_date, end_date)
+
+    fig = go.Figure()
+    if not chart_df.empty:
+        fig.add_scatter(
+            x=chart_df["Date"],
+            y=chart_df["Poids (Kgs)"],
+            mode="lines+markers",
+            name="Poids mesuré",
+            line=dict(color="#2563eb", width=2.4, shape="spline", smoothing=0.35),
+            marker=dict(size=5, color="#2563eb", line=dict(width=1, color="#ffffff")),
+            hovertemplate="Date : %{x|%d/%m/%Y}<br>Poids mesuré : %{y:.2f} kg<extra></extra>",
+        )
+    if show_moving_average and not ma_df.empty:
+        fig.add_scatter(
+            x=ma_df["Date"],
+            y=ma_df[ma_col],
+            mode="lines",
+            name=ma_label,
+            line=dict(color="rgba(100,116,139,0.62)", width=1.35, dash="dot"),
+            hovertemplate=f"Date : %{{x|%d/%m/%Y}}<br>{ma_label} : %{{y:.2f}} kg<extra></extra>",
+        )
+
+    x_values = chart_df["Date"] if not chart_df.empty else pd.DatetimeIndex(
+        [pd.Timestamp(start_date), pd.Timestamp(end_date)]
+        if start_date is not None and end_date is not None
+        else []
+    )
+    _add_single_target_line(fig, target_weight, x_values)
+
+    if show_secondary_targets:
+        secondary_targets = tuple(t for t in targets if round(float(t), 3) != round(float(target_weight), 3))
+        if secondary_targets:
+            _add_target_lines(fig, secondary_targets, label_prefix="Objectif secondaire", x_values=x_values)
+
+    if show_long_term_trend:
+        trend_span = int(st.session_state.get("window_size", 14))
+        df_ema = filter_weight_period(compute_trend_ema(df, span=trend_span), start_date, end_date)
+        if not df_ema.empty:
+            fig.add_scatter(
+                x=df_ema["Date"],
+                y=df_ema["Tendance_EMA"],
+                mode="lines",
+                name=f"Tendance long terme EMA ({trend_span})",
+                line=dict(color="#f97316", width=2.2, dash="dot"),
+                hovertemplate="Date : %{x|%d/%m/%Y}<br>Tendance long terme : %{y:.2f} kg<extra></extra>",
+            )
+
+    target_trajectory = build_target_trajectory(df, trajectory_config)
+    if show_forecast and target_trajectory.get("available"):
+        trajectory_df = filter_weight_period(target_trajectory["trajectory"], start_date, end_date)
+        if not trajectory_df.empty:
+            rate = target_trajectory["required_weekly_loss"]
+            rate_label = format_fr_kg(rate, decimals=2, trim_zeros=False).replace(" kg", " kg/semaine")
+            label = f"Trajectoire cible vers 80 kg au 11/11/2026 — {rate_label}"
+            fig.add_scatter(
+                x=trajectory_df["Date"],
+                y=trajectory_df["Poids cible (kg)"],
+                mode="lines",
+                name=label,
+                line=dict(color="#0f766e", width=2.35, dash="dashdot"),
+                hovertemplate="Date : %{x|%d/%m/%Y}<br>Poids cible : %{y:.1f} kg<br>Perte moyenne requise : " + rate_label + "<extra></extra>",
+            )
+
+    if start_date is not None and end_date is not None:
+        fig.update_xaxes(range=[pd.Timestamp(start_date), pd.Timestamp(end_date)])
+    fig.update_layout(xaxis_title="Date", yaxis_title="Poids (kg)")
+    _apply_modern_chart_layout(fig, title, height=500)
+    return fig, chart_df
+
+
 def _render_main_weight_chart(
     df: pd.DataFrame,
     target_weight: float,
@@ -504,69 +618,50 @@ def _render_main_weight_chart(
                 f"objectif {_format_fr_kg(trajectory_config.final_target_weight)} au {trajectory_config.end_date.strftime('%d/%m/%Y')}"
             )
 
-    df["MA_7J"] = moving_average_by_days(df, 7)
-    df["MA_30J"] = moving_average_by_days(df, 30)
-    ma_col = "MA_7J" if selected_ma == "7 jours" else "MA_30J"
-    ma_label = f"Moyenne mobile {selected_ma}"
-
-    fig = go.Figure()
-    fig.add_scatter(
-        x=df["Date"],
-        y=df["Poids (Kgs)"],
-        mode="lines+markers",
-        name="Poids mesuré",
-        line=dict(color="#2563eb", width=2.4, shape="spline", smoothing=0.35),
-        marker=dict(size=5, color="#2563eb", line=dict(width=1, color="#ffffff")),
-        hovertemplate="Date : %{x|%d/%m/%Y}<br>Poids mesuré : %{y:.2f} kg<extra></extra>",
+    fig, _ = build_weight_chart(
+        df,
+        title="Évolution du poids",
+        target_weight=target_weight,
+        targets=targets,
+        trajectory_config=trajectory_config,
+        show_secondary_targets=show_secondary_targets,
+        show_long_term_trend=show_long_term_trend,
+        show_forecast=show_forecast,
+        show_moving_average=show_moving_average,
+        ma_window_label=selected_ma,
     )
-    if show_moving_average:
-        fig.add_scatter(
-            x=df["Date"],
-            y=df[ma_col],
-            mode="lines",
-            name=ma_label,
-            line=dict(color="rgba(100,116,139,0.62)", width=1.35, dash="dot"),
-            hovertemplate=f"Date : %{{x|%d/%m/%Y}}<br>{ma_label} : %{{y:.2f}} kg<extra></extra>",
-        )
-    _add_single_target_line(fig, target_weight, df["Date"])
-
-    if show_secondary_targets:
-        secondary_targets = tuple(t for t in targets if round(float(t), 3) != round(float(target_weight), 3))
-        if secondary_targets:
-            _add_target_lines(fig, secondary_targets, label_prefix="Objectif secondaire", x_values=df["Date"])
-
-    if show_long_term_trend:
-        trend_span = int(st.session_state.get("window_size", 14))
-        df_ema = compute_trend_ema(df, span=trend_span)
-        fig.add_scatter(
-            x=df_ema["Date"],
-            y=df_ema["Tendance_EMA"],
-            mode="lines",
-            name=f"Tendance long terme EMA ({trend_span})",
-            line=dict(color="#f97316", width=2.2, dash="dot"),
-            hovertemplate="Date : %{x|%d/%m/%Y}<br>Tendance long terme : %{y:.2f} kg<extra></extra>",
-        )
-
-    target_trajectory = build_target_trajectory(df, trajectory_config)
-    if show_forecast and target_trajectory.get("available"):
-        trajectory_df = target_trajectory["trajectory"]
-        rate = target_trajectory["required_weekly_loss"]
-        rate_label = format_fr_kg(rate, decimals=2, trim_zeros=False).replace(" kg", " kg/semaine")
-        label = f"Trajectoire cible vers 80 kg au 11/11/2026 — {rate_label}"
-        fig.add_scatter(
-            x=trajectory_df["Date"],
-            y=trajectory_df["Poids cible (kg)"],
-            mode="lines",
-            name=label,
-            line=dict(color="#0f766e", width=2.35, dash="dashdot"),
-            hovertemplate="Date : %{x|%d/%m/%Y}<br>Poids cible : %{y:.1f} kg<br>Perte moyenne requise : " + rate_label + "<extra></extra>",
-        )
-
-    fig.update_layout(xaxis_title="Date", yaxis_title="Poids (kg)")
-    _apply_modern_chart_layout(fig, "Évolution du poids", height=500)
     st.plotly_chart(fig, use_container_width=True, key=TARGET_TRAJECTORY_CHART_KEY)
     st.caption("Vue par défaut : poids mesuré prioritaire, moyenne mobile discrète, objectifs et trajectoire cible visibles.")
 
+    section_header(
+        "Zoom sur la période cible",
+        "Même lecture que le graphique principal, limitée à la fenêtre configurable dans les paramètres.",
+        "🔎",
+    )
+    zoom_start = pd.Timestamp(st.session_state.get("zoom_target_start_date", DEFAULT_ZOOM_TARGET_START_DATE))
+    zoom_end = pd.Timestamp(st.session_state.get("zoom_target_end_date", DEFAULT_ZOOM_TARGET_END_DATE))
+    if zoom_start > zoom_end:
+        st.warning("La date de début du zoom doit être antérieure ou égale à la date de fin.")
+        return
+
+    zoom_title = f"Évolution du poids — période {zoom_start.strftime('%d/%m/%Y')} au {zoom_end.strftime('%d/%m/%Y')}"
+    zoom_fig, zoom_df = build_weight_chart(
+        df,
+        title=zoom_title,
+        target_weight=target_weight,
+        targets=targets,
+        trajectory_config=trajectory_config,
+        start_date=zoom_start,
+        end_date=zoom_end,
+        show_secondary_targets=show_secondary_targets,
+        show_long_term_trend=show_long_term_trend,
+        show_forecast=show_forecast,
+        show_moving_average=show_moving_average,
+        ma_window_label=selected_ma,
+    )
+    if zoom_df.empty:
+        st.info("Aucune donnée de poids disponible sur cette période.")
+    st.plotly_chart(zoom_fig, use_container_width=True, key=TARGET_TRAJECTORY_ZOOM_CHART_KEY)
 
 
 def _trajectory_config_controls() -> TargetTrajectoryConfig:
@@ -593,6 +688,7 @@ def _trajectory_config_controls() -> TargetTrajectoryConfig:
     )
 
 def main() -> None:
+    ensure_session_defaults()
     df = _df()
     if df.empty:
         empty_state("Aucune donnée disponible. Utilisez Journal ou import CSV.")
