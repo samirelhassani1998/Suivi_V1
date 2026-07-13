@@ -126,7 +126,7 @@ def test_dashboard_renders_kpis_and_sections():
     assert any("Dashboard" in value for value in markdown_values)
     assert len(at.metric) >= 3
     plotly_elements = at.get("plotly_chart")
-    assert len(plotly_elements) >= 1
+    assert len(plotly_elements) >= 2
     trace_names = []
     for chart in plotly_elements:
         spec = json.loads(chart.proto.spec)
@@ -142,7 +142,7 @@ def test_dashboard_renders_kpis_and_sections():
             if "Trajectoire cible vers 80 kg au 11/11/2026" in trace.get("name", "")
         )
     assert target_traces
-    trace = target_traces[0]
+    trace = next(trace for trace in target_traces if trace["x"][0].startswith("2026-07-12"))
     assert trace["x"][0].startswith("2026-07-12")
     assert trace["y"][0] == 106.1
     assert trace["x"][-1].startswith("2026-11-11")
@@ -206,6 +206,57 @@ def test_settings_exposes_five_goals():
     assert "Objectif 3 (kg)" in labels
     assert "Objectif 4 (kg)" in labels
     assert "Objectif 5 (kg)" in labels
+    date_labels = [d.label for d in at.date_input]
+    assert "Début du zoom trajectoire" in date_labels
+    assert "Fin du zoom trajectoire" in date_labels
+    assert at.session_state.get("zoom_target_start_date") == pd.Timestamp("2026-07-12")
+    assert at.session_state.get("zoom_target_end_date") == pd.Timestamp("2026-11-11")
+
+
+def test_dashboard_zoom_chart_uses_configured_period_and_handles_empty_data():
+    at = AppTest.from_file("app/pages/Dashboard.py")
+    _state(at)
+    at.run(timeout=10)
+
+    assert not at.exception
+    assert any("Aucune donnée de poids disponible sur cette période." in str(info.value) for info in at.info)
+
+    plotly_elements = at.get("plotly_chart")
+    assert len(plotly_elements) >= 2
+    zoom_spec = json.loads(plotly_elements[1].proto.spec)
+    xaxis = zoom_spec.get("layout", {}).get("xaxis", {})
+    assert xaxis.get("range", [])[0].startswith("2026-07-12")
+    assert xaxis.get("range", [])[1].startswith("2026-11-11")
+    measured_traces = [trace for trace in zoom_spec.get("data", []) if trace.get("name") == "Poids mesuré"]
+    assert measured_traces == []
+
+
+def test_dashboard_zoom_chart_filters_measured_data_to_configured_period():
+    at = AppTest.from_file("app/pages/Dashboard.py")
+    _active_trajectory_state(at)
+    at.session_state["zoom_target_start_date"] = pd.Timestamp("2026-07-20")
+    at.session_state["zoom_target_end_date"] = pd.Timestamp("2026-07-25")
+    at.run(timeout=15)
+
+    assert not at.exception
+    plotly_elements = at.get("plotly_chart")
+    assert len(plotly_elements) >= 2
+    zoom_spec = json.loads(plotly_elements[1].proto.spec)
+    measured_trace = next(trace for trace in zoom_spec.get("data", []) if trace.get("name") == "Poids mesuré")
+    assert measured_trace["x"][0].startswith("2026-07-20")
+    assert measured_trace["x"][-1].startswith("2026-07-25")
+    assert all("2026-07-12" not in x for x in measured_trace["x"])
+
+
+def test_dashboard_zoom_invalid_period_warns_without_exception():
+    at = AppTest.from_file("app/pages/Dashboard.py")
+    _active_trajectory_state(at)
+    at.session_state["zoom_target_start_date"] = pd.Timestamp("2026-11-11")
+    at.session_state["zoom_target_end_date"] = pd.Timestamp("2026-07-12")
+    at.run(timeout=15)
+
+    assert not at.exception
+    assert any("La date de début du zoom" in str(w.value) for w in at.warning)
 
 
 def test_dashboard_migrates_legacy_four_goals_to_requested_five_goals():
