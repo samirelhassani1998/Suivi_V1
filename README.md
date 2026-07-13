@@ -55,7 +55,7 @@ Les objectifs configurables servent de repères visuels et analytiques. Des pali
 
 ### Trajectoire cible configurable
 
-La trajectoire cible fournit un repère déterministe entre le 11/07/2026 et le 11/11/2026, avec un point quotidien inclusif et un objectif final exact de 80,0 kg. Son poids de départ est résolu depuis les données du 11/07/2026 ou, à défaut, depuis la dernière mesure antérieure disponible puis le poids de référence configuré ; le rythme hebdomadaire requis est calculé automatiquement à partir de ces bornes.
+La trajectoire cible fournit un repère métier fixe entre le 12/07/2026 et le 11/11/2026, avec un point quotidien inclusif (123 points) et un objectif final exact de 80,0 kg. Son poids de départ est toujours 106,1 kg le 12/07/2026 : les données CSV servent uniquement à comparer le poids observé, jamais à modifier l’ancrage ou la pente. La durée exacte est de 122 jours, soit une perte quotidienne théorique de 0,213934 kg/jour et un rythme moyen requis de 1,50 kg/semaine.
 
 ### Qualité des données
 

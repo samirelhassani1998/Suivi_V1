@@ -30,13 +30,13 @@ def _state(at: AppTest) -> None:
 
 def _active_trajectory_state(at: AppTest, *, offset_kg: float = 0.0) -> None:
     dates = pd.date_range(
-        "2026-07-11",
+        "2026-07-12",
         periods=40,
         freq="D",
     )
 
     weights = [
-        102.0 - index * 0.15
+        106.1 - index * 0.22
         for index in range(len(dates))
     ]
     weights[-1] += offset_kg
@@ -102,7 +102,7 @@ def test_dashboard_renders_active_target_trajectory_without_exception():
     ("offset_kg", "expected_status"),
     [
         (-2.0, "en avance"),
-        (0.0, "en retard"),
+        (0.0, "aligné"),
     ],
 )
 def test_dashboard_renders_active_target_trajectory_status_variants_without_exception(offset_kg, expected_status):
@@ -143,9 +143,11 @@ def test_dashboard_renders_kpis_and_sections():
         )
     assert target_traces
     trace = target_traces[0]
-    assert trace["x"][0].startswith("2026-07-11")
+    assert trace["x"][0].startswith("2026-07-12")
+    assert trace["y"][0] == 106.1
     assert trace["x"][-1].startswith("2026-11-11")
     assert trace["y"][-1] == 80.0
+    assert len(trace["x"]) == 123
     assert all(not x.startswith("2026-11-12") for x in trace["x"])
     assert any("objectif" in str(c.value).lower() for c in at.caption)
 
