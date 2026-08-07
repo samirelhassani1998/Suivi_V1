@@ -7,6 +7,7 @@ from app.core.weight_summary import (
     generate_daily_insights,
     projection_to_target,
     summarize_weight_journey,
+    tracking_reliability,
 )
 
 
@@ -178,3 +179,44 @@ def test_summarize_weight_journey_significant_drop_does_not_report_stagnation_in
     assert result["valid"] is True
     assert any("baisse" in item.lower() for item in result["insights"])
     assert not any("Stabilité possible" in item for item in result["insights"])
+
+
+def test_tracking_reliability_rewards_regular_well_covered_history():
+    regular = pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-01-01", periods=31, freq="D"),
+            "Poids (Kgs)": [100 - index * 0.05 for index in range(31)],
+        }
+    )
+
+    result = tracking_reliability(regular)
+
+    assert result["score"] == 100
+    assert result["level"] == "élevée"
+    assert result["recent_measurements"] == 31
+    assert result["median_gap_days"] == 1.0
+
+
+def test_tracking_reliability_is_prudent_for_sparse_history():
+    sparse = pd.DataFrame(
+        {
+            "Date": pd.to_datetime(["2026-01-01", "2026-01-20"]),
+            "Poids (Kgs)": [100.0, 99.5],
+        }
+    )
+
+    result = tracking_reliability(sparse)
+
+    assert result["score"] < 55
+    assert result["level"] == "faible"
+    assert "couverture" in result["explanation"]
+
+
+def test_summary_exposes_tracking_reliability():
+    df = pd.DataFrame(
+        {"Date": pd.date_range("2026-01-01", periods=10), "Poids (Kgs)": range(100, 90, -1)}
+    )
+
+    result = summarize_weight_journey(df, 80.0)
+
+    assert result["reliability"]["score"] > 0

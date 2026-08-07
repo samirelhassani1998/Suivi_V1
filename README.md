@@ -23,6 +23,7 @@ Le tableau de bord synthétise l'état courant des mesures chargées en session 
 - variation récente ;
 - tendance globale ;
 - écart à l'objectif ou à la trajectoire cible ;
+- score de fiabilité des tendances fondé sur la couverture et la régularité des mesures ;
 - graphiques d'évolution ;
 - moyennes mobiles ;
 - objectifs et paliers ;
@@ -68,6 +69,17 @@ Le chargement et le journal signalent les problèmes de qualité courants :
 - doublons de date ;
 - valeurs potentiellement aberrantes ;
 - irrégularité des mesures.
+
+### Fiabilité des tendances
+
+Le Dashboard affiche un score de fiabilité de **0 à 100** qui aide à savoir si les tendances courtes peuvent être interprétées sereinement. Il combine quatre dimensions :
+
+- volume total de mesures (30 points) ;
+- durée de l'historique, plafonnée à 30 jours (25 points) ;
+- couverture des 30 derniers jours de données, plafonnée à 8 mesures (30 points) ;
+- régularité de mesure selon l'intervalle médian entre deux dates (15 points).
+
+Les niveaux sont `faible` (< 55), `moyenne` (55–79) et `élevée` (≥ 80). Ce KPI évalue uniquement la **couverture des données** : ce n'est ni un score de santé, ni un jugement sur la progression. La fenêtre est ancrée sur la dernière mesure disponible afin que les imports historiques restent reproductibles.
 
 ### Plateau et stagnation
 
@@ -179,6 +191,13 @@ source CSV distante ou fichier local
 5. Les données sont triées chronologiquement et stockées dans la session Streamlit.
 6. Les modules analytiques calculent variations, tendances, moyennes, scores, projections et indicateurs.
 7. Les pages Streamlit affichent les résultats sous forme de KPI, tableaux, graphiques et messages d'analyse.
+
+### Principes de calcul
+
+- Les variations 7/30/90 jours utilisent des jours calendaires et retournent `N/A` lorsque le recul est insuffisant.
+- Les données source ne sont jamais dédupliquées silencieusement ; les vues analytiques appliquent leur propre règle documentée.
+- Les tendances et projections sont indicatives. Les modèles expérimentaux sont séparés des baselines et doivent être lus avec leur niveau de confiance.
+- Les moyennes mobiles nommées « N mesures » ne doivent pas être confondues avec les fenêtres calendaires « N jours ».
 
 ## 5. Configuration métier
 

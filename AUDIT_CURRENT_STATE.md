@@ -1,6 +1,22 @@
 # Audit de l'état actuel — Suivi_V1
 
-Date de l'audit : 2026-07-11. Périmètre : dépôt local `/workspace/Suivi_V1`, code Python Streamlit, tests, documentation, configuration et historique Git récent.
+Date de mise à jour de l'audit : 2026-08-07. Périmètre : dépôt local `/workspace/Suivi_V1`, code Python Streamlit, tests, documentation, configuration et historique Git récent.
+
+## Mise à jour livrée le 07/08/2026
+
+- **UI/UX** : le Dashboard rend maintenant visible la fiabilité des tendances juste après la lecture rapide, avec une formulation non culpabilisante et une distinction explicite entre qualité de couverture et résultat de santé.
+- **KPI ajouté** : score de fiabilité 0–100 basé sur le volume, le recul historique, la couverture récente et l'intervalle médian entre mesures. Les seuils sont documentés dans le README et couverts par des tests.
+- **Calculs** : le score est déterministe pour un import historique car sa fenêtre récente est ancrée sur la dernière mesure du jeu, et non sur l'horloge du serveur Streamlit.
+- **Cohérence produit** : le titre navigateur, l'icône et les docstrings utilisent désormais tous le nom « Suivi V1 ».
+- **Documentation** : le README expose la méthode de scoring et rappelle les conventions jours calendaires / nombre de mesures, la non-déduplication de la source et le caractère indicatif des projections.
+
+### Backlog priorisé après audit
+
+1. **P0 — Persistance** : ajouter une écriture explicite vers une source durable ou un backend ; les éditions restent aujourd'hui limitées à la session Streamlit.
+2. **P1 — Prévisions** : calibrer les intervalles sur les erreurs walk-forward et désactiver automatiquement tout modèle qui ne bat pas une baseline naïve.
+3. **P1 — Qualité** : créer un écran de résolution guidée des doublons et valeurs aberrantes avant sauvegarde/export.
+4. **P2 — Statistiques** : remplacer le clustering KMeans par des segments temporels interprétables (phases de baisse, stabilité, reprise).
+5. **P2 — Accessibilité** : auditer les contrastes, la navigation clavier et les libellés lecteurs d'écran sur Streamlit Cloud.
 
 ## 1. Executive summary
 

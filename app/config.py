@@ -1,4 +1,4 @@
-"""Configuration centralisée de l'application Suivi V2."""
+"""Configuration centralisée de l'application Suivi V1."""
 
 from __future__ import annotations
 

@@ -161,6 +161,64 @@ def average_weekly_pace(df: pd.DataFrame) -> float | None:
     return delta / days * 7
 
 
+def tracking_reliability(df: pd.DataFrame, recent_days: int = 30) -> dict[str, Any]:
+    """Score how trustworthy short-term dashboard signals are.
+
+    This is a data-coverage score, not a health or performance score.  It rewards
+    enough history, repeated measurements and regular coverage while avoiding a
+    requirement for daily weigh-ins.  Using the last measurement as the cutoff
+    keeps historical imports deterministic and testable.
+    """
+    data = prepare_weight_series(df)
+    if data.empty:
+        return {
+            "score": 0,
+            "level": "faible",
+            "measurements": 0,
+            "span_days": 0,
+            "recent_measurements": 0,
+            "median_gap_days": None,
+            "explanation": "Aucune mesure valide pour évaluer la fiabilité.",
+        }
+
+    span_days = int((data[DATE_COL].iloc[-1] - data[DATE_COL].iloc[0]).days)
+    recent = data[data[DATE_COL] >= data[DATE_COL].iloc[-1] - pd.Timedelta(days=recent_days)]
+    gaps = data[DATE_COL].diff().dt.total_seconds().div(86400).dropna()
+    median_gap = float(gaps.median()) if not gaps.empty else None
+
+    history_points = min(len(data) / 14, 1.0) * 30
+    span_points = min(span_days / 30, 1.0) * 25
+    recent_points = min(len(recent) / 8, 1.0) * 30
+    if median_gap is None:
+        regularity_points = 0.0
+    elif median_gap <= 4:
+        regularity_points = 15.0
+    elif median_gap <= 7:
+        regularity_points = 10.0
+    elif median_gap <= 14:
+        regularity_points = 5.0
+    else:
+        regularity_points = 0.0
+
+    score = int(round(history_points + span_points + recent_points + regularity_points))
+    level = "élevée" if score >= 80 else "moyenne" if score >= 55 else "faible"
+    gap_text = "n/a" if median_gap is None else f"{median_gap:.1f} j"
+    explanation = (
+        f"{len(recent)} mesure(s) sur les {recent_days} derniers jours de données, "
+        f"{span_days} jours d’historique et un intervalle médian de {gap_text}. "
+        "Ce score mesure la couverture des données, pas la qualité de vos résultats."
+    )
+    return {
+        "score": score,
+        "level": level,
+        "measurements": len(data),
+        "span_days": span_days,
+        "recent_measurements": len(recent),
+        "median_gap_days": median_gap,
+        "explanation": explanation,
+    }
+
+
 def projection_to_target(df: pd.DataFrame, target_weight: float, max_years: int = 3) -> dict[str, Any]:
     """Prudent linear projection based on the recent 30-day trend.
 
@@ -320,6 +378,7 @@ def summarize_weight_journey(df: pd.DataFrame, target_weight: float) -> dict[str
     trend_label, trend_explanation = classify_trend(delta_30, delta_7)
     pace = average_weekly_pace(data)
     projection = projection_to_target(data, target_weight)
+    reliability = tracking_reliability(data)
     target_weight = float(target_weight)
     target_gap = current - target_weight
     total_to_goal = first - target_weight
@@ -355,6 +414,7 @@ def summarize_weight_journey(df: pd.DataFrame, target_weight: float) -> dict[str
         "trend_explanation": trend_explanation,
         "weekly_pace": pace,
         "projection": projection,
+        "reliability": reliability,
         "insights": generate_daily_insights(data, target_weight),
         "stagnations": detect_stagnation_periods(data),
     }
