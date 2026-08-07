@@ -1,4 +1,4 @@
-"""Entrée principale Streamlit - Suivi V2."""
+"""Entrée principale Streamlit - Suivi V1."""
 
 from __future__ import annotations
 
@@ -95,7 +95,7 @@ def sidebar_controls() -> None:
 
 
 
-st.set_page_config(page_title="Suivi V2", layout="wide")
+st.set_page_config(page_title="Suivi V1", page_icon="📊", layout="wide")
 apply_global_theme()
 
 if not check_password():

@@ -1,4 +1,4 @@
-"""Thème visuel moderne pour Suivi V2."""
+"""Thème visuel moderne pour Suivi V1."""
 
 from __future__ import annotations
 

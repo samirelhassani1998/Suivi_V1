@@ -262,6 +262,17 @@ def _render_daily_overview(summary: dict, target_weight: float, trajectory_statu
     sentence, tone = _trend_sentence(summary, target_weight)
     insight_card("Lecture rapide", sentence, tone=tone, icon="🔎")
 
+    reliability = summary.get("reliability", {})
+    if reliability:
+        level = reliability.get("level", "faible")
+        reliability_tone = "success" if level == "élevée" else "info" if level == "moyenne" else "warning"
+        insight_card(
+            "Fiabilité des tendances",
+            f"{reliability.get('score', 0)}/100 — confiance {level}. {reliability.get('explanation', '')}",
+            tone=reliability_tone,
+            icon="🧪",
+        )
+
     if trajectory_status and trajectory_status.get("available"):
         insight_card(
             "Trajectoire cible",
