@@ -15,15 +15,15 @@ from app.core.weight_summary import detect_stagnation_periods, projection_to_tar
 
 
 def test_target_trajectory_official_points_and_floor():
-    df = pd.DataFrame({"Date": [pd.Timestamp("2026-07-12")], "Poids (Kgs)": [102.0]})
+    df = pd.DataFrame({"Date": [pd.Timestamp("2026-09-03")], "Poids (Kgs)": [102.0]})
     traj = build_target_trajectory(df)["trajectory"].rename(columns={"Poids cible (kg)": "Poids cible"})
-    assert traj["Date"].iloc[0] == pd.Timestamp("2026-07-12")
+    assert traj["Date"].iloc[0] == pd.Timestamp("2026-09-03")
     assert traj["Poids cible"].iloc[0] == 106.1
-    assert traj["Date"].iloc[-1] == pd.Timestamp("2026-11-11")
+    assert traj["Date"].iloc[-1] == pd.Timestamp("2026-12-16")
     assert traj["Poids cible"].iloc[-1] == 80.0
-    assert len(traj) == 123
+    assert len(traj) == 105
     assert (traj["Poids cible"] >= 80.0).all()
-    assert traj["Date"].max() == pd.Timestamp("2026-11-11")
+    assert traj["Date"].max() == pd.Timestamp("2026-12-16")
     assert len(traj[traj["Poids cible"] == 80.0]) == 1
 
 def test_normalize_datetime_series_distinguishes_iso_and_french_dates():

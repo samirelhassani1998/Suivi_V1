@@ -33,11 +33,13 @@ from app.core.session_state import (
 )
 from app.core.target_trajectory import (
     DEFAULT_FINAL_TARGET_WEIGHT,
+    DEFAULT_TARGET_TRAJECTORY_END_DATE,
     DEFAULT_TARGET_TRAJECTORY_START_DATE,
     DEFAULT_TARGET_TRAJECTORY_START_WEIGHT,
     TargetTrajectoryConfig,
     build_target_trajectory,
     compare_to_target_trajectory,
+    required_weekly_loss,
 )
 from app.core.weight_summary import moving_average_by_days, summarize_weight_journey
 from app.core.targets import get_target_weights
@@ -570,7 +572,8 @@ def build_weight_chart(
         if not trajectory_df.empty:
             rate = target_trajectory["required_weekly_loss"]
             rate_label = format_fr_kg(rate, decimals=2, trim_zeros=False).replace(" kg", " kg/semaine")
-            label = f"Trajectoire cible vers 80 kg au 11/11/2026 — {rate_label}"
+            end_date_label = target_trajectory["end_date"].strftime("%d/%m/%Y")
+            label = f"Trajectoire cible vers 80 kg au {end_date_label} — {rate_label}"
             fig.add_scatter(
                 x=trajectory_df["Date"],
                 y=trajectory_df["Poids cible (kg)"],
@@ -681,12 +684,16 @@ def _trajectory_config_controls() -> TargetTrajectoryConfig:
         st.caption(
             "La trajectoire cible démarre le "
             f"{DEFAULT_TARGET_TRAJECTORY_START_DATE.strftime('%d/%m/%Y')} et atteint "
-            f"{_format_fr_kg(DEFAULT_FINAL_TARGET_WEIGHT)} le 11/11/2026."
+            f"{_format_fr_kg(DEFAULT_FINAL_TARGET_WEIGHT)} le {DEFAULT_TARGET_TRAJECTORY_END_DATE.strftime('%d/%m/%Y')}."
         )
         st.caption(f"Départ : {_format_fr_kg(DEFAULT_TARGET_TRAJECTORY_START_WEIGHT)} le {DEFAULT_TARGET_TRAJECTORY_START_DATE.strftime('%d/%m/%Y')}")
-        st.caption(f"Objectif : {_format_fr_kg(DEFAULT_FINAL_TARGET_WEIGHT, trim_zeros=False)} le 11/11/2026")
+        st.caption(
+            f"Objectif : {_format_fr_kg(DEFAULT_FINAL_TARGET_WEIGHT, trim_zeros=False)} "
+            f"le {DEFAULT_TARGET_TRAJECTORY_END_DATE.strftime('%d/%m/%Y')}"
+        )
         st.caption(f"Durée : {TARGET_TRAJECTORY_TOTAL_DURATION_DAYS} jours")
-        st.caption("Rythme moyen requis : 1,50 kg/semaine")
+        rate_label = format_fr_kg(required_weekly_loss(), decimals=2, trim_zeros=False).replace(" kg", " kg/semaine")
+        st.caption(f"Rythme moyen requis : {rate_label}")
         st.caption(
             "Règle métier fixe : les mesures CSV servent uniquement à comparer le poids réel, "
             "jamais à modifier le départ ou la pente."
