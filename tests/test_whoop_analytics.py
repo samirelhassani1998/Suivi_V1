@@ -12,12 +12,17 @@ from app.core.whoop_analytics import (
     MIN_DAYS_CORRELATION,
     MIN_DAYS_ENERGY_BALANCE,
     analysis_availability,
+    calendar_matrix,
     coverage_report,
     daily_grid,
     energy_balance,
+    generate_insights,
+    indexed_series,
     lagged_correlations,
+    personal_baseline,
     recovery_drivers,
     recovery_zones,
+    rolling_trend,
     sleep_debt_summary,
     strain_recovery_balance,
     training_load,
@@ -363,3 +368,184 @@ def test_strain_recovery_balance_flags_hard_days_on_low_recovery():
     assert signals[1] == "charge élevée sur récupération basse"
     assert signals[2] == "récupération élevée sous-exploitée"
     assert signals[4] == "cohérent"
+
+
+# ── Repères personnels, lissage, base commune ─────────────────────────────────
+
+
+def test_personal_baseline_compares_the_latest_value_to_your_own_median():
+    frame = pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-08-01", periods=15, freq="D"),
+            "HRV (ms)": [40.0] * 14 + [50.0],
+        }
+    )
+
+    baseline = personal_baseline(frame, "HRV (ms)")
+
+    assert baseline["ready"]
+    assert baseline["baseline"] == pytest.approx(40.0)
+    assert baseline["latest"] == pytest.approx(50.0)
+    assert baseline["deviation_pct"] == pytest.approx(25.0)
+
+
+def test_personal_baseline_excludes_the_latest_point_from_its_own_reference():
+    """Sinon la dernière valeur se comparerait partiellement à elle-même."""
+    frame = pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-08-01", periods=12, freq="D"),
+            "HRV (ms)": [40.0] * 11 + [100.0],
+        }
+    )
+    assert personal_baseline(frame, "HRV (ms)")["baseline"] == pytest.approx(40.0)
+
+
+def test_personal_baseline_stays_silent_on_a_short_history():
+    frame = pd.DataFrame({"Date": pd.date_range("2026-08-01", periods=5), "HRV (ms)": [40.0] * 5})
+    assert not personal_baseline(frame, "HRV (ms)")["ready"]
+
+
+def test_rolling_trend_smooths_without_bridging_gaps():
+    frame = _daily(20).drop(index=[8, 9, 10]).reset_index(drop=True)
+
+    trend = rolling_trend(frame, "Récupération (%)", window=7)
+
+    assert len(trend) == 20
+    assert trend["Récupération (%)"].isna().any()
+
+
+def test_indexed_series_puts_every_metric_at_one_hundred_on_its_first_day():
+    frame = pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-08-01", periods=4, freq="D"),
+            "Poids (Kgs)": [100.0, 99.0, 98.0, 97.0],
+            "Récupération (%)": [50.0, 60.0, 40.0, 55.0],
+        }
+    )
+
+    indexed = indexed_series(frame, ["Poids (Kgs)", "Récupération (%)"])
+
+    assert indexed.loc[0, "Poids (Kgs)"] == pytest.approx(100.0)
+    assert indexed.loc[0, "Récupération (%)"] == pytest.approx(100.0)
+    assert indexed.loc[3, "Poids (Kgs)"] == pytest.approx(97.0)
+    assert indexed.loc[1, "Récupération (%)"] == pytest.approx(120.0)
+
+
+def test_indexed_series_ignores_a_metric_that_starts_at_zero():
+    """Diviser par zéro produirait des infinis silencieux."""
+    frame = pd.DataFrame({"Date": pd.date_range("2026-08-01", periods=3), "Strain": [0.0, 5.0, 8.0]})
+    assert "Strain" not in indexed_series(frame, ["Strain"]).columns
+
+
+def test_calendar_matrix_lays_weeks_out_monday_to_sunday():
+    frame = pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-08-03", periods=9, freq="D"),  # un lundi
+            "Récupération (%)": list(range(50, 59)),
+        }
+    )
+
+    matrix = calendar_matrix(frame, "Récupération (%)")
+
+    assert matrix["weekdays"] == ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
+    assert len(matrix["weeks"]) == 2
+    assert matrix["values"][0][0] == 50.0
+    # Les jours non couverts de la seconde semaine restent vides.
+    assert matrix["values"][1][2] is None
+
+
+def test_calendar_matrix_without_usable_metric_returns_empty():
+    assert calendar_matrix(pd.DataFrame(), "Récupération (%)")["values"] == []
+
+
+# ── Moteur de constats ────────────────────────────────────────────────────────
+
+
+def test_generate_insights_stays_almost_silent_on_a_four_day_history():
+    """Situation réelle d'un bracelet neuf : mieux vaut peu de constats que des faux."""
+    short = _daily(4)
+
+    insights = generate_insights(short, _merged(4))
+
+    assert len(insights) <= 2
+    assert "Apport estimé" not in " ".join(insight.title for insight in insights)
+
+
+def test_generate_insights_ranks_the_most_actionable_first():
+    daily = _daily(40)
+    # Une montée de charge brutale doit passer devant un constat de routine.
+    daily.loc[daily.index[-7:], "Strain"] = 19.0
+    daily.loc[daily.index[:-7], "Strain"] = 5.0
+
+    insights = generate_insights(daily, _merged(40))
+
+    assert insights
+    assert insights == sorted(insights, key=lambda item: item.priority, reverse=True)
+    assert any("charge" in insight.title.lower() for insight in insights)
+
+
+def test_generate_insights_reports_a_sharp_training_ramp_as_a_warning():
+    daily = _daily(40)
+    daily.loc[daily.index[:-7], "Strain"] = 5.0
+    daily.loc[daily.index[-7:], "Strain"] = 19.0
+
+    load = [insight for insight in generate_insights(daily) if "charge" in insight.title.lower()]
+
+    assert load and load[0].tone == "warning"
+
+
+def test_generate_insights_states_the_estimated_intake_when_data_allows():
+    merged = _merged(30, kg_per_day=-0.1, seed=5)
+
+    intake = [insight for insight in generate_insights(_daily(30, seed=5), merged) if "Apport estimé" in insight.title]
+
+    assert intake
+    # Le chiffre est présent dans l'énoncé, pas seulement dans un tableau.
+    assert "kcal" in intake[0].title
+
+
+def test_generate_insights_flags_an_accumulated_sleep_debt():
+    frame = pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-08-01", periods=7, freq="D"),
+            "Sommeil (heures)": [5.5] * 7,
+            "Besoin de sommeil (heures)": [8.0] * 7,
+            "Dette de sommeil (heures)": [2.5] * 7,
+        }
+    )
+
+    debt = [insight for insight in generate_insights(frame) if "Dette" in insight.title]
+
+    assert debt and debt[0].tone == "warning"
+    assert "17,5" in debt[0].body
+
+
+def test_generate_insights_celebrates_a_covered_sleep_need():
+    frame = pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-08-01", periods=7, freq="D"),
+            "Sommeil (heures)": [8.5] * 7,
+            "Besoin de sommeil (heures)": [8.0] * 7,
+            "Dette de sommeil (heures)": [-0.5] * 7,
+        }
+    )
+
+    covered = [insight for insight in generate_insights(frame) if "Besoin de sommeil couvert" in insight.title]
+
+    assert covered and covered[0].tone == "success"
+
+
+def test_generate_insights_warns_about_a_patchy_coverage():
+    frame = _daily(20).drop(index=list(range(5, 15))).reset_index(drop=True)
+
+    coverage = [insight for insight in generate_insights(frame) if "irrégulier" in insight.title]
+
+    assert coverage and coverage[0].tone == "warning"
+
+
+def test_generate_insights_on_empty_input_returns_nothing():
+    assert generate_insights(pd.DataFrame(), pd.DataFrame()) == []
+
+
+def test_generate_insights_respects_its_limit():
+    assert len(generate_insights(_daily(60), _merged(60), limit=3)) <= 3

@@ -427,3 +427,375 @@ def strain_recovery_balance(frame: pd.DataFrame | None) -> pd.DataFrame:
             signal = "cohérent"
         signals.append(signal)
     return usable.assign(Signal=signals)[columns].reset_index(drop=True)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Repères personnels, lissage et mise en base commune
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Fenêtre servant de référence personnelle, comme le fait WHOOP pour la HRV.
+BASELINE_DAYS = 30
+MIN_DAYS_BASELINE = 10
+
+
+def personal_baseline(frame: pd.DataFrame | None, metric: str, *, days: int = BASELINE_DAYS) -> dict[str, Any]:
+    """Compare la dernière valeur au repère personnel plutôt qu'à une norme.
+
+    Une HRV de 40 ms ne veut rien dire dans l'absolu : ce qui compte est l'écart
+    à votre propre habitude. La médiane est préférée à la moyenne car une seule
+    nuit blanche ne doit pas déplacer le repère.
+    """
+    result = {"ready": False, "metric": metric, "latest": float("nan"), "baseline": float("nan"), "deviation_pct": float("nan"), "days": 0}
+    data = _clean_daily(frame)
+    if data.empty or metric not in data.columns:
+        return result
+
+    series = data[metric].dropna()
+    result["days"] = int(len(series))
+    if len(series) < MIN_DAYS_BASELINE:
+        return result
+
+    # Le repère exclut la dernière mesure : sinon elle se compare à elle-même.
+    history = series.iloc[:-1].tail(max(1, int(days)))
+    baseline = float(history.median())
+    latest = float(series.iloc[-1])
+    result.update({"latest": latest, "baseline": baseline})
+    if not np.isfinite(baseline) or baseline == 0:
+        return result
+    result["deviation_pct"] = (latest - baseline) / abs(baseline) * 100.0
+    result["ready"] = True
+    return result
+
+
+def rolling_trend(frame: pd.DataFrame | None, metric: str, *, window: int = 7) -> pd.DataFrame:
+    """Moyenne glissante calendaire, pour lire la tendance sous le bruit quotidien."""
+    grid = daily_grid(frame)
+    if grid.empty or metric not in grid.columns:
+        return pd.DataFrame(columns=["Date", metric])
+    smoothed = grid[metric].rolling(window=max(2, int(window)), min_periods=max(2, int(window) // 2)).mean()
+    return pd.DataFrame({"Date": grid["Date"], metric: smoothed})
+
+
+def indexed_series(frame: pd.DataFrame | None, metrics: Sequence[str], *, base: float = 100.0) -> pd.DataFrame:
+    """Ramène plusieurs séries à une base commune pour les lire sur un seul axe.
+
+    Superposer un poids (kg) et une récupération (%) sur deux axes verticaux
+    fabrique une corrélation visuelle arbitraire : le calage des deux échelles
+    est un choix, pas une donnée. La mise en base commune supprime ce biais.
+    """
+    grid = daily_grid(frame)
+    columns = ["Date", *metrics]
+    if grid.empty:
+        return pd.DataFrame(columns=columns)
+
+    output = pd.DataFrame({"Date": grid["Date"]})
+    for metric in metrics:
+        if metric not in grid.columns:
+            continue
+        series = grid[metric]
+        first_valid = series.first_valid_index()
+        if first_valid is None:
+            continue
+        reference = float(series.loc[first_valid])
+        if not np.isfinite(reference) or reference == 0:
+            continue
+        output[metric] = series / reference * float(base)
+    return output
+
+
+def calendar_matrix(frame: pd.DataFrame | None, metric: str) -> dict[str, Any]:
+    """Matrice semaine × jour de semaine, pour lire un mois d'un seul coup d'œil."""
+    empty = {"values": [], "weeks": [], "weekdays": [], "dates": []}
+    grid = daily_grid(frame)
+    if grid.empty or metric not in grid.columns or not grid[metric].notna().any():
+        return empty
+
+    data = grid[["Date", metric]].copy()
+    data["_week"] = data["Date"].dt.to_period("W").dt.start_time
+    data["_dow"] = data["Date"].dt.dayofweek
+
+    weeks = sorted(data["_week"].unique())
+    labels = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
+    lookup: dict[tuple[Any, int], tuple[float, pd.Timestamp]] = {
+        (week, dow): (value, date)
+        for week, dow, value, date in zip(data["_week"], data["_dow"], data[metric], data["Date"])
+    }
+
+    values, dates = [], []
+    for week in weeks:
+        value_row, date_row = [], []
+        for dow in range(7):
+            value, date = lookup.get((week, dow), (float("nan"), None))
+            numeric = float(value) if value is not None else float("nan")
+            # Plotly attend None (et non NaN) pour laisser une case vide.
+            value_row.append(numeric if np.isfinite(numeric) else None)
+            date_row.append(pd.Timestamp(date) if date is not None else None)
+        values.append(value_row)
+        dates.append(date_row)
+
+    return {
+        "values": values,
+        "weeks": [pd.Timestamp(week) for week in weeks],
+        "weekdays": labels,
+        "dates": dates,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Lecture narrative
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Insight:
+    """Constat rédigé, porteur de son chiffre et de son niveau d'alerte."""
+
+    title: str
+    body: str
+    tone: str = "info"
+    icon: str = "💡"
+    priority: int = 50
+
+
+def _fr(value: float, decimals: int = 1, *, sign: bool = False) -> str:
+    """Nombre au format français, sans dépendre de la couche d'affichage."""
+    if value is None or not np.isfinite(value):
+        return "—"
+    prefix = ""
+    if sign:
+        prefix = "+" if value > 0 else "−" if value < 0 else ""
+        value = abs(value)
+    return f"{prefix}{value:.{decimals}f}".replace(".", ",")
+
+
+def _coverage_insight(daily: pd.DataFrame | None) -> Insight | None:
+    coverage = coverage_report(daily)
+    if coverage["span_days"] < 7 or coverage["coverage_pct"] >= 80:
+        return None
+    return Insight(
+        "Port du bracelet irrégulier",
+        f"{coverage['gaps']} jour(s) sans mesure sur {coverage['span_days']}, soit "
+        f"{_fr(coverage['coverage_pct'], 0)} % de couverture. Les moyennes et les tendances "
+        "portent donc sur une base incomplète.",
+        tone="warning",
+        icon="📡",
+        priority=70,
+    )
+
+
+def _recovery_insight(daily: pd.DataFrame | None) -> Insight | None:
+    grid = daily_grid(daily)
+    if grid.empty or "Récupération (%)" not in grid.columns:
+        return None
+    series = grid["Récupération (%)"].dropna()
+    if len(series) < 10:
+        return None
+
+    recent = float(series.tail(7).mean())
+    previous = float(series.iloc[:-7].tail(7).mean()) if len(series) > 7 else float("nan")
+    if not np.isfinite(previous):
+        return None
+
+    delta = recent - previous
+    if abs(delta) < 5:
+        return Insight(
+            "Récupération stable",
+            f"Moyenne de {_fr(recent, 0)} % sur les 7 derniers jours, contre {_fr(previous, 0)} % "
+            "sur les 7 précédents. Aucune dérive notable.",
+            tone="success",
+            icon="🟢",
+            priority=40,
+        )
+    improving = delta > 0
+    return Insight(
+        "Récupération en hausse" if improving else "Récupération en baisse",
+        f"{_fr(recent, 0)} % en moyenne sur 7 jours, soit {_fr(delta, 0, sign=True)} points "
+        f"par rapport aux 7 jours précédents ({_fr(previous, 0)} %).",
+        tone="success" if improving else "warning",
+        icon="📈" if improving else "📉",
+        priority=75 if not improving else 55,
+    )
+
+
+def _sleep_debt_insight(daily: pd.DataFrame | None) -> Insight | None:
+    debt = sleep_debt_summary(daily, days=7)
+    if debt["nights"] < 3 or not np.isfinite(debt["cumulative_debt"]):
+        return None
+    cumulative = debt["cumulative_debt"]
+    if cumulative <= 0:
+        return Insight(
+            "Besoin de sommeil couvert",
+            f"Sur {debt['nights']} nuit(s), vous dormez en moyenne {_fr(debt['mean_sleep'])} h "
+            f"pour un besoin estimé à {_fr(debt['mean_need'])} h. Aucune dette accumulée.",
+            tone="success",
+            icon="🛌",
+            priority=35,
+        )
+    severity = "warning" if cumulative >= 3 else "info"
+    return Insight(
+        "Dette de sommeil accumulée",
+        f"{_fr(cumulative)} h de retard sur {debt['nights']} nuit(s), soit {_fr(debt['mean_debt'])} h "
+        f"par nuit. WHOOP estime votre besoin à {_fr(debt['mean_need'])} h, vous en obtenez "
+        f"{_fr(debt['mean_sleep'])} h.",
+        tone=severity,
+        icon="😴",
+        priority=80 if cumulative >= 3 else 45,
+    )
+
+
+def _training_load_insight(daily: pd.DataFrame | None) -> Insight | None:
+    load = training_load(daily)
+    if not np.isfinite(load["ratio"]):
+        return None
+    ratio = load["ratio"]
+    if ratio > 1.5:
+        return Insight(
+            "Montée en charge brutale",
+            f"Votre charge des 7 derniers jours ({_fr(load['acute'])}) vaut {_fr(ratio, 2)} fois "
+            f"celle des 28 derniers ({_fr(load['chronic'])}). Au-delà de 1,5, l'augmentation "
+            "dépasse nettement vos habitudes récentes.",
+            tone="warning",
+            icon="⚠️",
+            priority=85,
+        )
+    if ratio < 0.8:
+        return Insight(
+            "Charge en retrait",
+            f"Votre charge récente ({_fr(load['acute'])}) ne représente que {_fr(ratio, 2)} fois "
+            f"votre charge habituelle ({_fr(load['chronic'])}).",
+            tone="info",
+            icon="🔽",
+            priority=45,
+        )
+    return Insight(
+        "Charge maîtrisée",
+        f"Rapport aigu/chronique de {_fr(ratio, 2)}, dans la plage généralement considérée "
+        "comme soutenable (0,8 à 1,3).",
+        tone="success",
+        icon="⚖️",
+        priority=30,
+    )
+
+
+def _baseline_insight(daily: pd.DataFrame | None, metric: str, label: str, *, lower_is_better: bool = False) -> Insight | None:
+    baseline = personal_baseline(daily, metric)
+    if not baseline["ready"] or abs(baseline["deviation_pct"]) < 10:
+        return None
+    below = baseline["deviation_pct"] < 0
+    favourable = below if lower_is_better else not below
+    return Insight(
+        f"{label} {'sous' if below else 'au-dessus de'} votre repère",
+        f"Dernière valeur {_fr(baseline['latest'])} contre {_fr(baseline['baseline'])} "
+        f"habituellement, soit {_fr(baseline['deviation_pct'], 0, sign=True)} %. "
+        "Le repère est la médiane de vos 30 derniers jours, pas une norme générale.",
+        tone="success" if favourable else "warning",
+        icon="🫀",
+        priority=60 if not favourable else 35,
+    )
+
+
+def _energy_insight(merged: pd.DataFrame | None) -> Insight | None:
+    balance = energy_balance(merged)
+    if not balance["ready"]:
+        return None
+    deficit = balance["imbalance_per_day"]
+    direction = "déficit" if deficit < 0 else "excédent"
+    return Insight(
+        f"Apport estimé à {_fr(balance['estimated_intake'], 0)} kcal/jour",
+        f"Votre dépense mesurée par WHOOP est de {_fr(balance['mean_burn'], 0)} kcal/jour et votre "
+        f"poids évolue de {_fr(balance['slope_kg_per_week'], 2, sign=True)} kg/semaine, ce qui "
+        f"correspond à un {direction} d'environ {_fr(abs(deficit), 0)} kcal/jour. "
+        "Estimation sensible aux variations d'eau et au bruit de pesée.",
+        tone="info",
+        icon="🔥",
+        priority=90,
+    )
+
+
+def _correlation_insight(merged: pd.DataFrame | None) -> Insight | None:
+    table = lagged_correlations(merged)
+    if table.empty:
+        return None
+    best = table.iloc[0]
+    if abs(float(best["Corrélation"])) < 0.4:
+        return None
+    lag = int(best["Décalage (jours)"])
+    when = "le jour même" if lag == 0 else f"avec {lag} jour(s) de décalage"
+    direction = "augmente" if float(best["Corrélation"]) > 0 else "diminue"
+    return Insight(
+        f"{best['Métrique']} suit votre variation de poids",
+        f"Corrélation de {_fr(float(best['Corrélation']), 2)} {when}, sur "
+        f"{int(best['Observations'])} observations : quand cette métrique monte, votre poids "
+        f"{direction}. Association statistique, pas une relation de cause à effet.",
+        tone="info",
+        icon="🔗",
+        priority=65,
+    )
+
+
+def _weekday_insight(daily: pd.DataFrame | None) -> Insight | None:
+    profile = weekday_profile(daily, "Récupération (%)")
+    if profile.empty:
+        return None
+    usable = profile.dropna(subset=["Moyenne"])
+    # Deux mesures par jour de semaine au minimum, sinon un mauvais lundi isolé
+    # se transformerait en « pattern du lundi ».
+    usable = usable[usable["Observations"] >= 2]
+    if len(usable) < 5:
+        return None
+
+    worst = usable.loc[usable["Moyenne"].idxmin()]
+    overall = float(usable["Moyenne"].mean())
+    gap = overall - float(worst["Moyenne"])
+    if gap < 8:
+        return None
+    return Insight(
+        f"Creux récurrent le {str(worst['Jour']).lower()}",
+        f"Récupération moyenne de {_fr(float(worst['Moyenne']), 0)} % ce jour-là, contre "
+        f"{_fr(overall, 0)} % en moyenne sur la semaine, sur {int(worst['Observations'])} "
+        "occurrences.",
+        tone="warning",
+        icon="📆",
+        priority=55,
+    )
+
+
+def _drivers_insight(daily: pd.DataFrame | None) -> Insight | None:
+    drivers = recovery_drivers(daily)
+    if not drivers["ready"] or drivers["r_squared"] < 0.25:
+        return None
+    coefficient = drivers["coefficients"].get("Sommeil (heures)")
+    if coefficient is None or abs(coefficient) < 1:
+        return None
+    return Insight(
+        "Ce qu'une heure de sommeil vous rapporte",
+        f"Sur vos {drivers['days']} jours de données, chaque heure de sommeil supplémentaire "
+        f"s'accompagne de {_fr(coefficient, 1, sign=True)} point(s) de récupération. Le modèle "
+        f"explique {_fr(drivers['r_squared'] * 100, 0)} % des variations.",
+        tone="success" if coefficient > 0 else "info",
+        icon="🔬",
+        priority=70,
+    )
+
+
+def generate_insights(daily: pd.DataFrame | None, merged: pd.DataFrame | None = None, *, limit: int = 6) -> list[Insight]:
+    """Constats rédigés, classés par importance décroissante.
+
+    Chaque règle reste muette tant que ses conditions d'effectif ne sont pas
+    réunies : une page sans constat vaut mieux qu'un constat inventé.
+    """
+    candidates = [
+        _coverage_insight(daily),
+        _energy_insight(merged),
+        _training_load_insight(daily),
+        _sleep_debt_insight(daily),
+        _recovery_insight(daily),
+        _drivers_insight(daily),
+        _correlation_insight(merged),
+        _weekday_insight(daily),
+        _baseline_insight(daily, "HRV (ms)", "Variabilité cardiaque"),
+        _baseline_insight(daily, "FC repos (bpm)", "Fréquence au repos", lower_is_better=True),
+    ]
+    found = [insight for insight in candidates if insight is not None]
+    found.sort(key=lambda insight: insight.priority, reverse=True)
+    return found[: max(1, int(limit))]

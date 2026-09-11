@@ -6,27 +6,42 @@ import os
 
 import numpy as np
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 
 from app.core.formatting import MISSING_VALUE as MISSING_TEXT, format_fr_date, format_fr_number
 from app.core.whoop_analytics import (
     KCAL_PER_KG,
+    MIN_DAYS_BASELINE,
     MIN_DAYS_CORRELATION,
     MIN_DAYS_TRAINING_LOAD,
+    Insight,
     analysis_availability,
+    calendar_matrix,
     coverage_report,
     daily_grid,
     energy_balance,
+    generate_insights,
+    indexed_series,
     lagged_correlations,
+    personal_baseline,
     recovery_drivers,
     recovery_zones,
+    rolling_trend,
     sleep_debt_summary,
     strain_recovery_balance,
     training_load,
     weekday_profile,
     weekly_rollup,
+)
+from app.ui.whoop_visuals import (
+    indexed_comparison_chart,
+    recovery_calendar,
+    recovery_gauge,
+    series_chart,
+    sleep_stages_chart,
+    sparkline,
+    weekday_chart,
+    zone_distribution_chart,
 )
 from app.core.session_state import (
     DEFAULT_WHOOP_SYNC_DAYS,
@@ -357,6 +372,12 @@ def _sync_panel(credentials, token: WhoopToken) -> None:
 # Mise en forme
 # ──────────────────────────────────────────────────────────────────────────────
 
+PERIOD_CHOICES: dict[str, int | None] = {
+    "7 jours": 7,
+    "30 jours": 30,
+    "90 jours": 90,
+    "Tout": None,
+}
 
 def _metric_value(metric: str, value: float) -> str:
     return format_fr_number(value, decimals=METRIC_DECIMALS.get(metric, 1))
@@ -371,11 +392,7 @@ def _metric_delta(metric: str, delta: float) -> str:
 
 
 def _format_table(frame: pd.DataFrame, decimals: dict[str, int] | None = None) -> pd.DataFrame:
-    """Rend un tableau lisible : décimales maîtrisées, dates courtes, vides explicites.
-
-    Les tableaux bruts affichaient « 2026-09-10 00:00:00 » et « 110.7652 » ; le
-    bruit numérique masquait l'information utile.
-    """
+    """Rend un tableau lisible : décimales maîtrisées, dates courtes, vides explicites."""
     if frame is None or frame.empty:
         return frame if frame is not None else pd.DataFrame()
     rules = decimals or {}
@@ -392,54 +409,62 @@ def _format_table(frame: pd.DataFrame, decimals: dict[str, int] | None = None) -
     return display
 
 
-def _daily_axis(figure: go.Figure) -> go.Figure:
-    """Force un axe calendaire.
+def _table_view(frame: pd.DataFrame, label: str = "Voir les valeurs", decimals: dict[str, int] | None = None) -> None:
+    """Contrepartie tabulaire d'un graphique.
 
-    Avec deux ou trois points, Plotly bascule en graduations horaires et affiche
-    « 03:00, 06:00 » sur des mesures quotidiennes, ce qui est trompeur.
+    Toute valeur portée par une couleur ou une position doit rester lisible
+    autrement : c'est la condition d'accessibilité des graphiques colorés.
     """
-    figure.update_xaxes(tickformat="%d/%m", dtick="D1", ticklabelmode="period")
-    return figure
-
-
-def _line_chart(
-    daily: pd.DataFrame,
-    metrics: list[str],
-    title: str,
-    y_title: str,
-    *,
-    key: str | None = None,
-) -> None:
-    """Courbes sur calendrier continu : un jour sans mesure reste un trou visible."""
-    grid = daily_grid(daily)
-    usable = [metric for metric in metrics if metric in grid.columns and grid[metric].notna().any()]
-    if not usable:
-        st.info("Métrique indisponible sur la période importée.")
+    if frame is None or frame.empty:
         return
+    with st.expander(label, expanded=False):
+        st.dataframe(_format_table(frame, decimals), use_container_width=True, hide_index=True)
 
-    figure = go.Figure()
-    for metric in usable:
-        figure.add_scatter(
-            x=grid["Date"],
-            y=grid[metric],
-            mode="lines+markers",
-            name=metric,
-            connectgaps=False,
-            hovertemplate="%{x|%d/%m/%Y}<br>" + metric + " : %{y:.2f}<extra></extra>",
-        )
-    figure.update_layout(
-        title=title,
-        xaxis_title="Date",
-        yaxis_title=y_title,
-        hovermode="x unified",
-        template=_plot_template(),
-        margin=dict(t=60, b=40),
-    )
-    st.plotly_chart(_daily_axis(figure), use_container_width=True, key=key)
+
+def _render_chart(figure, key: str, *, fallback: str = "Métrique indisponible sur la période choisie.") -> None:
+    if figure is None:
+        st.info(fallback)
+        return
+    st.plotly_chart(figure, use_container_width=True, key=key)
+
+
+def _apply_period(frame: pd.DataFrame, days: int | None) -> pd.DataFrame:
+    """Restreint une trame aux *days* derniers jours calendaires."""
+    if frame is None or frame.empty or days is None or "Date" not in frame.columns:
+        return frame if frame is not None else pd.DataFrame()
+    data = frame.copy(deep=True)
+    data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
+    data = data.dropna(subset=["Date"])
+    if data.empty:
+        return data
+    cutoff = data["Date"].max() - pd.Timedelta(days=int(days) - 1)
+    return data[data["Date"] >= cutoff].reset_index(drop=True)
 
 
 def _zone_badge(zone: str | None) -> str:
     return {"Vert": "🟢", "Jaune": "🟡", "Rouge": "🔴"}.get(str(zone), "⚪")
+
+
+def _render_insights(insights: list[Insight]) -> None:
+    """Constats rédigés, du plus important au moins important."""
+    if not insights:
+        st.info(
+            "Aucun constat fiable pour l'instant : quelques jours de mesures supplémentaires "
+            "suffiront à en faire émerger."
+        )
+        return
+    for insight in insights:
+        insight_card(insight.title, insight.body, tone=insight.tone, icon=insight.icon)
+
+
+def _unlock_progress(daily: pd.DataFrame, merged: pd.DataFrame) -> None:
+    """Ce qui est actif et ce qui reste à attendre, sous forme de progression."""
+    for item in analysis_availability(daily, merged):
+        if item.ready:
+            st.markdown(f"✅ **{item.name}** — active sur {item.available} jour(s)")
+            continue
+        st.markdown(f"⏳ **{item.name}** — encore {item.missing} jour(s) de mesure")
+        st.progress(min(1.0, item.available / item.required))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -447,52 +472,61 @@ def _zone_badge(zone: str | None) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _today_panel(daily: pd.DataFrame) -> None:
-    """Ce que WHOOP montre sur son écran d'accueil, resitué dans une tendance."""
+def _headline_panel(daily: pd.DataFrame) -> None:
+    """Bandeau d'ouverture : dernier score en jauge, puis moyennes sur 7 jours."""
     zones = recovery_zones(daily)
     summary = summarise_daily(daily, days=7)
     grid = daily_grid(daily)
-    # Un subset vide ferait tomber toutes les lignes sans le dire : on vérifie
-    # d'abord qu'au moins une colonne clé existe.
-    key_columns = [c for c in ("Récupération (%)", "Strain", "Sommeil (heures)") if c in grid.columns]
-    latest = grid.dropna(subset=key_columns, how="all") if key_columns else grid.iloc[0:0]
-    latest_date = latest["Date"].max() if not latest.empty else None
 
-    section_header(
-        "État actuel",
-        f"Dernière journée mesurée : {format_fr_date(latest_date)}." if latest_date is not None else "Aucune journée complète mesurée.",
-        "🎯",
-    )
+    gauge_column, metrics_column = st.columns([1, 2])
+    with gauge_column:
+        if zones["days"]:
+            _render_chart(recovery_gauge(zones["latest"], zones["latest_zone"]), "whoop-gauge")
+            st.caption(
+                f"Dernier score : {_zone_badge(zones['latest_zone'])} zone "
+                f"{str(zones['latest_zone']).lower()} — seuils WHOOP : rouge sous 34 %, vert dès 67 %."
+            )
+        else:
+            empty_state("Aucun score de récupération sur la période choisie.")
 
-    headline = [m for m in ("Récupération (%)", "HRV (ms)", "Sommeil (heures)", "Strain") if m in summary]
-    if not headline:
-        empty_state("Aucune métrique WHOOP exploitable sur la période importée.")
-        return
+    with metrics_column:
+        headline = [m for m in ("HRV (ms)", "Sommeil (heures)", "Strain") if m in summary]
+        if not headline:
+            st.info("Pas encore assez de métriques pour un résumé.")
+            return
+        st.caption("Moyennes des 7 derniers jours, comparées aux 7 jours précédents.")
+        columns = st.columns(len(headline))
+        for column, metric in zip(columns, headline):
+            stats = summary[metric]
+            delta = stats["delta"]
+            with column:
+                if pd.notna(delta):
+                    st.metric(
+                        metric,
+                        _metric_value(metric, stats["current"]),
+                        _metric_delta(metric, delta),
+                        delta_color="normal" if metric in HIGHER_IS_BETTER else "inverse",
+                    )
+                else:
+                    kpi_card(metric, _metric_value(metric, stats["current"]), help_text="Pas encore de période précédente pour comparer.")
+                values = grid[metric].dropna().tail(14) if metric in grid.columns else pd.Series(dtype=float)
+                if len(values) >= 3:
+                    st.plotly_chart(
+                        sparkline(values.tolist(), positive=metric in HIGHER_IS_BETTER),
+                        use_container_width=True,
+                        key=f"whoop-spark-{metric}",
+                        config={"displayModeBar": False},
+                    )
 
-    st.caption("Moyennes des 7 derniers jours disponibles, comparées aux 7 jours précédents.")
-    columns = st.columns(len(headline))
-    for column, metric in zip(columns, headline):
-        stats = summary[metric]
-        delta = stats["delta"]
-        label = metric
-        if metric == "Récupération (%)" and zones["latest_zone"]:
-            label = f"{_zone_badge(zones['latest_zone'])} {metric}"
-        with column:
-            if pd.notna(delta):
-                st.metric(
-                    label,
-                    _metric_value(metric, stats["current"]),
-                    _metric_delta(metric, delta),
-                    delta_color="normal" if metric in HIGHER_IS_BETTER else "inverse",
-                )
-            else:
-                kpi_card(label, _metric_value(metric, stats["current"]), help_text="Pas encore de période précédente pour comparer.")
 
+def _overview_tab(daily: pd.DataFrame, merged: pd.DataFrame) -> None:
+    _headline_panel(daily)
 
-def _coverage_panel(daily: pd.DataFrame, merged: pd.DataFrame) -> None:
-    """Dit franchement sur quelle matière les analyses reposent."""
-    coverage = coverage_report(daily)
-    with st.expander("Fiabilité : sur quoi reposent ces chiffres ?", expanded=False):
+    section_header("Ce que disent vos données", "Constats classés par importance, chiffres à l'appui.", "🧠")
+    _render_insights(generate_insights(daily, merged))
+
+    with st.expander("Sur quoi reposent ces chiffres ?", expanded=False):
+        coverage = coverage_report(daily)
         cols = st.columns(3)
         with cols[0]:
             kpi_card("Jours mesurés", f"{coverage['days_with_data']}", help_text=f"Sur {coverage['span_days']} jour(s) de période")
@@ -500,96 +534,83 @@ def _coverage_panel(daily: pd.DataFrame, merged: pd.DataFrame) -> None:
             kpi_card("Couverture", f"{format_fr_number(coverage['coverage_pct'], decimals=0)} %", help_text=f"{coverage['gaps']} jour(s) sans mesure")
         with cols[2]:
             kpi_card("Jours croisés avec une pesée", f"{len(merged)}")
-
-        st.caption("Analyses débloquées au fil des mesures :")
-        for item in analysis_availability(daily, merged):
-            if item.ready:
-                st.markdown(f"- ✅ **{item.name}** — active ({item.available} jour(s))")
-            else:
-                st.markdown(
-                    f"- ⏳ **{item.name}** — encore {item.missing} jour(s) de mesure "
-                    f"({item.available}/{item.required})"
-                )
+        st.divider()
+        _unlock_progress(daily, merged)
         st.caption(
-            "Un seuil n'est pas une coquetterie : sur trop peu de jours, une corrélation "
-            "ou une pente reflète le bruit de mesure plutôt qu'une tendance."
+            "Un seuil n'est pas une coquetterie : sous cet effectif, une pente ou une "
+            "corrélation décrit le bruit de mesure plutôt qu'une tendance."
         )
-
-
-def _overview_tab(daily: pd.DataFrame, merged: pd.DataFrame) -> None:
-    _today_panel(daily)
-    _coverage_panel(daily, merged)
 
     section_header("Tendances", "Chaque indicateur sur son échelle, les jours sans mesure restant vides.", "📈")
-    # Récupération, sommeil et strain ne partagent pas d'unité : les superposer
-    # écrasait le sommeil et le strain sous l'échelle 0-100 de la récupération.
-    trend_specs = [
-        (["Récupération (%)"], "Récupération", "%"),
-        (["Sommeil (heures)", "Besoin de sommeil (heures)"], "Sommeil obtenu et besoin estimé", "heures"),
-        (["Strain"], "Charge quotidienne", "strain"),
+    grid = daily_grid(daily)
+    specs = [
+        (["Récupération (%)"], "Récupération", "%", "Récupération (%)"),
+        (["Sommeil (heures)", "Besoin de sommeil (heures)"], "Sommeil obtenu et besoin estimé", "heures", "Sommeil (heures)"),
+        (["Strain"], "Charge quotidienne", "strain", "Strain"),
     ]
-    for metrics, title, unit in trend_specs:
-        _line_chart(daily, metrics, title, unit, key=f"whoop-trend-{title}")
-
-    with st.expander("Données journalières WHOOP", expanded=False):
-        st.dataframe(_format_table(daily), use_container_width=True, hide_index=True)
-        st.download_button(
-            "Exporter les données WHOOP (CSV)",
-            daily.to_csv(index=False).encode("utf-8"),
-            file_name="whoop_daily.csv",
-            mime="text/csv",
+    for metrics, title, unit, trend_metric in specs:
+        _render_chart(
+            series_chart(grid, metrics, title, unit, trend=rolling_trend(daily, trend_metric)),
+            f"whoop-trend-{trend_metric}",
         )
+
+    _table_view(daily, "Toutes les données journalières")
+    st.download_button(
+        "Exporter les données WHOOP (CSV)",
+        daily.to_csv(index=False).encode("utf-8"),
+        file_name="whoop_daily.csv",
+        mime="text/csv",
+    )
 
 
 def _recovery_tab(daily: pd.DataFrame) -> None:
     zones = recovery_zones(daily)
-    section_header("Zones de récupération", "Répartition selon les seuils WHOOP : rouge sous 34 %, vert à partir de 67 %.", "🚦")
+    grid = daily_grid(daily)
+
+    section_header("Zones de récupération", "Seuils WHOOP : rouge sous 34 %, vert à partir de 67 %.", "🚦")
     if zones["days"] == 0:
-        st.info("Aucun score de récupération sur la période importée.")
+        st.info("Aucun score de récupération sur la période choisie.")
     else:
-        cols = st.columns([2, 3])
+        cols = st.columns([3, 2])
         with cols[0]:
-            st.dataframe(_format_table(zones["counts"], {"Jours": 0, "Part (%)": 1}), use_container_width=True, hide_index=True)
-            if zones["latest_zone"]:
-                st.caption(
-                    f"Dernier score : {_zone_badge(zones['latest_zone'])} "
-                    f"{format_fr_number(zones['latest'], decimals=0)} % (zone {zones['latest_zone'].lower()})."
-                )
+            _render_chart(recovery_calendar(calendar_matrix(daily, "Récupération (%)")), "whoop-calendar")
         with cols[1]:
-            counts = zones["counts"]
-            figure = px.bar(
-                counts,
-                x="Zone",
-                y="Jours",
-                color="Zone",
-                color_discrete_map={"Rouge": "#dc2626", "Jaune": "#f59e0b", "Vert": "#16a34a"},
-                title="Jours par zone de récupération",
-                template=_plot_template(),
-            )
-            figure.update_layout(showlegend=False, margin=dict(t=60, b=40))
-            st.plotly_chart(figure, use_container_width=True, key="whoop-recovery-zones")
+            _render_chart(zone_distribution_chart(zones["counts"]), "whoop-zones")
+        _table_view(zones["counts"], "Voir la répartition chiffrée", {"Jours": 0, "Part (%)": 1})
 
-    _line_chart(daily, ["Récupération (%)"], "Score de récupération quotidien", "%", key="whoop-recovery-series")
-    _line_chart(daily, ["HRV (ms)", "FC repos (bpm)"], "Variabilité cardiaque et fréquence au repos", "Valeur", key="whoop-recovery-hrv")
-    _line_chart(daily, ["Température peau (°C)", "SpO2 (%)"], "Température cutanée et saturation en oxygène", "Valeur", key="whoop-recovery-temp")
+    _render_chart(
+        series_chart(grid, ["Récupération (%)"], "Score de récupération quotidien", "%", trend=rolling_trend(daily, "Récupération (%)")),
+        "whoop-recovery-series",
+    )
+    _render_chart(series_chart(grid, ["HRV (ms)", "FC repos (bpm)"], "Variabilité cardiaque et fréquence au repos", "Valeur"), "whoop-recovery-hrv")
+    _render_chart(series_chart(grid, ["Température peau (°C)", "SpO2 (%)"], "Température cutanée et saturation", "Valeur"), "whoop-recovery-temp")
 
-    section_header("Moteurs de la récupération", "Ce qui fait réellement bouger votre score, chiffré plutôt que supposé.", "🔬")
+    section_header("Écart à votre repère personnel", "Une valeur ne vaut que comparée à vos propres habitudes.", "🫀")
+    baseline_cols = st.columns(2)
+    for column, (metric, label) in zip(baseline_cols, [("HRV (ms)", "Variabilité cardiaque"), ("FC repos (bpm)", "Fréquence au repos")]):
+        baseline = personal_baseline(daily, metric)
+        with column:
+            if not baseline["ready"]:
+                kpi_card(label, "—", help_text=f"Repère disponible dès {MIN_DAYS_BASELINE} jours (actuellement {baseline['days']}).")
+            else:
+                st.metric(
+                    label,
+                    f"{format_fr_number(baseline['latest'], decimals=0)}",
+                    f"{'+' if baseline['deviation_pct'] > 0 else '-'}{format_fr_number(abs(baseline['deviation_pct']), decimals=0)} %",
+                    delta_color="normal" if metric in HIGHER_IS_BETTER else "inverse",
+                    help=f"Repère : médiane de vos 30 derniers jours ({format_fr_number(baseline['baseline'], decimals=0)}).",
+                )
+
+    section_header("Moteurs de la récupération", "Ce qui fait bouger votre score, chiffré plutôt que supposé.", "🔬")
     drivers = recovery_drivers(daily)
     if not drivers["ready"]:
-        st.info(
-            f"Analyse disponible à partir de {drivers['required_days']} jours complets "
-            f"(actuellement {drivers['days']})."
-        )
+        st.info(f"Analyse disponible à partir de {drivers['required_days']} jours complets (actuellement {drivers['days']}).")
     else:
         driver_cols = st.columns(len(drivers["coefficients"]) + 1)
         for column, (name, coefficient) in zip(driver_cols, drivers["coefficients"].items()):
-            unit = "h" if "Sommeil" in name else "point de strain"
+            unit = "h de sommeil" if "Sommeil" in name else "point de strain"
             with column:
-                kpi_card(
-                    name,
-                    f"{format_fr_number(coefficient, decimals=1, sign=True)} pt",
-                    help_text=f"Variation du score de récupération par {unit} supplémentaire.",
-                )
+                kpi_card(name, f"{format_fr_number(coefficient, decimals=1, sign=True)} pt", help_text=f"Par {unit} supplémentaire.")
         with driver_cols[-1]:
             kpi_card("Pouvoir explicatif", f"{format_fr_number(drivers['r_squared'] * 100, decimals=0)} %")
         if drivers["r_squared"] < 0.15:
@@ -598,12 +619,16 @@ def _recovery_tab(daily: pd.DataFrame) -> None:
                 "sommeil et charge de la veille ne suffisent pas à prédire la récupération."
             )
 
+    _render_chart(weekday_chart(weekday_profile(daily, "Récupération (%)"), "Récupération (%)"), "whoop-recovery-weekday", fallback="Profil hebdomadaire disponible après quelques semaines.")
+
 
 def _sleep_tab(daily: pd.DataFrame) -> None:
+    grid = daily_grid(daily)
     debt = sleep_debt_summary(daily, days=7)
-    section_header("Dette de sommeil", "Écart entre le besoin estimé par WHOOP et le sommeil réellement obtenu.", "🛌")
+
+    section_header("Dette de sommeil", "Écart entre le besoin estimé par WHOOP et le sommeil obtenu.", "🛌")
     if debt["nights"] == 0:
-        st.info("Aucune nuit exploitable sur la période importée.")
+        st.info("Aucune nuit exploitable sur la période choisie.")
     else:
         cols = st.columns(4)
         with cols[0]:
@@ -619,72 +644,50 @@ def _sleep_tab(daily: pd.DataFrame) -> None:
         with cols[3]:
             kpi_card("Besoin moyen", f"{format_fr_number(debt['mean_need'], decimals=1)} h")
 
-    _line_chart(daily, ["Sommeil (heures)", "Besoin de sommeil (heures)"], "Sommeil obtenu face au besoin", "Heures", key="whoop-sleep-need")
-    _line_chart(daily, ["Dette de sommeil (heures)"], "Dette de sommeil nuit par nuit", "Heures", key="whoop-sleep-debt")
+    _render_chart(series_chart(grid, ["Sommeil (heures)", "Besoin de sommeil (heures)"], "Sommeil obtenu face au besoin", "Heures"), "whoop-sleep-need")
+    _render_chart(
+        series_chart(grid, ["Dette de sommeil (heures)"], "Dette de sommeil nuit par nuit", "Heures", trend=rolling_trend(daily, "Dette de sommeil (heures)")),
+        "whoop-sleep-debt",
+    )
 
     quality_metrics = ["Performance sommeil (%)", "Efficacité sommeil (%)", "Régularité sommeil (%)"]
     # Une métrique constamment nulle n'est pas une information : WHOOP la laisse
-    # vide tant que l'historique est trop court pour la calculer.
+    # à zéro tant que l'historique est trop court pour la calculer.
     informative = [
         metric
         for metric in quality_metrics
         if metric in daily.columns and daily[metric].notna().any() and float(daily[metric].fillna(0).abs().sum()) > 0
     ]
-    _line_chart(daily, informative or quality_metrics, "Qualité du sommeil", "%", key="whoop-sleep-quality")
+    _render_chart(series_chart(grid, informative or quality_metrics, "Qualité du sommeil", "%"), "whoop-sleep-quality")
     ignored = [metric for metric in quality_metrics if metric not in informative]
     if informative and ignored:
-        st.caption(
-            "Métrique(s) masquée(s) car encore nulle(s) chez WHOOP : "
-            + ", ".join(ignored)
-            + ". Elles apparaîtront une fois l'historique suffisant."
-        )
+        st.caption("Métrique(s) masquée(s) car encore nulle(s) chez WHOOP : " + ", ".join(ignored) + ".")
 
-    stages = [m for m in ("Sommeil profond (heures)", "Sommeil REM (heures)") if m in daily.columns and daily[m].notna().any()]
-    if stages:
-        stacked = daily_grid(daily).melt(id_vars="Date", value_vars=stages, var_name="Stade", value_name="Heures").dropna(subset=["Heures"])
-        figure = px.bar(stacked, x="Date", y="Heures", color="Stade", title="Répartition des stades de sommeil", template=_plot_template())
-        figure.update_layout(barmode="stack", xaxis_title="Date", yaxis_title="Heures", margin=dict(t=60, b=40), bargap=0.35)
-        st.plotly_chart(_daily_axis(figure), use_container_width=True, key="whoop-sleep-stages")
+    _render_chart(sleep_stages_chart(grid), "whoop-sleep-stages", fallback="Stades de sommeil indisponibles sur la période choisie.")
 
     if "Heure de coucher" in daily.columns and daily["Heure de coucher"].notna().sum() >= 3:
-        section_header("Régularité du coucher", "Heure d'endormissement ramenée sur une échelle continue autour de minuit.", "🕰️")
-        bedtime = daily_grid(daily)[["Date", "Heure de coucher"]].dropna()
-        spread = float(bedtime["Heure de coucher"].std())
-        figure = go.Figure()
-        figure.add_scatter(
-            x=bedtime["Date"],
-            y=bedtime["Heure de coucher"],
-            mode="lines+markers",
-            name="Heure de coucher",
-            connectgaps=False,
-            hovertemplate="%{x|%d/%m/%Y}<br>Coucher : %{y:.2f} h<extra></extra>",
-        )
-        figure.update_layout(
-            title="Heure de coucher",
-            xaxis_title="Date",
-            yaxis_title="Heure (négatif = avant minuit)",
-            template=_plot_template(),
-            margin=dict(t=60, b=40),
-        )
-        st.plotly_chart(_daily_axis(figure), use_container_width=True, key="whoop-sleep-bedtime")
+        section_header("Régularité du coucher", "Heure d'endormissement sur une échelle continue autour de minuit.", "🕰️")
+        spread = float(daily["Heure de coucher"].std())
+        _render_chart(series_chart(grid, ["Heure de coucher"], "Heure de coucher", "Heure (négatif = avant minuit)"), "whoop-sleep-bedtime")
         st.caption(
             f"Dispersion des couchers : {format_fr_number(spread, decimals=1)} h d'écart-type. "
             "Une dispersion faible traduit un rythme régulier, que WHOOP relie à la qualité du sommeil."
         )
 
+    _table_view(daily[[c for c in daily.columns if c == "Date" or "ommeil" in c or "coucher" in c]], "Voir les nuits")
+
 
 def _effort_tab(daily: pd.DataFrame, workouts: pd.DataFrame) -> None:
+    grid = daily_grid(daily)
     load = training_load(daily)
+
     section_header(
         "Charge d'entraînement",
-        "Charge des 7 derniers jours rapportée à celle des 28 derniers : un indicateur de progression que WHOOP n'affiche pas.",
+        "Charge des 7 derniers jours rapportée à celle des 28 derniers : une dynamique que WHOOP n'affiche pas.",
         "⚖️",
     )
     if not np.isfinite(load["ratio"]):
-        st.info(
-            f"Indicateur disponible à partir de {MIN_DAYS_TRAINING_LOAD} jours de mesure "
-            f"(actuellement {load['days']})."
-        )
+        st.info(f"Indicateur disponible à partir de {MIN_DAYS_TRAINING_LOAD} jours de mesure (actuellement {load['days']}).")
     else:
         cols = st.columns(3)
         with cols[0]:
@@ -693,31 +696,26 @@ def _effort_tab(daily: pd.DataFrame, workouts: pd.DataFrame) -> None:
             kpi_card("Charge chronique (28 j)", format_fr_number(load["chronic"], decimals=1))
         with cols[2]:
             kpi_card("Rapport aigu / chronique", format_fr_number(load["ratio"], decimals=2), help_text=load["status"])
-        tone = "warning" if load["ratio"] > 1.5 or load["ratio"] < 0.8 else "success"
         insight_card(
             f"Charge : {load['status']}",
             "Entre 0,8 et 1,3, la progression est généralement considérée comme soutenable. "
-            "Au-delà de 1,5, l'augmentation est brutale par rapport à vos habitudes récentes.",
-            tone=tone,
+            "Au-delà de 1,5, l'augmentation dépasse nettement vos habitudes récentes.",
+            tone="warning" if load["ratio"] > 1.5 or load["ratio"] < 0.8 else "success",
             icon="⚖️",
         )
 
-    _line_chart(daily, ["Strain"], "Charge quotidienne (strain)", "Strain", key="whoop-effort-strain")
-    _line_chart(daily, ["Calories (kcal)"], "Dépense énergétique quotidienne", "kcal", key="whoop-effort-calories")
+    _render_chart(series_chart(grid, ["Strain"], "Charge quotidienne", "Strain", trend=rolling_trend(daily, "Strain")), "whoop-effort-strain")
+    _render_chart(series_chart(grid, ["Calories (kcal)"], "Dépense énergétique quotidienne", "kcal", trend=rolling_trend(daily, "Calories (kcal)")), "whoop-effort-calories")
 
     balance = strain_recovery_balance(daily)
     if not balance.empty:
         flagged = balance[balance["Signal"] != "cohérent"]
         if not flagged.empty:
             section_header("Jours à surveiller", "Charge et récupération qui ne vont pas dans le même sens.", "⚠️")
-            st.dataframe(
-                _format_table(flagged, {"Récupération (%)": 0, "Strain": 1}),
-                use_container_width=True,
-                hide_index=True,
-            )
+            st.dataframe(_format_table(flagged, {"Récupération (%)": 0, "Strain": 1}), use_container_width=True, hide_index=True)
 
     if workouts is None or workouts.empty:
-        st.info("Aucune séance enregistrée sur la période importée.")
+        st.info("Aucune séance enregistrée sur la période choisie.")
         return
 
     section_header("Séances", "Détail des entraînements enregistrés par le bracelet.", "🏃")
@@ -740,29 +738,21 @@ def _effort_tab(daily: pd.DataFrame, workouts: pd.DataFrame) -> None:
         use_container_width=True,
         hide_index=True,
     )
-    st.dataframe(
-        _format_table(
-            detailed.sort_values("Date", ascending=False),
-            {"Durée (min)": 0, "Strain séance": 1, "Calories séance (kcal)": 0, "FC moyenne (bpm)": 0, "FC max (bpm)": 0, "Distance (km)": 2},
-        ),
-        use_container_width=True,
-        hide_index=True,
+    _table_view(
+        detailed.sort_values("Date", ascending=False),
+        "Voir chaque séance",
+        {"Durée (min)": 0, "Strain séance": 1, "Calories séance (kcal)": 0, "FC moyenne (bpm)": 0, "FC max (bpm)": 0, "Distance (km)": 2},
     )
 
 
 def _energy_balance_panel(merged: pd.DataFrame) -> None:
     """Le croisement que ni WHOOP ni une balance ne peuvent produire seuls."""
-    section_header(
-        "Bilan énergétique estimé",
-        "La dépense vient de WHOOP, le déficit de votre courbe de poids : l'apport s'en déduit.",
-        "🔥",
-    )
+    section_header("Bilan énergétique estimé", "La dépense vient de WHOOP, le déficit de votre courbe de poids : l'apport s'en déduit.", "🔥")
     balance = energy_balance(merged)
     if not balance["ready"]:
-        st.info(
-            f"Estimation disponible à partir de {balance['required_days']} jours croisés "
-            f"(actuellement {balance['days']}). Il manque {max(0, balance['required_days'] - balance['days'])} jour(s)."
-        )
+        missing = max(0, balance["required_days"] - balance["days"])
+        st.info(f"Estimation disponible à partir de {balance['required_days']} jours croisés : il en manque {missing}.")
+        st.progress(min(1.0, balance["days"] / balance["required_days"]))
         if np.isfinite(balance["mean_burn"]):
             st.caption(f"Dépense moyenne déjà mesurée : {format_fr_number(balance['mean_burn'], decimals=0)} kcal/jour.")
         return
@@ -784,18 +774,14 @@ def _energy_balance_panel(merged: pd.DataFrame) -> None:
     st.caption(
         "Méthode : la pente du poids est convertie en énergie sur la base de "
         f"{format_fr_number(KCAL_PER_KG, decimals=0)} kcal par kilogramme, puis ajoutée à la dépense "
-        "mesurée par WHOOP. C'est une estimation : les variations d'eau et de glycogène, "
-        "le bruit de pesée et la précision de la dépense WHOOP s'y répercutent directement."
+        "mesurée par WHOOP. Estimation sensible aux variations d'eau et de glycogène, au bruit de "
+        "pesée et à la précision de la dépense WHOOP."
     )
 
 
 def _weight_tab(daily: pd.DataFrame, merged: pd.DataFrame) -> None:
-    weights = get_filtered_or_working_data()
-    if weights.empty:
-        empty_state("Aucune mesure de poids chargée : le croisement nécessite les deux sources.")
-        return
     if merged.empty:
-        st.info("Aucun jour commun entre vos pesées et la période WHOOP importée.")
+        empty_state("Aucun jour commun entre vos pesées et la période WHOOP choisie.")
         return
 
     st.caption(
@@ -805,7 +791,7 @@ def _weight_tab(daily: pd.DataFrame, merged: pd.DataFrame) -> None:
 
     _energy_balance_panel(merged)
 
-    section_header("Poids et métrique WHOOP", "Deux échelles distinctes, superposées sur la même période.", "⚖️")
+    section_header("Poids et métrique WHOOP", "Les deux séries ramenées à une base 100 commune, lisibles sur un axe unique.", "⚖️")
     metrics = available_metrics(merged)
     if not metrics:
         st.info("Aucune métrique WHOOP exploitable sur les jours communs.")
@@ -814,47 +800,23 @@ def _weight_tab(daily: pd.DataFrame, merged: pd.DataFrame) -> None:
     default_index = metrics.index("Récupération (%)") if "Récupération (%)" in metrics else 0
     metric = st.selectbox("Métrique WHOOP à comparer au poids", metrics, index=default_index)
 
-    grid = daily_grid(merged)
-    figure = go.Figure()
-    figure.add_scatter(
-        x=grid["Date"],
-        y=grid["Poids (Kgs)"],
-        mode="lines+markers",
-        name="Poids (kg)",
-        connectgaps=False,
-        hovertemplate="%{x|%d/%m/%Y}<br>Poids : %{y:.2f} kg<extra></extra>",
+    indexed = indexed_series(merged, ["Poids (Kgs)", metric])
+    _render_chart(indexed_comparison_chart(indexed, ["Poids (Kgs)", metric], f"Poids et {metric}, base 100"), "whoop-weight-indexed")
+    st.caption(
+        "Chaque série vaut 100 à son premier jour mesuré : les deux courbes deviennent comparables "
+        "sans caler arbitrairement deux échelles verticales l'une sur l'autre."
     )
-    figure.add_scatter(
-        x=grid["Date"],
-        y=grid[metric],
-        mode="lines+markers",
-        name=metric,
-        yaxis="y2",
-        connectgaps=False,
-        hovertemplate="%{x|%d/%m/%Y}<br>" + metric + " : %{y:.2f}<extra></extra>",
-    )
-    figure.update_layout(
-        title=f"Poids et {metric}",
-        xaxis_title="Date",
-        yaxis=dict(title="Poids (kg)"),
-        yaxis2=dict(title=metric, overlaying="y", side="right", showgrid=False),
-        hovermode="x unified",
-        template=_plot_template(),
-        margin=dict(t=60, b=40),
-    )
-    st.plotly_chart(_daily_axis(figure), use_container_width=True, key="whoop-weight-dual-axis")
+    _table_view(merged[["Date", "Poids (Kgs)", metric]], "Voir les valeurs réelles (non indexées)")
 
     section_header(
         "Corrélations décalées",
-        "Un entraînement pèse rarement sur la balance le jour même : chaque métrique est testée avec 0, 1 et 2 jours de décalage.",
+        "Un entraînement pèse rarement sur la balance le jour même : chaque métrique est testée à 0, 1 et 2 jours.",
         "🧮",
     )
     correlations = lagged_correlations(merged)
     if correlations.empty:
-        st.info(
-            f"Corrélations calculées à partir de {MIN_DAYS_CORRELATION} jours communs "
-            f"(actuellement {len(merged)})."
-        )
+        st.info(f"Corrélations calculées à partir de {MIN_DAYS_CORRELATION} jours communs (actuellement {len(merged)}).")
+        st.progress(min(1.0, len(merged) / MIN_DAYS_CORRELATION))
     else:
         st.dataframe(
             _format_table(correlations, {"Décalage (jours)": 0, "Corrélation": 3, "Observations": 0}),
@@ -879,21 +841,7 @@ def _weight_tab(daily: pd.DataFrame, merged: pd.DataFrame) -> None:
         )
         st.caption("La variation compare la première et la dernière pesée de chaque semaine.")
 
-    profile = weekday_profile(merged, "Récupération (%)")
-    if not profile.empty and int(profile["Observations"].sum()) >= 7:
-        section_header("Profil par jour de la semaine", "Repère les creux récurrents de récupération.", "📆")
-        figure_dow = px.bar(
-            profile.dropna(subset=["Moyenne"]),
-            x="Jour",
-            y="Moyenne",
-            title="Récupération moyenne par jour de la semaine",
-            template=_plot_template(),
-        )
-        figure_dow.update_layout(yaxis_title="Récupération (%)", margin=dict(t=60, b=40))
-        st.plotly_chart(figure_dow, use_container_width=True, key="whoop-weekday-profile")
-
-    with st.expander("Jours communs (poids + WHOOP)", expanded=False):
-        st.dataframe(_format_table(merged), use_container_width=True, hide_index=True)
+    _table_view(merged, "Voir tous les jours communs")
 
 
 def main() -> None:
@@ -913,10 +861,7 @@ def main() -> None:
     if token is None:
         _connection_panel(credentials)
         st.divider()
-        st.caption(
-            "Aucun compte WHOOP connecté : les autres onglets de l'application restent "
-            "pleinement fonctionnels."
-        )
+        st.caption("Aucun compte WHOOP connecté : les autres onglets restent pleinement fonctionnels.")
         return
 
     profile = st.session_state.get("whoop_profile", {}) or {}
@@ -929,16 +874,32 @@ def main() -> None:
 
     _sync_panel(credentials, token)
 
-    daily = st.session_state.get("whoop_daily", pd.DataFrame())
-    workouts = st.session_state.get("whoop_workouts", pd.DataFrame())
-    if daily is None or daily.empty:
+    full_daily = st.session_state.get("whoop_daily", pd.DataFrame())
+    full_workouts = st.session_state.get("whoop_workouts", pd.DataFrame())
+    if full_daily is None or full_daily.empty:
         st.divider()
         empty_state("Lancez une synchronisation pour afficher vos données WHOOP.")
         return
 
+    st.divider()
+    # Un filtre unique au-dessus de tout ce qu'il conditionne : chaque onglet
+    # s'aligne sur la même tranche, plutôt qu'un réglage par graphique.
+    period_label = st.radio(
+        "Période analysée",
+        list(PERIOD_CHOICES),
+        index=len(PERIOD_CHOICES) - 1,
+        horizontal=True,
+        help="S'applique à tous les onglets ci-dessous.",
+    )
+    days = PERIOD_CHOICES[period_label]
+    daily = _apply_period(full_daily, days)
+    workouts = _apply_period(full_workouts, days)
+    if daily.empty:
+        empty_state("Aucune mesure WHOOP sur cette période.")
+        return
+
     merged = merge_with_weight(get_filtered_or_working_data(), daily)
 
-    st.divider()
     tabs = st.tabs(["Vue d'ensemble", "Récupération", "Sommeil", "Effort", "Poids × WHOOP"])
     with tabs[0]:
         _overview_tab(daily, merged)

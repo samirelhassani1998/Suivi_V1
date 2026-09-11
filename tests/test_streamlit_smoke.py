@@ -484,17 +484,19 @@ def test_whoop_page_breaks_lines_on_days_without_measurement():
 
     assert not at.exception
     specs = [json.loads(chart.proto.spec) for chart in at.get("plotly_chart")]
-    scatter_traces = [
+    # Les sparklines d'accompagnement sont des tracés anonymes et sans trou par
+    # construction : seules les séries nommées portent des données quotidiennes.
+    named_traces = [
         trace
         for spec in specs
         for trace in spec.get("data", [])
-        if trace.get("type") in {"scatter", "scattergl"} and "y" in trace
+        if trace.get("type") in {"scatter", "scattergl"} and "y" in trace and trace.get("name")
     ]
-    assert scatter_traces
+    assert named_traces
     # Les courbes déclarent explicitement ne pas combler les trous...
-    assert all(trace.get("connectgaps") is False for trace in scatter_traces)
+    assert all(trace.get("connectgaps") is False for trace in named_traces)
     # ...et les jours retirés sont bien présents en valeur vide.
-    assert any(any(value is None for value in trace["y"]) for trace in scatter_traces)
+    assert any(any(value is None for value in trace["y"]) for trace in named_traces)
 
 
 def test_whoop_page_formats_workout_tables_without_raw_precision():
@@ -513,3 +515,71 @@ def test_whoop_page_formats_workout_tables_without_raw_precision():
     assert "Boxing" in flattened
     assert "05/01/2026" in flattened
     assert "2026-01-05 00:00:00" not in flattened
+
+
+def test_whoop_page_shows_narrative_insights_and_a_recovery_gauge():
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at)
+    at.run(timeout=30)
+
+    assert not at.exception
+    rendered = " ".join(str(m.value) for m in at.markdown)
+    assert "Ce que disent vos données" in rendered
+    # Les constats sont rédigés, pas seulement tabulés.
+    assert "suivi-insight-card" in rendered
+
+    specs = [json.loads(chart.proto.spec) for chart in at.get("plotly_chart")]
+    gauges = [trace for spec in specs for trace in spec.get("data", []) if trace.get("type") == "indicator"]
+    assert gauges, "la jauge de récupération doit être rendue"
+    assert gauges[0]["gauge"]["axis"]["range"] == [0, 100]
+
+
+def test_whoop_page_period_filter_scopes_every_tab():
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at, whoop_days=60)
+    at.run(timeout=30)
+    assert not at.exception
+
+    period = next(radio for radio in at.radio if radio.label == "Période analysée")
+    assert period.options == ["7 jours", "30 jours", "90 jours", "Tout"]
+
+    period.set_value("7 jours").run(timeout=30)
+    assert not at.exception
+
+    specs = [json.loads(chart.proto.spec) for chart in at.get("plotly_chart")]
+    dated = [
+        trace
+        for spec in specs
+        for trace in spec.get("data", [])
+        if trace.get("name") and isinstance(trace.get("x"), list) and trace["x"] and str(trace["x"][0]).startswith("20")
+    ]
+    assert dated
+    # 60 jours importés, 7 demandés : aucune série ne doit dépasser la tranche.
+    assert all(len(trace["x"]) <= 7 for trace in dated)
+
+
+def test_whoop_page_compares_weight_on_a_single_indexed_axis():
+    """Non-régression : deux échelles verticales fabriqueraient une corrélation visuelle."""
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at)
+    at.run(timeout=30)
+
+    assert not at.exception
+    specs = [json.loads(chart.proto.spec) for chart in at.get("plotly_chart")]
+    assert all("yaxis2" not in spec.get("layout", {}) for spec in specs)
+    rendered = " ".join(str(m.value) for m in at.markdown)
+    assert "base 100" in rendered.lower()
+
+
+def test_whoop_page_offers_a_table_view_for_its_charts():
+    """Une valeur portée par une couleur doit rester lisible autrement."""
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at)
+    at.run(timeout=30)
+
+    assert not at.exception
+    assert len(at.dataframe) >= 3

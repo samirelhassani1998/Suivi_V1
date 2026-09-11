@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-09-11 — Lecture narrative et refonte visuelle de l'onglet WHOOP
+
+Nouvelles analyses (`app/core/whoop_analytics.py`) :
+- **Moteur de constats rédigés** (`generate_insights`) : dix règles produisent des phrases françaises chiffrées, classées par importance — montée de charge brutale, dette de sommeil accumulée, apport calorique estimé, ce qu'une heure de sommeil rapporte, creux récurrent par jour de semaine, écart au repère personnel, port irrégulier du bracelet. Chaque règle reste muette sous son effectif minimal.
+- **Repère personnel** (`personal_baseline`) : comparaison à la médiane des 30 derniers jours, la dernière mesure étant exclue de sa propre référence.
+- **Lissage** (`rolling_trend`) : moyenne glissante 7 jours superposée aux séries bruitées.
+- **Base commune** (`indexed_series`) et **calendrier** (`calendar_matrix`).
+
+Refonte visuelle (`app/ui/whoop_visuals.py`, nouveau module sans dépendance à Streamlit) :
+- **Suppression du graphique à double axe vertical** poids / métrique WHOOP. Caler deux échelles l'une sur l'autre fabrique une corrélation visuelle arbitraire ; les deux séries sont désormais ramenées à une base 100 commune sur un axe unique.
+- Palette catégorielle **validée pour la vision des couleurs** (séparation ΔE contrôlée), couleurs de statut réservées aux significations bon/mauvais.
+- Légende supprimée pour les séries uniques, grille en filet continu, marqueurs cerclés de surface, hauteurs incluant la bande d'axe.
+- La courbe de tendance lissée déclare elle aussi `connectgaps=False` : elle enjambait les jours manquants.
+- Ajout d'une **jauge de récupération** avec les seuils WHOOP, d'un **calendrier semaine × jour**, de **sparklines** sous les indicateurs, et d'un **profil par jour de semaine** en série unique.
+
+Ergonomie :
+- **Filtre de période unique** (7 / 30 / 90 jours / tout) placé au-dessus des onglets et appliqué à tous.
+- Vue tableau disponible sous chaque graphique coloré.
+- Barres de progression indiquant ce qui se débloquera et quand, à la place des seuls messages textuels.
+
+Tests : `tests/test_whoop_visuals.py` (20 tests) vérifie l'encodage des figures — absence de double axe, rupture des courbes sur les trous, ordre fixe des couleurs, légende conditionnelle, axe calendaire, seuils de la jauge. `tests/test_whoop_analytics.py` passe à 45 tests. Quatre tests de page supplémentaires couvrent les constats, la jauge, le filtre de période et la vue tableau.
+
+
 ## 2026-09-11 — Analyses WHOOP approfondies
 
 Ajouts (`app/core/whoop_analytics.py`) :
