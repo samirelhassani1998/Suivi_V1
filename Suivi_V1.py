@@ -109,6 +109,7 @@ pages = [
     st.Page("app/pages/Journal.py", title="Journal", icon="🧾"),
     st.Page("app/pages/Predictions.py", title="Prévisions", icon="📈"),
     st.Page("app/pages/Insights.py", title="Insights", icon="🔍"),
+    st.Page("app/pages/Whoop.py", title="Whoop", icon="⌚"),
     st.Page("app/pages/Settings.py", title="Paramètres", icon="⚙️"),
 ]
 st.navigation(pages).run()
