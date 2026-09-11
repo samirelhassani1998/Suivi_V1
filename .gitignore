@@ -5,3 +5,5 @@ venv/
 # System files
 .DS_Store
 Thumbs.db
+# Secrets locaux (client secret WHOOP, mot de passe, data_url)
+.streamlit/secrets.toml

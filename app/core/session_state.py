@@ -11,6 +11,7 @@ from app.core.targets import DEFAULT_TARGETS, get_target_weights
 DEFAULT_WEIGHT_COLUMNS = ["Date", "Poids (Kgs)"]
 DEFAULT_ZOOM_TARGET_START_DATE = pd.Timestamp("2026-09-03")
 DEFAULT_ZOOM_TARGET_END_DATE = pd.Timestamp("2026-12-16")
+DEFAULT_WHOOP_SYNC_DAYS = 30
 
 
 def _empty_df() -> pd.DataFrame:
@@ -40,6 +41,30 @@ def ensure_session_defaults() -> None:
     st.session_state.setdefault("theme", "plotly")
     st.session_state.setdefault("zoom_target_start_date", DEFAULT_ZOOM_TARGET_START_DATE)
     st.session_state.setdefault("zoom_target_end_date", DEFAULT_ZOOM_TARGET_END_DATE)
+
+    ensure_whoop_defaults()
+
+
+def ensure_whoop_defaults() -> None:
+    """Initialise les clés WHOOP sans toucher aux données de poids existantes."""
+    st.session_state.setdefault("whoop_token", None)
+    st.session_state.setdefault("whoop_oauth_state", None)
+    st.session_state.setdefault("whoop_daily", pd.DataFrame())
+    st.session_state.setdefault("whoop_workouts", pd.DataFrame())
+    st.session_state.setdefault("whoop_profile", {})
+    st.session_state.setdefault("whoop_last_sync", None)
+    st.session_state.setdefault("whoop_sync_days", DEFAULT_WHOOP_SYNC_DAYS)
+    st.session_state.setdefault("whoop_manual_credentials", {})
+
+
+def clear_whoop_session() -> None:
+    """Déconnecte WHOOP et purge les données importées de la session."""
+    st.session_state["whoop_token"] = None
+    st.session_state["whoop_oauth_state"] = None
+    st.session_state["whoop_daily"] = pd.DataFrame()
+    st.session_state["whoop_workouts"] = pd.DataFrame()
+    st.session_state["whoop_profile"] = {}
+    st.session_state["whoop_last_sync"] = None
 
 
 def set_source_data(df: pd.DataFrame, source_name: str, quality: dict | None = None) -> None:

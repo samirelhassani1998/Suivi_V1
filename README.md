@@ -101,6 +101,12 @@ Les données peuvent être chargées depuis une source CSV distante configurée 
 
 Une protection par mot de passe peut être activée via les secrets Streamlit. Lorsqu'elle est désactivée, l'application démarre sans étape d'authentification.
 
+### Intégration WHOOP
+
+L'onglet `Whoop` connecte un bracelet WHOOP en lecture seule via OAuth 2.0 et importe, pour la période choisie, les récupérations, les nuits de sommeil, les cycles physiologiques et les séances. Les métriques sont agrégées par jour calendaire puis croisées avec la courbe de poids : graphique à double axe, corrélations entre la variation de poids et chaque métrique, export CSV.
+
+Les données WHOOP vivent uniquement dans la session Streamlit : elles ne sont jamais écrites dans la source de poids, ni dans `working_data`. Sans compte connecté, l'onglet affiche l'écran de connexion et le reste de l'application fonctionne à l'identique.
+
 ## 3. Architecture
 
 ```text
@@ -127,13 +133,15 @@ Suivi_V1/
 │   │   ├── target_trajectory.py
 │   │   ├── targets.py
 │   │   ├── time_utils.py
-│   │   └── weight_summary.py
+│   │   ├── weight_summary.py
+│   │   └── whoop.py
 │   ├── pages/
 │   │   ├── Dashboard.py
 │   │   ├── Insights.py
 │   │   ├── Journal.py
 │   │   ├── Predictions.py
-│   │   └── Settings.py
+│   │   ├── Settings.py
+│   │   └── Whoop.py
 │   └── ui/
 │       ├── components.py
 │       └── theme.py
@@ -146,7 +154,8 @@ Suivi_V1/
     ├── test_target_trajectory.py
     ├── test_utils.py
     ├── test_v3_guardrails.py
-    └── test_weight_summary.py
+    ├── test_weight_summary.py
+    └── test_whoop.py
 ```
 
 ### Rôle des principaux modules
@@ -164,7 +173,8 @@ Suivi_V1/
 - `app/core/forecasting.py` : prévisions statistiques, modèles SARIMAX et modèles ML quantile.
 - `app/core/data.py` : chargement, nettoyage, validation, rapport qualité et résolution des doublons.
 - `app/core/session_state.py` : initialisation, lecture, écriture et réinitialisation des données en session Streamlit.
-- `app/pages/` : pages visibles de l'application : Dashboard, Journal, Prévisions, Insights et Paramètres.
+- `app/core/whoop.py` : client WHOOP (OAuth 2.0, pagination API v2), normalisation des enregistrements en DataFrames, agrégat journalier et croisement avec le poids. Le transport HTTP est injectable, ce qui rend le module testable sans réseau.
+- `app/pages/` : pages visibles de l'application : Dashboard, Journal, Prévisions, Insights, Whoop et Paramètres.
 - `app/ui/` : composants d'interface, cartes, graphiques et thème visuel.
 - `tests/` : tests automatisés couvrant les calculs, garde-fous, composants Streamlit et comportements métier.
 
@@ -243,9 +253,31 @@ data_url = "CSV_EXPORT_URL"
 [auth]
 required = true
 password = "APPLICATION_PASSWORD"
+
+[whoop]
+client_id = "WHOOP_CLIENT_ID"
+client_secret = "WHOOP_CLIENT_SECRET"
+redirect_uri = "https://votre-app.streamlit.app"
 ```
 
-Le template `.streamlit/secrets.example.toml` peut servir de point de départ.
+Le template `.streamlit/secrets.example.toml` peut servir de point de départ. Le fichier `.streamlit/secrets.toml` est ignoré par Git : il ne doit jamais être committé.
+
+### Configuration WHOOP
+
+1. Créer une application sur le tableau de bord développeur WHOOP et relever le `client_id` et le `client_secret`.
+2. Déclarer côté WHOOP la *Redirect URI* exacte de l'application (par exemple `https://votre-app.streamlit.app` en ligne, ou `http://localhost:8501` en local). WHOOP refuse toute redirection qui ne correspond pas caractère pour caractère.
+3. Renseigner le bloc `[whoop]` dans les secrets Streamlit. Trois autres sources sont acceptées, par ordre de priorité décroissante : saisie manuelle dans l'onglet (valable le temps de la session), clés à plat `whoop_client_id` / `whoop_client_secret` / `whoop_redirect_uri`, variables d'environnement `WHOOP_CLIENT_ID` / `WHOOP_CLIENT_SECRET` / `WHOOP_REDIRECT_URI`.
+4. Ouvrir l'onglet `Whoop`, cliquer sur « Autoriser l'accès WHOOP », accepter côté WHOOP, puis lancer une synchronisation.
+
+Les scopes demandés sont en lecture seule : `read:profile`, `read:body_measurement`, `read:cycles`, `read:recovery`, `read:sleep`, `read:workout`, plus `offline` qui permet de renouveler le jeton sans redemander l'autorisation. Le jeton d'accès est conservé en session et rafraîchi automatiquement à l'approche de son expiration.
+
+Points d'attention :
+
+- l'API WHOOP plafonne la pagination à 25 éléments par page ; le client suit les pages via `nextToken` jusqu'à épuisement ;
+- une nuit de sommeil est rattachée au jour du réveil, ce qui la rend comparable à la pesée du matin ;
+- les siestes ne remplacent pas la nuit principale : la plus longue période de sommeil du jour est conservée ;
+- les dépenses énergétiques renvoyées en kilojoules sont converties en kilocalories ;
+- les corrélations affichées sont des associations linéaires sur de courtes séries : elles n'établissent aucune causalité.
 
 ### Configuration applicative
 

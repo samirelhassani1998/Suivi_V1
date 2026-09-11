@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -297,3 +298,105 @@ def test_has_unsaved_changes_detects_real_dataframe_differences():
     assert has_unsaved_changes(custom_changed, custom_saved) is True
     different_date = saved.copy(); different_date.loc[1, "Date"] = pd.Timestamp("2026-01-03")
     assert has_unsaved_changes(different_date, saved) is True
+
+
+def _whoop_daily_frame(days: int = 14) -> pd.DataFrame:
+    dates = pd.date_range("2026-01-01", periods=days, freq="D")
+    return pd.DataFrame(
+        {
+            "Date": dates,
+            "Récupération (%)": [55 + (i % 6) * 5 for i in range(days)],
+            "HRV (ms)": [40 + (i % 5) * 2.5 for i in range(days)],
+            "FC repos (bpm)": [54 + (i % 3) for i in range(days)],
+            "Sommeil (heures)": [6.8 + (i % 4) * 0.3 for i in range(days)],
+            "Performance sommeil (%)": [80 + (i % 5) * 3 for i in range(days)],
+            "Sommeil profond (heures)": [1.2 + (i % 3) * 0.2 for i in range(days)],
+            "Sommeil REM (heures)": [1.6 + (i % 4) * 0.15 for i in range(days)],
+            "Strain": [9 + (i % 7) for i in range(days)],
+            "Calories (kcal)": [2400 + (i % 6) * 90 for i in range(days)],
+        }
+    )
+
+
+def _whoop_connected_state(at: AppTest) -> None:
+    _state(at)
+    at.session_state["whoop_token"] = {
+        "access_token": "test-access-token",
+        "refresh_token": "test-refresh-token",
+        "expires_at": (pd.Timestamp.utcnow() + pd.Timedelta(hours=2)).isoformat(),
+        "scopes": ["offline", "read:recovery"],
+        "token_type": "Bearer",
+    }
+    at.session_state["whoop_daily"] = _whoop_daily_frame()
+    at.session_state["whoop_workouts"] = pd.DataFrame(
+        {
+            "Date": [pd.Timestamp("2026-01-03"), pd.Timestamp("2026-01-07")],
+            "Sport": ["Running", "Weightlifting"],
+            "Durée (min)": [45.0, 60.0],
+            "Strain séance": [9.4, 7.2],
+            "Calories séance (kcal)": [520.0, 430.0],
+            "FC moyenne (bpm)": [142.0, 118.0],
+            "FC max (bpm)": [178.0, 150.0],
+            "Distance (km)": [8.2, float("nan")],
+        }
+    )
+    at.session_state["whoop_profile"] = {"first_name": "Test", "last_name": "Utilisateur"}
+    at.session_state["whoop_last_sync"] = pd.Timestamp("2026-01-14")
+
+
+def test_whoop_page_renders_connection_panel_without_credentials():
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _state(at)
+    at.run(timeout=15)
+
+    assert not at.exception
+    rendered = " ".join(str(m.value) for m in at.markdown)
+    assert "WHOOP" in rendered
+    assert "Connexion WHOOP" in rendered
+    # Sans identifiants, aucune donnée WHOOP n'est inventée.
+    assert at.session_state["whoop_daily"].empty
+
+
+def test_whoop_page_renders_tabs_and_charts_when_session_holds_data():
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    at.run(timeout=20)
+
+    assert not at.exception
+    tab_labels = [t.label for t in at.tabs]
+    for expected in ["Vue d'ensemble", "Récupération", "Sommeil", "Effort", "Poids × WHOOP"]:
+        assert expected in tab_labels
+    assert len(at.get("plotly_chart")) >= 3
+    assert len(at.metric) >= 3
+
+
+def test_whoop_page_crosses_weight_and_whoop_without_touching_weight_data():
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    before = at.session_state["working_data"].copy()
+    at.run(timeout=20)
+
+    assert not at.exception
+    rendered = " ".join(str(m.value) for m in at.markdown) + " ".join(str(c.value) for c in at.caption)
+    assert "Corrélations" in rendered
+    # Non-régression : l'onglet WHOOP est en lecture seule sur les données de poids.
+    pd.testing.assert_frame_equal(at.session_state["working_data"], before)
+    assert len(at.session_state["working_data"]) == 80
+
+
+def test_whoop_page_handles_connected_account_without_synced_data():
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    at.session_state["whoop_daily"] = pd.DataFrame()
+    at.session_state["whoop_workouts"] = pd.DataFrame()
+    at.run(timeout=15)
+
+    assert not at.exception
+    assert any("Lancez une synchronisation" in str(info.value) for info in at.info)
+
+
+def test_main_navigation_exposes_whoop_page_without_dropping_existing_pages():
+    source = Path("Suivi_V1.py").read_text(encoding="utf-8")
+    for page in ["Dashboard.py", "Journal.py", "Predictions.py", "Insights.py", "Settings.py", "Whoop.py"]:
+        assert f"app/pages/{page}" in source
+    assert 'title="Whoop"' in source
