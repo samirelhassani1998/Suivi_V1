@@ -114,6 +114,12 @@ Au-delà de ce que restitue l'application WHOOP, l'onglet exploite la seule donn
 - **Dette de sommeil** : écart entre le besoin estimé par WHOOP et le sommeil obtenu, cumulé sur la semaine.
 - **Zones de récupération**, **synthèse hebdomadaire**, **profil par jour de semaine** et **régularité du coucher**.
 
+- **Lecture narrative** : les constats sont rédigés en français, chiffres à l'appui, et classés par importance (montée de charge brutale, dette de sommeil, apport calorique estimé, creux récurrent le tel jour…). Chaque règle reste muette tant que son effectif minimal n'est pas atteint.
+- **Repère personnel** : la HRV et la fréquence au repos sont comparées à la médiane de vos 30 derniers jours plutôt qu'à une norme générale.
+- **Calendrier de récupération** : une grille semaine × jour qui donne un mois de lecture d'un seul coup d'œil.
+
+Choix de visualisation appliqués : palette catégorielle validée pour la vision des couleurs, couleurs de statut réservées aux significations bon/mauvais, grille en filet, légende absente pour une série unique, jours sans mesure laissés vides plutôt que reliés, et **aucun graphique à double axe vertical** — le poids et une métrique WHOOP sont ramenés à une base 100 commune, car caler deux échelles verticales l'une sur l'autre fabrique une corrélation visuelle arbitraire. Chaque graphique coloré possède sa vue tableau. Un filtre de période unique (7 / 30 / 90 jours / tout) s'applique à tous les onglets.
+
 Chaque analyse annonce son effectif minimal et affiche le nombre de jours restants tant qu'il n'est pas atteint : sur un historique trop court, une corrélation ou une pente reflète le bruit de mesure plutôt qu'une tendance. Les graphiques laissent visibles les jours sans mesure au lieu de les relier par une droite, et les tableaux sont mis en forme (décimales maîtrisées, dates courtes, valeurs manquantes explicites).
 
 Les données WHOOP vivent uniquement dans la session Streamlit : elles ne sont jamais écrites dans la source de poids, ni dans `working_data`. Sans compte connecté, l'onglet affiche l'écran de connexion et le reste de l'application fonctionne à l'identique.
@@ -157,7 +163,8 @@ Suivi_V1/
 │   │   └── Whoop.py
 │   └── ui/
 │       ├── components.py
-│       └── theme.py
+│       ├── theme.py
+│       └── whoop_visuals.py
 └── tests/
     ├── conftest.py
     ├── test_analytics.py
@@ -170,7 +177,8 @@ Suivi_V1/
     ├── test_weight_summary.py
     ├── test_whoop.py
     ├── test_whoop_analytics.py
-    └── test_whoop_oauth_callback.py
+    ├── test_whoop_oauth_callback.py
+    └── test_whoop_visuals.py
 ```
 
 ### Rôle des principaux modules
@@ -193,6 +201,7 @@ Suivi_V1/
 - `app/core/whoop_session.py` : glue Streamlit du flux OAuth : détection de l'URL publique de l'application, capture du retour de redirection sur n'importe quelle page et bascule vers l'onglet Whoop.
 - `app/pages/` : pages visibles de l'application : Dashboard, Journal, Prévisions, Insights, Whoop et Paramètres.
 - `app/ui/` : composants d'interface, cartes, graphiques et thème visuel.
+- `app/ui/whoop_visuals.py` : construction des figures Plotly de l'onglet WHOOP, sans dépendance à Streamlit, ce qui rend les règles de lisibilité vérifiables par des tests plutôt que par relecture visuelle.
 - `tests/` : tests automatisés couvrant les calculs, garde-fous, composants Streamlit et comportements métier.
 
 ## 4. Flux de données
