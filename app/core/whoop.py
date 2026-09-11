@@ -71,12 +71,15 @@ WHOOP_DAILY_METRICS: tuple[str, ...] = (
     "Température peau (°C)",
     "SpO2 (%)",
     "Sommeil (heures)",
+    "Besoin de sommeil (heures)",
+    "Dette de sommeil (heures)",
     "Performance sommeil (%)",
     "Efficacité sommeil (%)",
     "Régularité sommeil (%)",
     "Sommeil profond (heures)",
     "Sommeil REM (heures)",
     "Perturbations sommeil",
+    "Heure de coucher",
     "Strain",
     "Calories (kcal)",
     "FC moyenne (bpm)",
@@ -534,14 +537,52 @@ def recoveries_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
 SLEEP_COLUMNS = (
     "Date",
     "Sommeil (heures)",
+    "Besoin de sommeil (heures)",
+    "Dette de sommeil (heures)",
     "Performance sommeil (%)",
     "Efficacité sommeil (%)",
     "Régularité sommeil (%)",
     "Sommeil profond (heures)",
     "Sommeil REM (heures)",
     "Perturbations sommeil",
+    "Heure de coucher",
     "Sieste",
 )
+
+SLEEP_NEED_PARTS = (
+    "baseline_milli",
+    "need_from_sleep_debt_milli",
+    "need_from_recent_strain_milli",
+    # WHOOP renvoie déjà une valeur négative pour la sieste : elle réduit le besoin.
+    "need_from_recent_nap_milli",
+)
+
+
+def _total_sleep_need_milli(score: Mapping[str, Any]) -> float:
+    """Besoin total de sommeil : somme des composantes renvoyées par WHOOP."""
+    needed = score.get("sleep_needed")
+    if not isinstance(needed, Mapping):
+        return float("nan")
+    parts = [_number(needed.get(part)) for part in SLEEP_NEED_PARTS]
+    if not any(np.isfinite(part) for part in parts):
+        return float("nan")
+    return float(np.nansum(parts))
+
+
+def _decimal_hour(value: Any, offset: Any = None) -> float:
+    """Heure locale en décimal (22h30 -> 22.5), recentrée autour de minuit.
+
+    Les couchers après minuit deviennent négatifs (00h30 -> -23.5 serait absurde,
+    on renvoie donc 0.5) : l'échelle reste continue entre 18h et 6h du matin en
+    ramenant les heures d'après-midi dans le négatif.
+    """
+    timestamp = pd.to_datetime(value, errors="coerce", utc=True)
+    if pd.isna(timestamp):
+        return float("nan")
+    local = timestamp.tz_localize(None) + parse_timezone_offset(offset)
+    hour = local.hour + local.minute / 60.0
+    # 18h..24h -> -6..0 pour rester continu avec 0h..6h du matin.
+    return hour - 24.0 if hour >= 12.0 else hour
 
 
 def sleeps_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
@@ -556,10 +597,21 @@ def sleeps_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
         in_bed = _number(stages.get("total_in_bed_time_milli"))
         awake = _number(stages.get("total_awake_time_milli"))
         asleep = in_bed - awake if np.isfinite(in_bed) and np.isfinite(awake) else float("nan")
+        asleep_hours = asleep * MILLI_TO_HOURS if np.isfinite(asleep) else float("nan")
+        needed_milli = _total_sleep_need_milli(score)
+        needed_hours = needed_milli * MILLI_TO_HOURS if np.isfinite(needed_milli) else float("nan")
+        debt_hours = (
+            needed_hours - asleep_hours
+            if np.isfinite(needed_hours) and np.isfinite(asleep_hours)
+            else float("nan")
+        )
         rows.append(
             {
                 "Date": date,
-                "Sommeil (heures)": asleep * MILLI_TO_HOURS if np.isfinite(asleep) else float("nan"),
+                "Sommeil (heures)": asleep_hours,
+                "Besoin de sommeil (heures)": needed_hours,
+                "Dette de sommeil (heures)": debt_hours,
+                "Heure de coucher": _decimal_hour(record.get("start"), record.get("timezone_offset")),
                 "Performance sommeil (%)": _number(score.get("sleep_performance_percentage")),
                 "Efficacité sommeil (%)": _number(score.get("sleep_efficiency_percentage")),
                 "Régularité sommeil (%)": _number(score.get("sleep_consistency_percentage")),
@@ -690,38 +742,6 @@ def merge_with_weight(weight_df: pd.DataFrame, whoop_daily: pd.DataFrame) -> pd.
     merged = weights.merge(whoop, on="Date", how="inner").sort_values("Date", kind="mergesort").reset_index(drop=True)
     ordered = [column for column in columns if column in merged.columns]
     return merged[ordered]
-
-
-def correlation_table(merged: pd.DataFrame, target: str = "Variation poids (kg)", min_pairs: int = 5) -> pd.DataFrame:
-    """Corrélations de Pearson entre une cible et les métriques WHOOP."""
-    result_columns = ("Métrique", "Corrélation", "Observations", "Interprétation")
-    if merged is None or merged.empty or target not in merged.columns:
-        return _empty_frame(result_columns)
-
-    rows = []
-    for metric in available_metrics(merged):
-        pair = merged[[target, metric]].dropna()
-        if len(pair) < max(3, int(min_pairs)):
-            continue
-        if pair[target].nunique() < 2 or pair[metric].nunique() < 2:
-            continue
-        correlation = float(pair[target].corr(pair[metric]))
-        if not np.isfinite(correlation):
-            continue
-        magnitude = abs(correlation)
-        interpretation = "forte" if magnitude >= 0.5 else "modérée" if magnitude >= 0.3 else "faible"
-        rows.append(
-            {
-                "Métrique": metric,
-                "Corrélation": round(correlation, 3),
-                "Observations": int(len(pair)),
-                "Interprétation": f"association {interpretation}",
-            }
-        )
-    if not rows:
-        return _empty_frame(result_columns)
-    frame = pd.DataFrame(rows)
-    return frame.reindex(frame["Corrélation"].abs().sort_values(ascending=False).index).reset_index(drop=True)
 
 
 def summarise_daily(frame: pd.DataFrame, days: int = 7) -> dict[str, dict[str, float]]:
