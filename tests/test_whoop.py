@@ -20,7 +20,6 @@ from app.core.whoop import (
     build_authorization_url,
     build_daily_frame,
     build_scopes,
-    correlation_table,
     credentials_from_sources,
     cycles_to_frame,
     ensure_fresh_token,
@@ -388,38 +387,6 @@ def test_merge_with_weight_averages_multiple_measures_of_the_same_day():
 def test_merge_with_weight_without_any_source_returns_empty_frame():
     assert merge_with_weight(pd.DataFrame(), _daily_fixture()).empty
     assert merge_with_weight(pd.DataFrame({"Date": [pd.Timestamp("2026-09-05")], "Poids (Kgs)": [100.0]}), pd.DataFrame()).empty
-
-
-def test_correlation_table_ranks_metrics_by_absolute_correlation():
-    dates = pd.date_range("2026-09-01", periods=10, freq="D")
-    merged = pd.DataFrame(
-        {
-            "Date": dates,
-            "Poids (Kgs)": [100 - index * 0.2 for index in range(10)],
-            "Variation poids (kg)": [float("nan")] + [-0.2] * 9,
-            "Récupération (%)": [50 + index for index in range(10)],
-            "Sommeil (heures)": [7.0 + (index % 3) * 0.5 for index in range(10)],
-        }
-    )
-    merged.loc[5, "Variation poids (kg)"] = 0.4
-
-    table = correlation_table(merged, target="Variation poids (kg)", min_pairs=5)
-
-    assert not table.empty
-    assert list(table.columns) == ["Métrique", "Corrélation", "Observations", "Interprétation"]
-    absolutes = table["Corrélation"].abs().tolist()
-    assert absolutes == sorted(absolutes, reverse=True)
-
-
-def test_correlation_table_ignores_series_with_too_few_pairs():
-    merged = pd.DataFrame(
-        {
-            "Date": pd.date_range("2026-09-01", periods=3, freq="D"),
-            "Variation poids (kg)": [-0.1, -0.2, 0.1],
-            "Récupération (%)": [50, 55, 60],
-        }
-    )
-    assert correlation_table(merged, min_pairs=5).empty
 
 
 def test_summarise_daily_compares_last_window_to_previous_one():

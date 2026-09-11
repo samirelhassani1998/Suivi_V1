@@ -400,3 +400,116 @@ def test_main_navigation_exposes_whoop_page_without_dropping_existing_pages():
     for page in ["Dashboard.py", "Journal.py", "Predictions.py", "Insights.py", "Settings.py", "Whoop.py"]:
         assert f"app/pages/{page}" in source
     assert 'title="Whoop"' in source
+
+
+def _whoop_rich_state(at: AppTest, *, whoop_days: int = 45) -> None:
+    """Historique suffisant pour débloquer toutes les analyses croisées."""
+    dates = pd.date_range("2026-01-01", periods=whoop_days, freq="D")
+    at.session_state["whoop_daily"] = pd.DataFrame(
+        {
+            "Date": dates,
+            "Récupération (%)": [45 + (i % 9) * 6 for i in range(whoop_days)],
+            "HRV (ms)": [38 + (i % 7) * 2.0 for i in range(whoop_days)],
+            "FC repos (bpm)": [54 + (i % 4) for i in range(whoop_days)],
+            "Sommeil (heures)": [6.4 + (i % 5) * 0.35 for i in range(whoop_days)],
+            "Besoin de sommeil (heures)": [8.1] * whoop_days,
+            "Dette de sommeil (heures)": [8.1 - (6.4 + (i % 5) * 0.35) for i in range(whoop_days)],
+            "Performance sommeil (%)": [78 + (i % 6) * 3 for i in range(whoop_days)],
+            "Efficacité sommeil (%)": [90 + (i % 3) for i in range(whoop_days)],
+            "Régularité sommeil (%)": [0.0] * whoop_days,
+            "Sommeil profond (heures)": [1.1 + (i % 4) * 0.2 for i in range(whoop_days)],
+            "Sommeil REM (heures)": [1.5 + (i % 3) * 0.2 for i in range(whoop_days)],
+            "Heure de coucher": [-1.5 + (i % 4) * 0.4 for i in range(whoop_days)],
+            "Strain": [8 + (i % 8) for i in range(whoop_days)],
+            "Calories (kcal)": [2500 + (i % 7) * 120 for i in range(whoop_days)],
+        }
+    )
+    at.session_state["whoop_workouts"] = pd.DataFrame(
+        {
+            "Date": [pd.Timestamp("2026-01-05"), pd.Timestamp("2026-01-09")],
+            "Sport": ["boxing", "weightlifting"],
+            "Durée (min)": [43.4038, 60.1234],
+            "Strain séance": [13.9323, 7.812],
+            "Calories séance (kcal)": [505.512, 236.0414],
+            "FC moyenne (bpm)": [142.0, 115.0],
+            "FC max (bpm)": [185.0, 170.0],
+            "Distance (km)": [float("nan"), float("nan")],
+        }
+    )
+    at.session_state["whoop_profile"] = {"first_name": "Test", "last_name": "Utilisateur"}
+    at.session_state["whoop_last_sync"] = pd.Timestamp("2026-02-14")
+
+
+def test_whoop_page_unlocks_energy_balance_and_lagged_correlations_with_enough_history():
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at)
+    at.run(timeout=30)
+
+    assert not at.exception
+    rendered = " ".join(str(m.value) for m in at.markdown)
+    assert "Bilan énergétique estimé" in rendered
+    assert "Corrélations décalées" in rendered
+    assert "Charge d'entraînement" in rendered
+    assert "Synthèse hebdomadaire" in rendered
+    assert "Zones de récupération" in rendered
+    assert "Dette de sommeil" in rendered
+    # L'estimation est réellement calculée, pas seulement annoncée.
+    assert not any("Estimation disponible à partir de" in str(info.value) for info in at.info)
+
+
+def test_whoop_page_states_what_is_still_missing_on_a_short_history():
+    """Cas réel d'un bracelet tout juste acheté : quelques jours de mesures."""
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at, whoop_days=4)
+    at.run(timeout=30)
+
+    assert not at.exception
+    messages = " ".join(str(info.value) for info in at.info)
+    # Plutôt que d'afficher une statistique non fiable, la page dit ce qui manque.
+    assert "Estimation disponible à partir de" in messages
+    assert "Corrélations calculées à partir de" in messages
+    assert "Indicateur disponible à partir de" in messages
+
+
+def test_whoop_page_breaks_lines_on_days_without_measurement():
+    """Non-régression : un trou de mesure ne doit pas être relié par une droite."""
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at)
+    daily = at.session_state["whoop_daily"]
+    at.session_state["whoop_daily"] = daily.drop(index=[5, 6, 7]).reset_index(drop=True)
+    at.run(timeout=30)
+
+    assert not at.exception
+    specs = [json.loads(chart.proto.spec) for chart in at.get("plotly_chart")]
+    scatter_traces = [
+        trace
+        for spec in specs
+        for trace in spec.get("data", [])
+        if trace.get("type") in {"scatter", "scattergl"} and "y" in trace
+    ]
+    assert scatter_traces
+    # Les courbes déclarent explicitement ne pas combler les trous...
+    assert all(trace.get("connectgaps") is False for trace in scatter_traces)
+    # ...et les jours retirés sont bien présents en valeur vide.
+    assert any(any(value is None for value in trace["y"]) for trace in scatter_traces)
+
+
+def test_whoop_page_formats_workout_tables_without_raw_precision():
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at)
+    at.run(timeout=30)
+
+    assert not at.exception
+    tables = [frame.value for frame in at.dataframe]
+    flattened = " ".join(table.to_csv(index=False) for table in tables)
+    # Les décimales brutes de l'API ne sont plus affichées telles quelles.
+    assert "43.4038" not in flattened
+    assert "505.512" not in flattened
+    # Les noms de sport sont normalisés et les dates raccourcies.
+    assert "Boxing" in flattened
+    assert "05/01/2026" in flattened
+    assert "2026-01-05 00:00:00" not in flattened

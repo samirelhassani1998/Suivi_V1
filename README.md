@@ -103,7 +103,18 @@ Une protection par mot de passe peut être activée via les secrets Streamlit. L
 
 ### Intégration WHOOP
 
-L'onglet `Whoop` connecte un bracelet WHOOP en lecture seule via OAuth 2.0 et importe, pour la période choisie, les récupérations, les nuits de sommeil, les cycles physiologiques et les séances. Les métriques sont agrégées par jour calendaire puis croisées avec la courbe de poids : graphique à double axe, corrélations entre la variation de poids et chaque métrique, export CSV.
+L'onglet `Whoop` connecte un bracelet WHOOP en lecture seule via OAuth 2.0 et importe, pour la période choisie, les récupérations, les nuits de sommeil, les cycles physiologiques et les séances. Les métriques sont agrégées par jour calendaire puis croisées avec la courbe de poids.
+
+Au-delà de ce que restitue l'application WHOOP, l'onglet exploite la seule donnée qu'elle ne possède pas — le poids :
+
+- **Bilan énergétique estimé** : la dépense quotidienne mesurée par WHOOP est combinée à la pente du poids (convertie à raison de 7 700 kcal par kilogramme) pour en déduire l'apport calorique moyen. Ni la balance ni le bracelet ne peuvent produire ce chiffre seuls.
+- **Corrélations décalées** : chaque métrique est confrontée à la variation de poids avec 0, 1 et 2 jours de décalage, un effort pesant rarement sur la balance le jour même.
+- **Charge d'entraînement aigüe/chronique** : la charge des 7 derniers jours rapportée à celle des 28 derniers, indicateur classique de gestion de charge que WHOOP n'affiche pas.
+- **Moteurs de la récupération** : régression du score de récupération sur le sommeil et la charge de la veille, qui chiffre ce que rapporte une heure de sommeil supplémentaire.
+- **Dette de sommeil** : écart entre le besoin estimé par WHOOP et le sommeil obtenu, cumulé sur la semaine.
+- **Zones de récupération**, **synthèse hebdomadaire**, **profil par jour de semaine** et **régularité du coucher**.
+
+Chaque analyse annonce son effectif minimal et affiche le nombre de jours restants tant qu'il n'est pas atteint : sur un historique trop court, une corrélation ou une pente reflète le bruit de mesure plutôt qu'une tendance. Les graphiques laissent visibles les jours sans mesure au lieu de les relier par une droite, et les tableaux sont mis en forme (décimales maîtrisées, dates courtes, valeurs manquantes explicites).
 
 Les données WHOOP vivent uniquement dans la session Streamlit : elles ne sont jamais écrites dans la source de poids, ni dans `working_data`. Sans compte connecté, l'onglet affiche l'écran de connexion et le reste de l'application fonctionne à l'identique.
 
@@ -135,6 +146,7 @@ Suivi_V1/
 │   │   ├── time_utils.py
 │   │   ├── weight_summary.py
 │   │   ├── whoop.py
+│   │   ├── whoop_analytics.py
 │   │   └── whoop_session.py
 │   ├── pages/
 │   │   ├── Dashboard.py
@@ -157,6 +169,7 @@ Suivi_V1/
     ├── test_v3_guardrails.py
     ├── test_weight_summary.py
     ├── test_whoop.py
+    ├── test_whoop_analytics.py
     └── test_whoop_oauth_callback.py
 ```
 
@@ -176,6 +189,7 @@ Suivi_V1/
 - `app/core/data.py` : chargement, nettoyage, validation, rapport qualité et résolution des doublons.
 - `app/core/session_state.py` : initialisation, lecture, écriture et réinitialisation des données en session Streamlit.
 - `app/core/whoop.py` : client WHOOP (OAuth 2.0, pagination API v2), normalisation des enregistrements en DataFrames, agrégat journalier et croisement avec le poids. Le transport HTTP est injectable, ce qui rend le module testable sans réseau.
+- `app/core/whoop_analytics.py` : analyses croisées WHOOP × poids : grille calendaire continue, zones de récupération, charge aigüe/chronique, dette de sommeil, bilan énergétique, corrélations décalées, synthèses hebdomadaire et par jour de semaine. Chaque fonction refuse de conclure sous son effectif minimal.
 - `app/core/whoop_session.py` : glue Streamlit du flux OAuth : détection de l'URL publique de l'application, capture du retour de redirection sur n'importe quelle page et bascule vers l'onglet Whoop.
 - `app/pages/` : pages visibles de l'application : Dashboard, Journal, Prévisions, Insights, Whoop et Paramètres.
 - `app/ui/` : composants d'interface, cartes, graphiques et thème visuel.
