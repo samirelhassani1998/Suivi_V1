@@ -16,8 +16,16 @@ from app.core.session_state import (
     ensure_session_defaults,
     get_filtered_or_working_data,
 )
+from app.core.whoop_session import (
+    clear_oauth_params,
+    clear_pending_callback,
+    detect_base_url,
+    pending_callback,
+    redirect_uri_candidates,
+)
 from app.core.whoop import (
     DEFAULT_REDIRECT_URI,
+    build_scopes,
     WhoopError,
     WhoopToken,
     available_metrics,
@@ -85,13 +93,20 @@ def _plot_template() -> str:
     return str(st.session_state.get("theme", "plotly"))
 
 
+def _default_redirect_uri() -> str:
+    """URL de redirection proposée par défaut : celle de l'application elle-même."""
+    detected = detect_base_url(default="")
+    return detected or DEFAULT_REDIRECT_URI
+
+
 def _resolve_credentials():
     overrides = dict(st.session_state.get("whoop_manual_credentials", {}) or {})
     return credentials_from_sources(
         _secrets_mapping(),
         os.environ,
         overrides,
-        default_redirect_uri=str(overrides.get("redirect_uri") or DEFAULT_REDIRECT_URI),
+        default_redirect_uri=_default_redirect_uri(),
+        scopes=build_scopes(offline=bool(st.session_state.get("whoop_request_offline", True))),
     )
 
 
@@ -111,46 +126,98 @@ def _store_token(token: WhoopToken) -> None:
 
 
 def _consume_oauth_callback(credentials) -> None:
-    """Traite le retour de redirection WHOOP (``?code=...&state=...``)."""
-    try:
-        params = st.query_params
-        code = params.get("code")
-        state = params.get("state")
-    except Exception:
-        return
-    if not code:
+    """Traite le retour de redirection WHOOP capté par le point d'entrée."""
+    # Le retour peut aussi arriver directement sur cette page : on relit l'URL.
+    pending = pending_callback()
+    if pending is None:
+        try:
+            code = st.query_params.get("code")
+            error = st.query_params.get("error")
+        except Exception:
+            return
+        if not code and not error:
+            return
+        pending = {
+            "code": str(code or ""),
+            "state": str(st.query_params.get("state") or ""),
+            "error": str(error or ""),
+            "error_description": str(st.query_params.get("error_description") or ""),
+        }
+        clear_oauth_params()
+
+    clear_pending_callback()
+
+    if pending.get("error"):
+        _render_oauth_error(pending, credentials)
         return
 
     expected_state = st.session_state.get("whoop_oauth_state")
+    state = pending.get("state") or ""
     if expected_state and state and state != expected_state:
-        st.error("État OAuth inattendu : relancez la connexion WHOOP.")
-        _clear_oauth_params()
+        st.error(
+            "État OAuth inattendu : la réponse ne correspond pas à la demande émise. "
+            "Relancez la connexion depuis cette page."
+        )
         return
 
     try:
-        token = exchange_code_for_token(credentials, str(code))
+        token = exchange_code_for_token(credentials, str(pending.get("code", "")))
     except WhoopError as exc:
         st.error(f"Connexion WHOOP impossible : {exc}")
-        _clear_oauth_params()
         return
     except Exception:
         st.error("Connexion WHOOP impossible : réponse inattendue du service.")
-        _clear_oauth_params()
         return
 
     _store_token(token)
     st.session_state["whoop_oauth_state"] = None
-    _clear_oauth_params()
     st.success("Compte WHOOP connecté.")
 
 
-def _clear_oauth_params() -> None:
-    try:
-        for key in ("code", "state", "scope"):
-            if key in st.query_params:
-                del st.query_params[key]
-    except Exception:
-        pass
+def _render_oauth_error(pending: dict, credentials) -> None:
+    """Traduit l'erreur renvoyée par WHOOP en action concrète."""
+    code = str(pending.get("error", ""))
+    description = str(pending.get("error_description", "")).strip()
+    st.error(f"WHOOP a refusé l'autorisation ({code}).{f' {description}' if description else ''}")
+    if "redirect" in description.lower() or code == "invalid_request":
+        _render_redirect_uri_help(credentials)
+    elif code == "access_denied":
+        st.info("L'autorisation a été refusée côté WHOOP. Relancez la connexion pour réessayer.")
+
+
+def _render_redirect_uri_help(credentials) -> None:
+    """Explique la correspondance exacte exigée par WHOOP sur la Redirect URI."""
+    st.warning(
+        "WHOOP compare la Redirect URI **caractère pour caractère** avec celles "
+        "déclarées dans votre application du tableau de bord développeur. "
+        "Déclarez-y exactement l'URL ci-dessous, puis relancez la connexion."
+    )
+    st.caption("URL envoyée par cette application :")
+    st.code(credentials.redirect_uri, language="text")
+    others = [uri for uri in redirect_uri_candidates() if uri != credentials.redirect_uri]
+    if others:
+        st.caption(
+            "Ces variantes sont également gérées par l'application : déclarer l'une "
+            "d'elles côté WHOOP fonctionne aussi, à condition de la recopier ici à l'identique."
+        )
+        st.code("\n".join(others), language="text")
+    st.caption(
+        "Pièges fréquents : une barre oblique finale en trop ou en moins, `http` au lieu "
+        "de `https`, ou une URL d'application Streamlit qui a changé depuis la déclaration."
+    )
+
+
+def _scope_controls() -> None:
+    """Permet de retirer ``offline`` si l'application WHOOP ne l'a pas activé."""
+    st.checkbox(
+        "Demander le renouvellement automatique du jeton (scope `offline`)",
+        key="whoop_request_offline",
+        help=(
+            "Laissez coché dans le cas général. Décochez uniquement si WHOOP refuse "
+            "l'autorisation pour cause de scope invalide : la connexion fonctionnera "
+            "alors, mais expirera au bout de quelques heures sans renouvellement."
+        ),
+    )
 
 
 def _connection_panel(credentials) -> None:
@@ -175,6 +242,7 @@ def _connection_panel(credentials) -> None:
                 value=str(overrides.get("redirect_uri", credentials.redirect_uri)),
                 help="Doit être identique, caractère pour caractère, à l'URL déclarée dans le tableau de bord développeur WHOOP.",
             )
+            st.caption("URL détectée pour cette application : " + f"`{_default_redirect_uri()}`")
             if st.form_submit_button("Utiliser ces identifiants pour la session"):
                 st.session_state["whoop_manual_credentials"] = {
                     "client_id": client_id.strip(),
@@ -202,11 +270,15 @@ def _connection_panel(credentials) -> None:
     cols = st.columns([2, 1])
     with cols[0]:
         st.link_button("Autoriser l'accès WHOOP", auth_url, use_container_width=True)
-        st.caption(f"Redirection configurée : `{credentials.redirect_uri}`")
     with cols[1]:
         if st.button("Réinitialiser la connexion", use_container_width=True):
             clear_whoop_session()
             st.info("Session WHOOP réinitialisée.")
+
+    with st.expander("La redirection est refusée par WHOOP ?", expanded=False):
+        _render_redirect_uri_help(credentials)
+        st.divider()
+        _scope_controls()
 
 
 def _sync_panel(credentials, token: WhoopToken) -> None:

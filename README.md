@@ -134,7 +134,8 @@ Suivi_V1/
 │   │   ├── targets.py
 │   │   ├── time_utils.py
 │   │   ├── weight_summary.py
-│   │   └── whoop.py
+│   │   ├── whoop.py
+│   │   └── whoop_session.py
 │   ├── pages/
 │   │   ├── Dashboard.py
 │   │   ├── Insights.py
@@ -155,7 +156,8 @@ Suivi_V1/
     ├── test_utils.py
     ├── test_v3_guardrails.py
     ├── test_weight_summary.py
-    └── test_whoop.py
+    ├── test_whoop.py
+    └── test_whoop_oauth_callback.py
 ```
 
 ### Rôle des principaux modules
@@ -174,6 +176,7 @@ Suivi_V1/
 - `app/core/data.py` : chargement, nettoyage, validation, rapport qualité et résolution des doublons.
 - `app/core/session_state.py` : initialisation, lecture, écriture et réinitialisation des données en session Streamlit.
 - `app/core/whoop.py` : client WHOOP (OAuth 2.0, pagination API v2), normalisation des enregistrements en DataFrames, agrégat journalier et croisement avec le poids. Le transport HTTP est injectable, ce qui rend le module testable sans réseau.
+- `app/core/whoop_session.py` : glue Streamlit du flux OAuth : détection de l'URL publique de l'application, capture du retour de redirection sur n'importe quelle page et bascule vers l'onglet Whoop.
 - `app/pages/` : pages visibles de l'application : Dashboard, Journal, Prévisions, Insights, Whoop et Paramètres.
 - `app/ui/` : composants d'interface, cartes, graphiques et thème visuel.
 - `tests/` : tests automatisés couvrant les calculs, garde-fous, composants Streamlit et comportements métier.
@@ -265,7 +268,7 @@ Le template `.streamlit/secrets.example.toml` peut servir de point de départ. L
 ### Configuration WHOOP
 
 1. Créer une application sur le tableau de bord développeur WHOOP et relever le `client_id` et le `client_secret`.
-2. Déclarer côté WHOOP la *Redirect URI* exacte de l'application (par exemple `https://votre-app.streamlit.app` en ligne, ou `http://localhost:8501` en local). WHOOP refuse toute redirection qui ne correspond pas caractère pour caractère.
+2. Déclarer côté WHOOP, dans le champ *Redirect URLs*, l'URL exacte de l'application (par exemple `https://votre-app.streamlit.app/` en ligne, ou `http://localhost:8501` en local). **WHOOP compare caractère pour caractère** : une barre oblique finale en trop ou en moins suffit à provoquer l'erreur `invalid_request` avec le message *« The "redirect_uri" parameter does not match any of the OAuth 2.0 Client's pre-registered redirect urls »*. L'onglet affiche l'URL qu'il détecte et celle qu'il envoie, à recopier telle quelle dans le tableau de bord WHOOP.
 3. Renseigner le bloc `[whoop]` dans les secrets Streamlit. Trois autres sources sont acceptées, par ordre de priorité décroissante : saisie manuelle dans l'onglet (valable le temps de la session), clés à plat `whoop_client_id` / `whoop_client_secret` / `whoop_redirect_uri`, variables d'environnement `WHOOP_CLIENT_ID` / `WHOOP_CLIENT_SECRET` / `WHOOP_REDIRECT_URI`.
 4. Ouvrir l'onglet `Whoop`, cliquer sur « Autoriser l'accès WHOOP », accepter côté WHOOP, puis lancer une synchronisation.
 
@@ -273,6 +276,8 @@ Les scopes demandés sont en lecture seule : `read:profile`, `read:body_measurem
 
 Points d'attention :
 
+- la redirection peut pointer vers la racine de l'application : le code d'autorisation est alors capté par le point d'entrée, avant la porte d'authentification et avant tout rendu de page, puis l'onglet Whoop est activé automatiquement. Les trois formes gérées sont la racine avec barre oblique finale, sans barre oblique, et le chemin `/Whoop` ;
+- le scope `offline` peut être retiré depuis l'onglet si l'application WHOOP ne l'autorise pas : la connexion fonctionne alors sans renouvellement automatique du jeton ;
 - l'API WHOOP plafonne la pagination à 25 éléments par page ; le client suit les pages via `nextToken` jusqu'à épuisement ;
 - une nuit de sommeil est rattachée au jour du réveil, ce qui la rend comparable à la pesée du matin ;
 - les siestes ne remplacent pas la nuit principale : la plus longue période de sommeil du jour est conservée ;

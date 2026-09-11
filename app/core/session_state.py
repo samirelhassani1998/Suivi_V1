@@ -55,6 +55,7 @@ def ensure_whoop_defaults() -> None:
     st.session_state.setdefault("whoop_last_sync", None)
     st.session_state.setdefault("whoop_sync_days", DEFAULT_WHOOP_SYNC_DAYS)
     st.session_state.setdefault("whoop_manual_credentials", {})
+    st.session_state.setdefault("whoop_request_offline", True)
 
 
 def clear_whoop_session() -> None:

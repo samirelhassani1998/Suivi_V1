@@ -19,6 +19,7 @@ from app.core.whoop import (
     available_metrics,
     build_authorization_url,
     build_daily_frame,
+    build_scopes,
     correlation_table,
     credentials_from_sources,
     cycles_to_frame,
@@ -460,3 +461,26 @@ def test_credentials_from_sources_without_anything_is_incomplete():
     credentials = credentials_from_sources()
     assert not credentials.is_complete
     assert credentials.scopes == DEFAULT_SCOPES
+
+
+def test_build_scopes_toggles_only_the_offline_scope():
+    with_offline = build_scopes(offline=True)
+    without_offline = build_scopes(offline=False)
+
+    assert with_offline[0] == "offline"
+    assert with_offline == DEFAULT_SCOPES
+    assert "offline" not in without_offline
+    # Les scopes de lecture restent identiques dans les deux cas.
+    assert set(with_offline) - {"offline"} == set(without_offline)
+
+
+def test_authorization_url_reflects_a_scope_set_without_offline():
+    credentials = WhoopCredentials(
+        client_id="client-id",
+        client_secret="client-secret",
+        redirect_uri="https://exemple.test/",
+        scopes=build_scopes(offline=False),
+    )
+    url = build_authorization_url(credentials, "state-long-enough")
+    assert "offline" not in url
+    assert "read%3Arecovery" in url

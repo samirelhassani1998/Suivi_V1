@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-09-11 — Correctif du retour d'autorisation WHOOP
+
+- Correction d'un défaut bloquant : lorsque la *Redirect URI* déclarée chez WHOOP pointait vers la racine de l'application, le retour d'autorisation affichait le Dashboard et le code était perdu, rendant la connexion impossible. Le code est désormais capté par `Suivi_V1.py` avant la porte d'authentification et avant tout rendu de page, puis l'onglet Whoop est activé automatiquement (`app/core/whoop_session.py`).
+- La *Redirect URI* est détectée depuis les en-têtes de la requête au lieu d'être saisie à l'aveugle, et l'onglet affiche l'URL exacte à déclarer côté WHOOP.
+- Les erreurs renvoyées par WHOOP (`invalid_request`, `access_denied`) sont interprétées et accompagnées de la marche à suivre, au lieu d'aboutir à une page d'erreur du fournisseur sans explication.
+- Les paramètres OAuth sont retirés de l'URL après lecture, ce qui évite de rejouer un code déjà consommé au rafraîchissement.
+- Ajout d'un réglage permettant de retirer le scope `offline` si l'application WHOOP ne l'autorise pas.
+- Ajout de `tests/test_whoop_oauth_callback.py` (15 tests), dont deux vérifient que le code survit à la porte d'authentification — ils échouent bien avec l'ordre d'exécution fautif.
+
+
 ## 2026-09-11 — Intégration WHOOP
 
 - Ajout d'un onglet `Whoop` (`app/pages/Whoop.py`) connecté à l'API WHOOP v2 en lecture seule via OAuth 2.0 : autorisation, échange de code, rafraîchissement automatique du jeton et déconnexion.
