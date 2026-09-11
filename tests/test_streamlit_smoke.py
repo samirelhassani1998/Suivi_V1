@@ -331,6 +331,7 @@ def _whoop_connected_state(at: AppTest) -> None:
     at.session_state["whoop_workouts"] = pd.DataFrame(
         {
             "Date": [pd.Timestamp("2026-01-03"), pd.Timestamp("2026-01-07")],
+            "Début": [pd.Timestamp("2026-01-03 07:30"), pd.Timestamp("2026-01-07 18:10")],
             "Sport": ["Running", "Weightlifting"],
             "Durée (min)": [45.0, 60.0],
             "Strain séance": [9.4, 7.2],
@@ -403,8 +404,12 @@ def test_main_navigation_exposes_whoop_page_without_dropping_existing_pages():
 
 
 def _whoop_rich_state(at: AppTest, *, whoop_days: int = 45) -> None:
-    """Historique suffisant pour débloquer toutes les analyses croisées."""
-    dates = pd.date_range("2026-01-01", periods=whoop_days, freq="D")
+    """Historique suffisant pour débloquer toutes les analyses croisées.
+
+    Les dates se terminent aujourd'hui : le filtre de période compte à partir
+    du jour courant, comme le lecteur l'attend d'un libellé « 7 jours ».
+    """
+    dates = pd.date_range(end=pd.Timestamp.now().normalize(), periods=whoop_days, freq="D")
     at.session_state["whoop_daily"] = pd.DataFrame(
         {
             "Date": dates,
@@ -424,9 +429,15 @@ def _whoop_rich_state(at: AppTest, *, whoop_days: int = 45) -> None:
             "Calories (kcal)": [2500 + (i % 7) * 120 for i in range(whoop_days)],
         }
     )
+    # Deux jours de séance choisis dans la fenêtre, quelle que soit sa longueur.
+    session_days = [dates[min(4, len(dates) - 1)], dates[min(8, len(dates) - 1)]]
     at.session_state["whoop_workouts"] = pd.DataFrame(
         {
-            "Date": [pd.Timestamp("2026-01-05"), pd.Timestamp("2026-01-09")],
+            "Date": [session_days[0].normalize(), session_days[1].normalize()],
+            "Début": [
+                session_days[0] + pd.Timedelta(hours=18, minutes=30),
+                session_days[1] + pd.Timedelta(hours=7, minutes=15),
+            ],
             "Sport": ["boxing", "weightlifting"],
             "Durée (min)": [43.4038, 60.1234],
             "Strain séance": [13.9323, 7.812],
@@ -437,7 +448,22 @@ def _whoop_rich_state(at: AppTest, *, whoop_days: int = 45) -> None:
         }
     )
     at.session_state["whoop_profile"] = {"first_name": "Test", "last_name": "Utilisateur"}
-    at.session_state["whoop_last_sync"] = pd.Timestamp("2026-02-14")
+    at.session_state["whoop_last_sync"] = pd.Timestamp.now()
+
+    # Le croisement poids × WHOOP exige que les deux sources couvrent la même
+    # fenêtre : la fixture de poids partagée reste ancrée en janvier pour les
+    # autres pages, celle-ci est donc posée localement.
+    weights = pd.DataFrame(
+        {
+            "Date": dates,
+            "Poids (Kgs)": [104 - index * 0.06 for index in range(whoop_days)],
+        }
+    )
+    at.session_state["source_data"] = weights.copy()
+    at.session_state["working_data"] = weights.copy()
+    at.session_state["filtered_data"] = pd.DataFrame()
+    at.session_state["filter_active"] = False
+    at.session_state["raw_data"] = weights.copy()
 
 
 def test_whoop_page_unlocks_energy_balance_and_lagged_correlations_with_enough_history():
@@ -511,10 +537,12 @@ def test_whoop_page_formats_workout_tables_without_raw_precision():
     # Les décimales brutes de l'API ne sont plus affichées telles quelles.
     assert "43.4038" not in flattened
     assert "505.512" not in flattened
-    # Les noms de sport sont normalisés et les dates raccourcies.
+    # Les noms de sport sont normalisés et les dates écrites en français.
     assert "Boxing" in flattened
-    assert "05/01/2026" in flattened
     assert "2026-01-05 00:00:00" not in flattened
+    assert any(month in flattened for month in ("janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."))
+    # Une durée se lit en heures et minutes, pas en décimales de minute.
+    assert "43 min" in flattened
 
 
 def test_whoop_page_shows_narrative_insights_and_a_recovery_gauge():
@@ -583,3 +611,55 @@ def test_whoop_page_offers_a_table_view_for_its_charts():
 
     assert not at.exception
     assert len(at.dataframe) >= 3
+
+
+def test_whoop_page_warns_when_measurements_stopped_days_ago():
+    """Rien n'indiquait que les moyennes « récentes » portaient sur des jours anciens."""
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at)
+    stale = at.session_state["whoop_daily"].copy()
+    stale["Date"] = stale["Date"] - pd.Timedelta(days=8)
+    at.session_state["whoop_daily"] = stale
+    at.run(timeout=30)
+
+    assert not at.exception
+    warnings = " ".join(str(w.value) for w in at.warning)
+    assert "Dernière mesure" in warnings
+    assert "il y a 8 jours" in warnings
+
+
+def test_whoop_page_period_counts_from_today_not_from_the_last_measurement():
+    """Après une semaine sans porter le bracelet, « 7 jours » doit rester 7 jours."""
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at)
+    stale = at.session_state["whoop_daily"].copy()
+    stale["Date"] = stale["Date"] - pd.Timedelta(days=30)
+    at.session_state["whoop_daily"] = stale
+    at.run(timeout=30)
+    assert not at.exception
+
+    next(radio for radio in at.radio if radio.label == "Période analysée").set_value("7 jours").run(timeout=30)
+
+    assert not at.exception
+    # Aucune mesure dans les 7 derniers jours réels : la page le dit au lieu
+    # d'afficher silencieusement une autre tranche.
+    assert any("Aucune mesure WHOOP sur cette période" in str(info.value) for info in at.info)
+
+
+def test_whoop_page_writes_dates_in_french():
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at)
+    at.run(timeout=30)
+
+    assert not at.exception
+    specs = [json.loads(chart.proto.spec) for chart in at.get("plotly_chart")]
+    labels = [
+        label
+        for spec in specs
+        for label in spec.get("layout", {}).get("xaxis", {}).get("ticktext", []) or []
+    ]
+    assert labels, "les axes temporels doivent porter des étiquettes explicites"
+    assert all(month not in label for label in labels for month in ("Jan", "Feb", "Aug", "Sep", "Oct", "Dec"))

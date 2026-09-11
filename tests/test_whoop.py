@@ -451,3 +451,44 @@ def test_authorization_url_reflects_a_scope_set_without_offline():
     url = build_authorization_url(credentials, "state-long-enough")
     assert "offline" not in url
     assert "read%3Arecovery" in url
+
+
+def test_workouts_keep_their_start_time_so_same_day_sessions_stay_distinct():
+    """Trois séances le même jour devenaient trois lignes identiques au lecteur."""
+    records = [
+        {
+            "id": f"3333333{index}-3333-3333-3333-333333333333",
+            "user_id": 7,
+            "start": start,
+            "end": end,
+            "timezone_offset": "+02:00",
+            "sport_name": "boxing",
+            "score_state": "SCORED",
+            "score": {"strain": 5.3, "average_heart_rate": 120, "max_heart_rate": 142, "kilojoule": 463.0},
+        }
+        for index, (start, end) in enumerate(
+            [
+                ("2026-09-10T09:00:00.000Z", "2026-09-10T09:16:00.000Z"),
+                ("2026-09-10T16:30:00.000Z", "2026-09-10T17:13:00.000Z"),
+                ("2026-09-10T19:05:00.000Z", "2026-09-10T19:44:00.000Z"),
+            ]
+        )
+    ]
+
+    frame = workouts_to_frame(records)
+
+    assert len(frame) == 3
+    assert frame["Date"].nunique() == 1
+    # L'heure locale distingue les séances et respecte le décalage horaire.
+    assert frame["Début"].nunique() == 3
+    assert frame.loc[0, "Début"] == pd.Timestamp("2026-09-10 11:00")
+    assert frame.loc[2, "Début"] == pd.Timestamp("2026-09-10 21:05")
+    # Les séances restent ordonnées chronologiquement dans la journée.
+    assert frame["Début"].is_monotonic_increasing
+
+
+def test_empty_workout_frame_types_its_datetime_columns():
+    frame = workouts_to_frame([])
+    assert frame.empty
+    assert str(frame["Date"].dtype).startswith("datetime64")
+    assert str(frame["Début"].dtype).startswith("datetime64")

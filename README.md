@@ -117,6 +117,10 @@ Au-delà de ce que restitue l'application WHOOP, l'onglet exploite la seule donn
 - **Lecture narrative** : les constats sont rédigés en français, chiffres à l'appui, et classés par importance (montée de charge brutale, dette de sommeil, apport calorique estimé, creux récurrent le tel jour…). Chaque règle reste muette tant que son effectif minimal n'est pas atteint.
 - **Repère personnel** : la HRV et la fréquence au repos sont comparées à la médiane de vos 30 derniers jours plutôt qu'à une norme générale.
 - **Calendrier de récupération** : une grille semaine × jour qui donne un mois de lecture d'un seul coup d'œil.
+- **Vos bons jours contre vos mauvais** : comparaison du tiers de vos meilleures journées de récupération au tiers des pires, pour identifier le facteur qui les sépare le plus (sommeil, charge, heure de coucher, perturbations).
+- **Coût de chaque sport** : récupération du lendemain sport par sport — le score du jour même précède la séance, seul le lendemain en porte la trace.
+
+Lisibilité des dates : mois et jours écrits en français (`3 sept.`, `jeudi 3 septembre 2026`), ancienneté exprimée en clair (`hier`, `il y a 5 jours`), durées en heures et minutes (`1 h 30` plutôt que `90,0`), heures de coucher rendues en horloge, et semaines nommées (`Semaine du 3 août`). Les noms sont codés dans l'application plutôt que tirés de la locale système, qui ferait dépendre l'affichage des paquets installés sur la machine de déploiement. Un bandeau signale les données qui s'arrêtent il y a plus de deux jours, et le filtre de période compte à partir d'aujourd'hui — pas de la dernière mesure, ce qui donnerait à « 7 jours » un sens flottant.
 
 Choix de visualisation appliqués : palette catégorielle validée pour la vision des couleurs, couleurs de statut réservées aux significations bon/mauvais, grille en filet, légende absente pour une série unique, jours sans mesure laissés vides plutôt que reliés, et **aucun graphique à double axe vertical** — le poids et une métrique WHOOP sont ramenés à une base 100 commune, car caler deux échelles verticales l'une sur l'autre fabrique une corrélation visuelle arbitraire. Chaque graphique coloré possède sa vue tableau. Un filtre de période unique (7 / 30 / 90 jours / tout) s'applique à tous les onglets.
 
@@ -169,6 +173,7 @@ Suivi_V1/
     ├── conftest.py
     ├── test_analytics.py
     ├── test_core_v2.py
+    ├── test_date_labels.py
     ├── test_phase2_reliability.py
     ├── test_streamlit_smoke.py
     ├── test_target_trajectory.py
@@ -190,6 +195,7 @@ Suivi_V1/
 - `app/core/plateau.py` : moteur de détection de plateau et de stagnation.
 - `app/core/time_utils.py` : normalisation défensive des dates et conversion des séries temporelles.
 - `app/core/formatting.py` : formatage des dates, valeurs et nombres pour l'interface.
+- `app/core/date_labels.py` : libellés de dates en français (mois, jours, ancienneté relative, durées, plages, heures de coucher), indépendants de la locale système.
 - `app/core/weight_summary.py` : synthèse des mesures, variations calendaires, moyennes mobiles et indicateurs de suivi.
 - `app/core/analytics.py` : fonctions descriptives, tendances, phases, scénarios, scores et comparaisons temporelles.
 - `app/core/insights.py` : analyses de plateau, anomalies robustes, ETA et synthèses analytiques.

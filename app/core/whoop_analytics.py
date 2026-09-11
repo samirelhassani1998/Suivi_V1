@@ -778,7 +778,56 @@ def _drivers_insight(daily: pd.DataFrame | None) -> Insight | None:
     )
 
 
-def generate_insights(daily: pd.DataFrame | None, merged: pd.DataFrame | None = None, *, limit: int = 6) -> list[Insight]:
+def _contrast_insight(daily: pd.DataFrame | None) -> Insight | None:
+    contrast = contrast_best_worst_days(daily)
+    if not contrast["ready"] or contrast["table"].empty:
+        return None
+    top = contrast["table"].iloc[0]
+    factor, gap = str(top["Facteur"]), float(top["Écart"])
+    if abs(gap) < 0.3:
+        return None
+    unit = "h" if "heures" in factor or "coucher" in factor else ""
+    direction = "davantage" if gap > 0 else "moins"
+    return Insight(
+        f"Vos meilleurs jours : {factor.lower()}",
+        f"Sur vos {contrast['best_days']} meilleurs jours de récupération, "
+        f"{factor.lower()} vaut {_fr(float(top['Meilleurs jours']))} {unit}".rstrip()
+        + f" contre {_fr(float(top['Pires jours']))} {unit}".rstrip()
+        + f" sur les {contrast['worst_days']} pires, soit {direction} de {_fr(abs(gap))} {unit}".rstrip()
+        + ". C'est le facteur qui sépare le plus vos bons et vos mauvais jours.",
+        tone="info",
+        icon="🔍",
+        priority=78,
+    )
+
+
+def _sport_insight(daily: pd.DataFrame | None, workouts: pd.DataFrame | None) -> Insight | None:
+    impact = sport_recovery_impact(daily, workouts)
+    if impact.empty:
+        return None
+    hardest = impact.iloc[0]
+    gap = float(hardest["Écart à votre moyenne"])
+    if gap > -5:
+        return None
+    return Insight(
+        f"{str(hardest['Sport']).capitalize()} pèse sur votre lendemain",
+        f"Après vos {int(hardest['Séances'])} séances de {str(hardest['Sport']).lower()}, votre "
+        f"récupération du lendemain atteint {_fr(float(hardest['Récupération du lendemain (%)']), 0)} %, "
+        f"soit {_fr(gap, 0)} points sous votre moyenne. Prévoir une journée plus légère ensuite "
+        "est une piste, pas une prescription.",
+        tone="warning",
+        icon="🥊",
+        priority=72,
+    )
+
+
+def generate_insights(
+    daily: pd.DataFrame | None,
+    merged: pd.DataFrame | None = None,
+    workouts: pd.DataFrame | None = None,
+    *,
+    limit: int = 6,
+) -> list[Insight]:
     """Constats rédigés, classés par importance décroissante.
 
     Chaque règle reste muette tant que ses conditions d'effectif ne sont pas
@@ -792,6 +841,8 @@ def generate_insights(daily: pd.DataFrame | None, merged: pd.DataFrame | None = 
         _recovery_insight(daily),
         _drivers_insight(daily),
         _correlation_insight(merged),
+        _contrast_insight(daily),
+        _sport_insight(daily, workouts),
         _weekday_insight(daily),
         _baseline_insight(daily, "HRV (ms)", "Variabilité cardiaque"),
         _baseline_insight(daily, "FC repos (bpm)", "Fréquence au repos", lower_is_better=True),
@@ -799,3 +850,156 @@ def generate_insights(daily: pd.DataFrame | None, merged: pd.DataFrame | None = 
     found = [insight for insight in candidates if insight is not None]
     found.sort(key=lambda insight: insight.priority, reverse=True)
     return found[: max(1, int(limit))]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Ce qui distingue les bons jours des mauvais
+# ──────────────────────────────────────────────────────────────────────────────
+
+MIN_DAYS_CONTRAST = 15
+MIN_SESSIONS_PER_SPORT = 3
+
+# Métriques susceptibles d'expliquer un écart de récupération.
+CONTRAST_METRICS: tuple[str, ...] = (
+    "Sommeil (heures)",
+    "Dette de sommeil (heures)",
+    "Heure de coucher",
+    "Strain",
+    "Perturbations sommeil",
+)
+
+
+def contrast_best_worst_days(
+    frame: pd.DataFrame | None,
+    *,
+    metric: str = "Récupération (%)",
+    min_days: int = MIN_DAYS_CONTRAST,
+) -> dict[str, Any]:
+    """Compare le tiers de vos meilleurs jours au tiers des pires.
+
+    L'application WHOOP indique votre score ; elle ne dit pas ce que vous
+    faisiez différemment les jours où il était bon. La comparaison par tiers
+    répond à cette question sans supposer de relation linéaire.
+    """
+    columns = ["Facteur", "Meilleurs jours", "Pires jours", "Écart"]
+    result = {
+        "ready": False,
+        "days": 0,
+        "required_days": int(min_days),
+        "table": pd.DataFrame(columns=columns),
+        "best_threshold": float("nan"),
+        "worst_threshold": float("nan"),
+    }
+    grid = daily_grid(frame)
+    if grid.empty or metric not in grid.columns:
+        return result
+
+    scored = grid.dropna(subset=[metric])
+    result["days"] = int(len(scored))
+    if len(scored) < max(6, int(min_days)):
+        return result
+
+    worst_threshold = float(scored[metric].quantile(1 / 3))
+    best_threshold = float(scored[metric].quantile(2 / 3))
+    if not np.isfinite(worst_threshold) or not np.isfinite(best_threshold) or best_threshold <= worst_threshold:
+        return result
+
+    best = scored[scored[metric] >= best_threshold]
+    worst = scored[scored[metric] <= worst_threshold]
+    if len(best) < 3 or len(worst) < 3:
+        return result
+
+    rows = []
+    for factor in CONTRAST_METRICS:
+        if factor not in scored.columns:
+            continue
+        best_values, worst_values = best[factor].dropna(), worst[factor].dropna()
+        if len(best_values) < 3 or len(worst_values) < 3:
+            continue
+        best_mean, worst_mean = float(best_values.mean()), float(worst_values.mean())
+        if not np.isfinite(best_mean) or not np.isfinite(worst_mean):
+            continue
+        rows.append(
+            {
+                "Facteur": factor,
+                "Meilleurs jours": round(best_mean, 2),
+                "Pires jours": round(worst_mean, 2),
+                "Écart": round(best_mean - worst_mean, 2),
+            }
+        )
+
+    if not rows:
+        return result
+
+    table = pd.DataFrame(rows)
+    table = table.reindex(table["Écart"].abs().sort_values(ascending=False).index).reset_index(drop=True)
+    result.update(
+        {
+            "ready": True,
+            "table": table[columns],
+            "best_threshold": best_threshold,
+            "worst_threshold": worst_threshold,
+            "best_days": int(len(best)),
+            "worst_days": int(len(worst)),
+        }
+    )
+    return result
+
+
+def sport_recovery_impact(
+    daily: pd.DataFrame | None,
+    workouts: pd.DataFrame | None,
+    *,
+    min_sessions: int = MIN_SESSIONS_PER_SPORT,
+) -> pd.DataFrame:
+    """Récupération du lendemain, sport par sport.
+
+    Savoir quelle activité vous coûte le plus le jour suivant est exactement ce
+    qu'un score quotidien isolé ne dit pas.
+    """
+    columns = ["Sport", "Séances", "Récupération du lendemain (%)", "Écart à votre moyenne"]
+    grid = daily_grid(daily)
+    if grid.empty or "Récupération (%)" not in grid.columns or workouts is None or workouts.empty:
+        return pd.DataFrame(columns=columns)
+    if "Sport" not in workouts.columns or "Date" not in workouts.columns:
+        return pd.DataFrame(columns=columns)
+
+    recovery_by_day = {
+        pd.Timestamp(date).normalize(): value
+        for date, value in zip(grid["Date"], grid["Récupération (%)"])
+        if pd.notna(value)
+    }
+    overall = float(np.mean(list(recovery_by_day.values()))) if recovery_by_day else float("nan")
+    if not np.isfinite(overall):
+        return pd.DataFrame(columns=columns)
+
+    sessions = workouts.copy()
+    sessions["Date"] = pd.to_datetime(sessions["Date"], errors="coerce").dt.normalize()
+    sessions = sessions.dropna(subset=["Date", "Sport"])
+
+    collected: dict[str, list[float]] = {}
+    for sport, date in zip(sessions["Sport"], sessions["Date"]):
+        # Le lendemain porte la trace de l'effort : le score du jour même a été
+        # calculé avant la séance.
+        following = recovery_by_day.get(pd.Timestamp(date) + pd.Timedelta(days=1))
+        if following is None:
+            continue
+        collected.setdefault(str(sport), []).append(float(following))
+
+    rows = []
+    for sport, values in collected.items():
+        if len(values) < max(2, int(min_sessions)):
+            continue
+        mean_value = float(np.mean(values))
+        rows.append(
+            {
+                "Sport": sport,
+                "Séances": int(len(values)),
+                "Récupération du lendemain (%)": round(mean_value, 1),
+                "Écart à votre moyenne": round(mean_value - overall, 1),
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(rows).sort_values("Écart à votre moyenne").reset_index(drop=True)[columns]

@@ -94,10 +94,21 @@ def test_series_chart_assigns_palette_colors_in_fixed_order():
     assert colors == [SERIES_COLORS[0], SERIES_COLORS[1]]
 
 
-def test_series_chart_uses_a_calendar_axis_not_an_hourly_one():
+def test_series_chart_labels_its_axis_in_french_not_in_plotly_english():
+    """Plotly ne connaît que les mois anglais : « Sep 3 » dans une interface française."""
+    figure = _spec(series_chart(_grid(20), ["Récupération (%)"], "Titre", "%"))
+
+    axis = figure["layout"]["xaxis"]
+    assert axis["tickmode"] == "array"
+    assert axis["ticktext"], "l'axe doit porter des étiquettes explicites"
+    assert all("Sep" not in label and "Aug" not in label for label in axis["ticktext"])
+    assert any("août" in label or "sept." in label for label in axis["ticktext"])
+
+
+def test_series_chart_axis_never_degrades_to_hourly_ticks():
     """Avec peu de points, Plotly graduerait sinon en heures des mesures quotidiennes."""
-    figure = _spec(series_chart(_grid(3), ["Récupération (%)"], "Titre", "%"))
-    assert figure["layout"]["xaxis"]["tickformat"] == "%d/%m"
+    axis = _spec(series_chart(_grid(3), ["Récupération (%)"], "Titre", "%"))["layout"]["xaxis"]
+    assert axis.get("tickmode") == "array" or axis.get("tickformat") == "%d/%m"
 
 
 def test_series_chart_returns_none_when_no_metric_is_usable():

@@ -466,8 +466,9 @@ def fetch_body_measurement(token: WhoopToken, *, transport: Transport | None = N
 
 def _empty_frame(columns: Sequence[str]) -> pd.DataFrame:
     frame = pd.DataFrame({column: pd.Series(dtype="float64") for column in columns})
-    if "Date" in columns:
-        frame["Date"] = pd.Series(dtype="datetime64[ns]")
+    for column in ("Date", "Début"):
+        if column in columns:
+            frame[column] = pd.Series(dtype="datetime64[ns]")
     return frame[list(columns)]
 
 
@@ -657,7 +658,7 @@ def cycles_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     return frame[list(CYCLE_COLUMNS)]
 
 
-WORKOUT_COLUMNS = ("Date", "Sport", "Durée (min)", "Strain séance", "Calories séance (kcal)", "FC moyenne (bpm)", "FC max (bpm)", "Distance (km)")
+WORKOUT_COLUMNS = ("Date", "Début", "Sport", "Durée (min)", "Strain séance", "Calories séance (kcal)", "FC moyenne (bpm)", "FC max (bpm)", "Distance (km)")
 
 
 def workouts_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
@@ -670,11 +671,19 @@ def workouts_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
         start = pd.to_datetime(record.get("start"), errors="coerce", utc=True)
         end = pd.to_datetime(record.get("end"), errors="coerce", utc=True)
         duration = (end - start).total_seconds() / 60.0 if not pd.isna(start) and not pd.isna(end) else float("nan")
+        # Sans l'heure de début, plusieurs séances du même jour deviennent
+        # indiscernables dans le tableau : trois lignes identiques au lecteur.
+        local_start = (
+            pd.Timestamp(start.tz_localize(None) + parse_timezone_offset(record.get("timezone_offset")))
+            if not pd.isna(start)
+            else pd.NaT
+        )
         kilojoule = _number(score.get("kilojoule"))
         distance = _number(score.get("distance_meter"))
         rows.append(
             {
                 "Date": date,
+                "Début": local_start,
                 "Sport": str(record.get("sport_name") or "Inconnu"),
                 "Durée (min)": duration,
                 "Strain séance": _number(score.get("strain")),
@@ -686,7 +695,8 @@ def workouts_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
         )
     if not rows:
         return _empty_frame(WORKOUT_COLUMNS)
-    return pd.DataFrame(rows).sort_values("Date", kind="mergesort").reset_index(drop=True)[list(WORKOUT_COLUMNS)]
+    frame = pd.DataFrame(rows).sort_values(["Date", "Début"], kind="mergesort").reset_index(drop=True)
+    return frame[list(WORKOUT_COLUMNS)]
 
 
 def build_daily_frame(
