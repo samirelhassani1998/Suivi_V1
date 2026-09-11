@@ -9,6 +9,7 @@ from app.auth import check_password
 from app.config import DATA_URL
 from app.core.data import clean_weight_dataframe_with_report
 from app.core.session_state import ensure_session_defaults, reset_working_to_source, set_source_data
+from app.core.whoop_session import capture_oauth_callback, switch_to_whoop_page_if_pending
 from app.ui.theme import apply_global_theme
 
 
@@ -98,18 +99,26 @@ def sidebar_controls() -> None:
 st.set_page_config(page_title="Suivi V1", page_icon="📊", layout="wide")
 apply_global_theme()
 
+# WHOOP redirige vers la Redirect URI déclarée, qui est le plus souvent la racine
+# de l'application : le code d'autorisation est donc capté avant la porte
+# d'authentification et avant tout rendu de page, sinon il serait perdu.
+capture_oauth_callback()
+
 if not check_password():
     st.stop()
 
 init_data_once()
 sidebar_controls()
 
+whoop_page = st.Page("app/pages/Whoop.py", title="Whoop", icon="⌚")
 pages = [
     st.Page("app/pages/Dashboard.py", title="Dashboard", icon="📊"),
     st.Page("app/pages/Journal.py", title="Journal", icon="🧾"),
     st.Page("app/pages/Predictions.py", title="Prévisions", icon="📈"),
     st.Page("app/pages/Insights.py", title="Insights", icon="🔍"),
-    st.Page("app/pages/Whoop.py", title="Whoop", icon="⌚"),
+    whoop_page,
     st.Page("app/pages/Settings.py", title="Paramètres", icon="⚙️"),
 ]
-st.navigation(pages).run()
+navigation = st.navigation(pages)
+switch_to_whoop_page_if_pending(whoop_page)
+navigation.run()

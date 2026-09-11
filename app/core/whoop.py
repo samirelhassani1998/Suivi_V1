@@ -27,8 +27,7 @@ AUTHORIZE_URL = "https://api.prod.whoop.com/oauth/oauth2/auth"
 TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token"
 API_BASE_URL = "https://api.prod.whoop.com/developer"
 
-DEFAULT_SCOPES: tuple[str, ...] = (
-    "offline",
+READ_SCOPES: tuple[str, ...] = (
     "read:profile",
     "read:body_measurement",
     "read:cycles",
@@ -36,6 +35,14 @@ DEFAULT_SCOPES: tuple[str, ...] = (
     "read:sleep",
     "read:workout",
 )
+# ``offline`` est la seule condition pour obtenir un refresh token.
+OFFLINE_SCOPE = "offline"
+DEFAULT_SCOPES: tuple[str, ...] = (OFFLINE_SCOPE,) + READ_SCOPES
+
+
+def build_scopes(*, offline: bool = True) -> tuple[str, ...]:
+    """Scopes demandés ; sans ``offline``, la session expire sans renouvellement."""
+    return (OFFLINE_SCOPE,) + READ_SCOPES if offline else READ_SCOPES
 
 COLLECTION_PATHS: dict[str, str] = {
     "recovery": "v2/recovery",
