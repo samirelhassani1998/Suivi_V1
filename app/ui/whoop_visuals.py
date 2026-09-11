@@ -17,6 +17,8 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
+from app.core.date_labels import format_day_month, format_long_date
+
 # Palette catégorielle : ordre fixe, jamais recyclé ni réattribué au filtrage.
 SERIES_COLORS: tuple[str, ...] = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100")
 
@@ -77,13 +79,37 @@ def _base_layout(figure: go.Figure, title: str, *, y_title: str = "", height: in
     return figure
 
 
-def _calendar_axis(figure: go.Figure) -> go.Figure:
-    """Graduations au jour, au format jour/mois.
+MAX_AXIS_TICKS = 8
+
+
+def french_date_ticks(dates: Any, *, max_ticks: int = MAX_AXIS_TICKS) -> tuple[list, list[str]]:
+    """Positions et étiquettes d'axe en français (``3 sept.``).
+
+    Plotly ne connaît que les mois anglais : laisser ses graduations
+    automatiques affiche « Sep 3 » au milieu d'une interface française.
+    """
+    parsed = pd.to_datetime(pd.Series(list(dates)), errors="coerce").dropna()
+    unique = parsed.dt.normalize().drop_duplicates().sort_values()
+    if unique.empty:
+        return [], []
+    step = max(1, int(np.ceil(len(unique) / max(1, int(max_ticks)))))
+    selected = list(unique)[::step]
+    return selected, [format_day_month(date) for date in selected]
+
+
+def _calendar_axis(figure: go.Figure, dates: Any = None) -> go.Figure:
+    """Graduations au jour, étiquetées en français.
 
     Avec peu de points, Plotly bascule spontanément en graduations horaires
     (``03:00``, ``06:00``) sur des mesures pourtant quotidiennes.
     """
-    figure.update_xaxes(tickformat="%d/%m", ticklabelmode="period", hoverformat="%d/%m/%Y")
+    figure.update_xaxes(ticklabelmode="period", hoverformat="%d/%m/%Y")
+    if dates is not None:
+        tickvals, ticktext = french_date_ticks(dates)
+        if tickvals:
+            figure.update_xaxes(tickmode="array", tickvals=tickvals, ticktext=ticktext)
+            return figure
+    figure.update_xaxes(tickformat="%d/%m")
     return figure
 
 
@@ -136,7 +162,7 @@ def series_chart(
 
     # Une série unique se passe de légende : le titre la nomme déjà.
     show_legend = len(figure.data) > 1
-    return _calendar_axis(_base_layout(figure, title, y_title=y_title, height=height, show_legend=show_legend))
+    return _calendar_axis(_base_layout(figure, title, y_title=y_title, height=height, show_legend=show_legend), grid["Date"])
 
 
 def recovery_gauge(value: float, zone: str | None) -> go.Figure:
@@ -201,10 +227,10 @@ def recovery_calendar(matrix: Mapping[str, Any]) -> go.Figure | None:
     if not matrix or not matrix.get("values"):
         return None
 
-    week_labels = [pd.Timestamp(week).strftime("%d/%m") for week in matrix["weeks"]]
+    week_labels = [format_day_month(week) for week in matrix["weeks"]]
     hover = [
         [
-            "Aucune mesure" if date is None else f"{pd.Timestamp(date).strftime('%d/%m/%Y')}"
+            "Aucune mesure" if date is None else format_long_date(date)
             for date in row
         ]
         for row in matrix["dates"]
@@ -261,7 +287,7 @@ def indexed_comparison_chart(indexed: pd.DataFrame, metrics: Sequence[str], titl
             hovertemplate=f"{metric} : %{{y:.1f}} (base 100)<extra></extra>",
         )
     figure.add_hline(y=100, line=dict(color=AXIS, width=1))
-    return _calendar_axis(_base_layout(figure, title, y_title="Base 100 au départ", show_legend=True))
+    return _calendar_axis(_base_layout(figure, title, y_title="Base 100 au départ", show_legend=True), indexed["Date"])
 
 
 def sleep_stages_chart(grid: pd.DataFrame) -> go.Figure | None:
@@ -281,7 +307,7 @@ def sleep_stages_chart(grid: pd.DataFrame) -> go.Figure | None:
         )
     figure = _base_layout(figure, "Répartition des stades de sommeil", y_title="Heures", show_legend=True)
     figure.update_layout(barmode="stack", bargap=0.35)
-    return _calendar_axis(figure)
+    return _calendar_axis(figure, grid["Date"])
 
 
 def weekday_chart(profile: pd.DataFrame, metric_label: str) -> go.Figure | None:

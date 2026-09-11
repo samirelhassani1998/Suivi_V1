@@ -9,10 +9,12 @@ import pytest
 from app.core.whoop_analytics import (
     ACUTE_LOAD_DAYS,
     KCAL_PER_KG,
+    MIN_DAYS_CONTRAST,
     MIN_DAYS_CORRELATION,
     MIN_DAYS_ENERGY_BALANCE,
     analysis_availability,
     calendar_matrix,
+    contrast_best_worst_days,
     coverage_report,
     daily_grid,
     energy_balance,
@@ -24,6 +26,7 @@ from app.core.whoop_analytics import (
     recovery_zones,
     rolling_trend,
     sleep_debt_summary,
+    sport_recovery_impact,
     strain_recovery_balance,
     training_load,
     weekday_profile,
@@ -549,3 +552,115 @@ def test_generate_insights_on_empty_input_returns_nothing():
 
 def test_generate_insights_respects_its_limit():
     assert len(generate_insights(_daily(60), _merged(60), limit=3)) <= 3
+
+
+# ── Contraste bons / mauvais jours et impact par sport ────────────────────────
+
+
+def test_contrast_best_worst_days_identifies_the_planted_differentiator():
+    """Le facteur injecté doit ressortir en tête, pas se noyer dans le bruit."""
+    days = 45
+    dates = pd.date_range("2026-07-20", periods=days, freq="D")
+    rng = np.random.default_rng(5)
+    sleep = rng.uniform(5.0, 9.0, days)
+    frame = pd.DataFrame(
+        {
+            "Date": dates,
+            # Construction : la récupération suit le sommeil.
+            "Récupération (%)": np.clip(5 + 9 * sleep + rng.normal(0, 4, days), 5, 99),
+            "Sommeil (heures)": sleep,
+            "Strain": rng.uniform(4, 18, days),
+            "Perturbations sommeil": rng.integers(0, 9, days),
+        }
+    )
+
+    contrast = contrast_best_worst_days(frame)
+
+    assert contrast["ready"]
+    assert contrast["table"].iloc[0]["Facteur"] == "Sommeil (heures)"
+    assert contrast["table"].iloc[0]["Écart"] > 1.5
+    assert contrast["best_threshold"] > contrast["worst_threshold"]
+
+
+def test_contrast_best_worst_days_needs_enough_scored_days():
+    contrast = contrast_best_worst_days(_daily(8))
+    assert not contrast["ready"]
+    assert contrast["table"].empty
+    assert contrast["required_days"] == MIN_DAYS_CONTRAST
+
+
+def test_contrast_best_worst_days_sorts_by_absolute_gap():
+    contrast = contrast_best_worst_days(_daily(45, seed=2))
+    if contrast["ready"]:
+        gaps = contrast["table"]["Écart"].abs().tolist()
+        assert gaps == sorted(gaps, reverse=True)
+
+
+def test_sport_recovery_impact_uses_the_day_after_the_session():
+    """Le score du jour même précède la séance : seul le lendemain la reflète."""
+    dates = pd.date_range("2026-08-01", periods=20, freq="D")
+    recovery = [70.0] * 20
+    workout_days = [dates[i] for i in (1, 5, 9, 13)]
+    for day in workout_days:
+        recovery[list(dates).index(day) + 1] = 30.0
+
+    daily = pd.DataFrame({"Date": dates, "Récupération (%)": recovery})
+    workouts = pd.DataFrame({"Date": workout_days, "Sport": ["boxing"] * 4})
+
+    impact = sport_recovery_impact(daily, workouts)
+
+    assert len(impact) == 1
+    assert impact.loc[0, "Sport"] == "boxing"
+    assert impact.loc[0, "Séances"] == 4
+    assert impact.loc[0, "Récupération du lendemain (%)"] == pytest.approx(30.0)
+    assert impact.loc[0, "Écart à votre moyenne"] < -20
+
+
+def test_sport_recovery_impact_ranks_the_costliest_sport_first():
+    dates = pd.date_range("2026-08-01", periods=30, freq="D")
+    recovery = [65.0] * 30
+    hard_days = [dates[i] for i in (1, 5, 9)]
+    easy_days = [dates[i] for i in (2, 6, 10)]
+    for day in hard_days:
+        recovery[list(dates).index(day) + 1] = 25.0
+    for day in easy_days:
+        recovery[list(dates).index(day) + 1] = 80.0
+
+    daily = pd.DataFrame({"Date": dates, "Récupération (%)": recovery})
+    workouts = pd.DataFrame(
+        {"Date": hard_days + easy_days, "Sport": ["boxing"] * 3 + ["yoga"] * 3}
+    )
+
+    impact = sport_recovery_impact(daily, workouts)
+
+    assert list(impact["Sport"]) == ["boxing", "yoga"]
+
+
+def test_sport_recovery_impact_ignores_sports_with_too_few_sessions():
+    dates = pd.date_range("2026-08-01", periods=10, freq="D")
+    daily = pd.DataFrame({"Date": dates, "Récupération (%)": [60.0] * 10})
+    workouts = pd.DataFrame({"Date": [dates[1]], "Sport": ["boxing"]})
+
+    assert sport_recovery_impact(daily, workouts).empty
+
+
+def test_sport_recovery_impact_without_workouts_returns_typed_frame():
+    impact = sport_recovery_impact(_daily(20), pd.DataFrame())
+    assert impact.empty
+    assert "Écart à votre moyenne" in impact.columns
+
+
+def test_generate_insights_names_the_sport_that_costs_the_most():
+    dates = pd.date_range("2026-08-01", periods=30, freq="D")
+    recovery = [70.0] * 30
+    workout_days = [dates[i] for i in (1, 5, 9, 13, 17)]
+    for day in workout_days:
+        recovery[list(dates).index(day) + 1] = 28.0
+
+    daily = pd.DataFrame({"Date": dates, "Récupération (%)": recovery})
+    workouts = pd.DataFrame({"Date": workout_days, "Sport": ["boxing"] * 5})
+
+    sport = [insight for insight in generate_insights(daily, None, workouts) if "Boxing" in insight.title]
+
+    assert sport and sport[0].tone == "warning"
+    assert "lendemain" in sport[0].title

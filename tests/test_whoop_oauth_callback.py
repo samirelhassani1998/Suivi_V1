@@ -8,6 +8,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from app.core import whoop_session
+from app.core.whoop import WhoopError
 
 
 class FakeQueryParams(dict):
@@ -125,8 +126,21 @@ def test_entry_point_captures_callback_before_authentication_gate():
     assert capture_position < auth_position
 
 
-def test_whoop_page_exchanges_a_callback_received_on_another_page():
-    """Le code capté sur la racine est consommé dès l'ouverture de l'onglet Whoop."""
+def test_whoop_page_exchanges_a_callback_received_on_another_page(monkeypatch):
+    """Le code capté sur la racine est consommé dès l'ouverture de l'onglet Whoop.
+
+    L'échange est simulé : faire dépendre l'assertion d'un échec réseau réel
+    enverrait un code bidon aux serveurs WHOOP sur toute machine connectée, et
+    rendrait le test tributaire de la connectivité.
+    """
+    attempts: list[str] = []
+
+    def _refuse(credentials, code, **kwargs):
+        attempts.append(code)
+        raise WhoopError("Échec d'authentification WHOOP (HTTP 400).")
+
+    monkeypatch.setattr("app.core.whoop.exchange_code_for_token", _refuse)
+
     at = AppTest.from_file("app/pages/Whoop.py")
     at.session_state["whoop_manual_credentials"] = {
         "client_id": "client-id",
@@ -142,9 +156,11 @@ def test_whoop_page_exchanges_a_callback_received_on_another_page():
     at.run(timeout=15)
 
     assert not at.exception
-    # Sans réseau, l'échange échoue proprement : l'important est qu'il soit tenté
-    # et que le code en attente soit consommé plutôt qu'ignoré.
+    # L'échange est bien tenté avec le code capté sur une autre page…
+    assert attempts == ["code-recu-sur-la-racine"]
+    # …le code en attente est consommé plutôt qu'ignoré…
     assert whoop_session.PENDING_KEY not in at.session_state or not at.session_state[whoop_session.PENDING_KEY]
+    # …et le refus est présenté sans faire planter la page.
     assert any("WHOOP" in str(error.value) for error in at.error)
 
 

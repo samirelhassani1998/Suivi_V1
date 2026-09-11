@@ -8,15 +8,28 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from app.core.formatting import MISSING_VALUE as MISSING_TEXT, format_fr_date, format_fr_number
+from app.core.date_labels import (
+    describe_freshness,
+    format_clock_hour,
+    format_date_range,
+    format_datetime,
+    format_day_month,
+    format_duration_minutes,
+    format_long_date,
+    format_relative_day,
+    format_week_label,
+)
+from app.core.formatting import MISSING_VALUE as MISSING_TEXT, format_fr_number
 from app.core.whoop_analytics import (
     KCAL_PER_KG,
     MIN_DAYS_BASELINE,
     MIN_DAYS_CORRELATION,
     MIN_DAYS_TRAINING_LOAD,
+    MIN_SESSIONS_PER_SPORT,
     Insight,
     analysis_availability,
     calendar_matrix,
+    contrast_best_worst_days,
     coverage_report,
     daily_grid,
     energy_balance,
@@ -28,6 +41,7 @@ from app.core.whoop_analytics import (
     recovery_zones,
     rolling_trend,
     sleep_debt_summary,
+    sport_recovery_impact,
     strain_recovery_balance,
     training_load,
     weekday_profile,
@@ -329,7 +343,12 @@ def _sync_panel(credentials, token: WhoopToken) -> None:
             step=7,
         )
     with cols[1]:
-        st.metric("Dernière synchro", format_fr_date(st.session_state.get("whoop_last_sync")))
+        last_sync = st.session_state.get("whoop_last_sync")
+        st.metric(
+            "Dernière synchro",
+            format_relative_day(last_sync) if last_sync is not None else "jamais",
+            help=f"Horodatage : {format_datetime(last_sync)}" if last_sync is not None else "Aucune synchronisation dans cette session.",
+        )
     with cols[2]:
         launch = st.button("Synchroniser maintenant", use_container_width=True, type="primary")
 
@@ -400,7 +419,15 @@ def _format_table(frame: pd.DataFrame, decimals: dict[str, int] | None = None) -
     for column in frame.columns:
         series = frame[column]
         if pd.api.types.is_datetime64_any_dtype(series):
-            display[column] = series.apply(format_fr_date)
+            # Une colonne d'horodatages perd tout son sens réduite au seul jour.
+            formatter = format_datetime if column == "Début" else format_day_month
+            display[column] = series.apply(formatter)
+        elif column == "Semaine":
+            display[column] = series.apply(format_week_label)
+        elif column == "Durée (min)" or column == "Durée totale (min)":
+            display[column] = series.apply(format_duration_minutes)
+        elif column == "Heure de coucher":
+            display[column] = series.apply(format_clock_hour)
         elif pd.api.types.is_numeric_dtype(series) and not pd.api.types.is_bool_dtype(series):
             places = rules.get(column, METRIC_DECIMALS.get(column, 1))
             display[column] = series.apply(lambda value, places=places: format_fr_number(value, decimals=places))
@@ -428,8 +455,13 @@ def _render_chart(figure, key: str, *, fallback: str = "Métrique indisponible s
     st.plotly_chart(figure, use_container_width=True, key=key)
 
 
-def _apply_period(frame: pd.DataFrame, days: int | None) -> pd.DataFrame:
-    """Restreint une trame aux *days* derniers jours calendaires."""
+def _apply_period(frame: pd.DataFrame, days: int | None, *, today: pd.Timestamp | None = None) -> pd.DataFrame:
+    """Restreint une trame aux *days* derniers jours calendaires, à compter d'aujourd'hui.
+
+    Compter depuis la dernière mesure donnerait à « 7 jours » un sens flottant :
+    après une semaine sans porter le bracelet, la tranche affichée ne serait plus
+    celle que le lecteur a demandée.
+    """
     if frame is None or frame.empty or days is None or "Date" not in frame.columns:
         return frame if frame is not None else pd.DataFrame()
     data = frame.copy(deep=True)
@@ -437,8 +469,27 @@ def _apply_period(frame: pd.DataFrame, days: int | None) -> pd.DataFrame:
     data = data.dropna(subset=["Date"])
     if data.empty:
         return data
-    cutoff = data["Date"].max() - pd.Timedelta(days=int(days) - 1)
+    reference = (today or pd.Timestamp.now()).normalize()
+    cutoff = reference - pd.Timedelta(days=int(days) - 1)
     return data[data["Date"] >= cutoff].reset_index(drop=True)
+
+
+def _freshness_banner(daily: pd.DataFrame) -> None:
+    """Dit depuis quand les données s'arrêtent, au lieu de le laisser deviner."""
+    if daily is None or daily.empty or "Date" not in daily.columns:
+        return
+    last = pd.to_datetime(daily["Date"], errors="coerce").max()
+    freshness = describe_freshness(last)
+    if freshness["days"] is None:
+        return
+    message = f"Dernière mesure : **{freshness['label']}** — {format_long_date(last)}."
+    if freshness["stale"]:
+        st.warning(
+            message + " Les moyennes récentes portent donc sur des jours déjà anciens — "
+            "une synchronisation remettra la page à jour."
+        )
+    else:
+        st.caption(message)
 
 
 def _zone_badge(zone: str | None) -> str:
@@ -482,9 +533,11 @@ def _headline_panel(daily: pd.DataFrame) -> None:
     with gauge_column:
         if zones["days"]:
             _render_chart(recovery_gauge(zones["latest"], zones["latest_zone"]), "whoop-gauge")
+            latest_date = grid.loc[grid["Récupération (%)"].last_valid_index(), "Date"] if grid["Récupération (%)"].notna().any() else None
+            when = f" — {format_relative_day(latest_date)}" if latest_date is not None else ""
             st.caption(
-                f"Dernier score : {_zone_badge(zones['latest_zone'])} zone "
-                f"{str(zones['latest_zone']).lower()} — seuils WHOOP : rouge sous 34 %, vert dès 67 %."
+                f"Zone {str(zones['latest_zone']).lower()} {_zone_badge(zones['latest_zone'])}{when}. "
+                "Seuils WHOOP : rouge sous 34 %, vert dès 67 %."
             )
         else:
             empty_state("Aucun score de récupération sur la période choisie.")
@@ -519,11 +572,11 @@ def _headline_panel(daily: pd.DataFrame) -> None:
                     )
 
 
-def _overview_tab(daily: pd.DataFrame, merged: pd.DataFrame) -> None:
+def _overview_tab(daily: pd.DataFrame, merged: pd.DataFrame, workouts: pd.DataFrame) -> None:
     _headline_panel(daily)
 
     section_header("Ce que disent vos données", "Constats classés par importance, chiffres à l'appui.", "🧠")
-    _render_insights(generate_insights(daily, merged))
+    _render_insights(generate_insights(daily, merged, workouts))
 
     with st.expander("Sur quoi reposent ces chiffres ?", expanded=False):
         coverage = coverage_report(daily)
@@ -620,6 +673,28 @@ def _recovery_tab(daily: pd.DataFrame) -> None:
             )
 
     _render_chart(weekday_chart(weekday_profile(daily, "Récupération (%)"), "Récupération (%)"), "whoop-recovery-weekday", fallback="Profil hebdomadaire disponible après quelques semaines.")
+
+    section_header(
+        "Vos bons jours contre vos mauvais",
+        "Ce que vous faisiez différemment le tiers des jours où votre récupération était la meilleure.",
+        "🔍",
+    )
+    contrast = contrast_best_worst_days(daily)
+    if not contrast["ready"]:
+        st.info(f"Comparaison disponible à partir de {contrast['required_days']} jours notés (actuellement {contrast['days']}).")
+        st.progress(min(1.0, contrast["days"] / contrast["required_days"]))
+    else:
+        st.caption(
+            f"{contrast['best_days']} meilleurs jours (récupération ≥ "
+            f"{format_fr_number(contrast['best_threshold'], decimals=0)} %) comparés aux "
+            f"{contrast['worst_days']} pires (≤ {format_fr_number(contrast['worst_threshold'], decimals=0)} %)."
+        )
+        st.dataframe(
+            _format_table(contrast["table"], {"Meilleurs jours": 2, "Pires jours": 2, "Écart": 2}),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption("Le facteur en tête est celui qui sépare le plus vos bons et vos mauvais jours.")
 
 
 def _sleep_tab(daily: pd.DataFrame) -> None:
@@ -734,10 +809,27 @@ def _effort_tab(daily: pd.DataFrame, workouts: pd.DataFrame) -> None:
         .sort_values("Séances", ascending=False)
     )
     st.dataframe(
-        _format_table(by_sport, {"Séances": 0, "Durée totale (min)": 0, "Strain moyen": 1, "Calories (kcal)": 0}),
+        _format_table(by_sport, {"Séances": 0, "Strain moyen": 1, "Calories (kcal)": 0}),
         use_container_width=True,
         hide_index=True,
     )
+
+    impact = sport_recovery_impact(daily, workouts)
+    if not impact.empty:
+        section_header(
+            "Ce que chaque sport coûte au lendemain",
+            "Récupération du jour suivant, sport par sport : le score du jour même précède la séance.",
+            "🌡️",
+        )
+        st.dataframe(
+            _format_table(impact, {"Séances": 0, "Récupération du lendemain (%)": 0, "Écart à votre moyenne": 1}),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(
+            f"Comparaison faite à partir de {MIN_SESSIONS_PER_SPORT} séances par sport. "
+            "Un écart négatif indique une récupération plus basse que votre moyenne le lendemain."
+        )
     _table_view(
         detailed.sort_values("Date", ascending=False),
         "Voir chaque séance",
@@ -786,7 +878,7 @@ def _weight_tab(daily: pd.DataFrame, merged: pd.DataFrame) -> None:
 
     st.caption(
         f"{len(merged)} jour(s) couverts à la fois par une pesée et par une mesure WHOOP "
-        f"({format_fr_date(merged['Date'].min())} → {format_fr_date(merged['Date'].max())})."
+        f"({format_date_range(merged['Date'].min(), merged['Date'].max())})."
     )
 
     _energy_balance_panel(merged)
@@ -882,6 +974,7 @@ def main() -> None:
         return
 
     st.divider()
+    _freshness_banner(full_daily)
     # Un filtre unique au-dessus de tout ce qu'il conditionne : chaque onglet
     # s'aligne sur la même tranche, plutôt qu'un réglage par graphique.
     period_label = st.radio(
@@ -892,8 +985,9 @@ def main() -> None:
         help="S'applique à tous les onglets ci-dessous.",
     )
     days = PERIOD_CHOICES[period_label]
-    daily = _apply_period(full_daily, days)
-    workouts = _apply_period(full_workouts, days)
+    today = pd.Timestamp.now().normalize()
+    daily = _apply_period(full_daily, days, today=today)
+    workouts = _apply_period(full_workouts, days, today=today)
     if daily.empty:
         empty_state("Aucune mesure WHOOP sur cette période.")
         return
@@ -902,7 +996,7 @@ def main() -> None:
 
     tabs = st.tabs(["Vue d'ensemble", "Récupération", "Sommeil", "Effort", "Poids × WHOOP"])
     with tabs[0]:
-        _overview_tab(daily, merged)
+        _overview_tab(daily, merged, workouts)
     with tabs[1]:
         _recovery_tab(daily)
     with tabs[2]:

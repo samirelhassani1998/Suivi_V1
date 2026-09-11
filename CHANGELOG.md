@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-09-11 — Dates lisibles et analyse des bons jours
+
+Lisibilité des dates (`app/core/date_labels.py`, nouveau module) :
+- Mois et jours en français partout : `3 sept.` sur les axes au lieu de `Sep 3`, `jeudi 3 septembre 2026` dans les phrases, `Semaine du 3 août` en tête de ligne. Les noms sont codés dans l'application plutôt que tirés de la locale système, dont l'absence ferait silencieusement réapparaître l'anglais.
+- Ancienneté en clair : `aujourd'hui`, `hier`, `il y a 5 jours`.
+- Durées en heures et minutes : `1 h 30` au lieu de `90,0`, `43 min` au lieu de `43,4038`.
+- Heures de coucher rendues en horloge (`22:30`) plutôt qu'en décimal signé.
+- Dernière synchronisation affichée avec son ancienneté et son heure exacte.
+
+Corrections relevées à la relecture :
+- **Les séances perdaient leur heure de début** : trois entraînements le même jour donnaient trois lignes identiques au lecteur. `workouts_to_frame` expose désormais une colonne `Début` en heure locale, et trie les séances chronologiquement.
+- **Le filtre de période comptait depuis la dernière mesure**, pas depuis aujourd'hui : après une semaine sans porter le bracelet, « 7 jours » affichait silencieusement une autre tranche. Il compte désormais à partir du jour courant.
+- **Rien ne signalait des données anciennes** : un bandeau indique depuis quand les mesures s'arrêtent et avertit au-delà de deux jours.
+- Un test dépendait d'un échec réseau réel pour vérifier une gestion d'erreur : sur une machine connectée, il envoyait un code d'autorisation bidon aux serveurs WHOOP. L'échange est désormais simulé.
+
+Nouvelles analyses :
+- **Vos bons jours contre vos mauvais** (`contrast_best_worst_days`) : comparaison du tiers supérieur au tiers inférieur de récupération sur le sommeil, la dette, l'heure de coucher, la charge et les perturbations, classée par écart décroissant.
+- **Coût de chaque sport** (`sport_recovery_impact`) : récupération du lendemain sport par sport, rapportée à votre moyenne.
+- Les deux alimentent le moteur de constats rédigés.
+
+Tests : `tests/test_date_labels.py` (29 tests) couvre les libellés et leurs cas dégradés ; les analyses ajoutées sont validées sur des effets injectés volontairement (le facteur planté ressort bien en tête, le sport pénalisant bien en premier). Total : 287 passés, 4 échecs préexistants inchangés.
+
+
 ## 2026-09-11 — Lecture narrative et refonte visuelle de l'onglet WHOOP
 
 Nouvelles analyses (`app/core/whoop_analytics.py`) :
