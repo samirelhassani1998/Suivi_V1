@@ -37,6 +37,11 @@ MIN_DAYS_TRAINING_LOAD = 7
 MIN_DAYS_REGRESSION = 12
 CHRONIC_LOAD_DAYS = 28
 ACUTE_LOAD_DAYS = 7
+# Jours réellement mesurés exigés dans la fenêtre aigüe avant de conclure.
+MIN_ACUTE_COVERAGE = 4
+# Jours que la fenêtre chronique doit compter en plus de la fenêtre aigüe
+# pour que le rapport compare deux périodes distinctes.
+MIN_CHRONIC_MARGIN = 7
 
 
 @dataclass(frozen=True)
@@ -73,6 +78,11 @@ def daily_grid(frame: pd.DataFrame | None) -> pd.DataFrame:
     data = _clean_daily(frame)
     if data.empty:
         return data
+    # Les convertisseurs dédupliquent déjà, mais une date en double venue d'une
+    # autre source ferait échouer la réindexation et emporterait toute la page :
+    # cette fonction est trop en aval pour se permettre de lever une exception.
+    if data["Date"].duplicated().any():
+        data = data.drop_duplicates(subset=["Date"], keep="last").reset_index(drop=True)
     full_range = pd.date_range(data["Date"].min(), data["Date"].max(), freq="D")
     return (
         data.set_index("Date")
@@ -82,18 +92,65 @@ def daily_grid(frame: pd.DataFrame | None) -> pd.DataFrame:
     )
 
 
+def last_days(frame: pd.DataFrame | None, days: int, *, today: Any = None) -> pd.DataFrame:
+    """Lignes des *days* derniers jours calendaires, et non les *days* dernières lignes.
+
+    La nuance est invisible sur un historique quotidien complet et décisive dès
+    qu'il y a des trous : ``tail(7)`` sur un bracelet porté trois fois en six
+    semaines renvoie des mesures vieilles d'un mois tout en les présentant comme
+    « les 7 derniers jours ».
+    """
+    data = _clean_daily(frame)
+    if data.empty:
+        return data
+    reference = pd.Timestamp(today).normalize() if today is not None else data["Date"].max()
+    cutoff = reference - pd.Timedelta(days=max(1, int(days)) - 1)
+    return data[(data["Date"] >= cutoff) & (data["Date"] <= reference)].reset_index(drop=True)
+
+
+def previous_days(frame: pd.DataFrame | None, days: int, *, today: Any = None) -> pd.DataFrame:
+    """Fenêtre calendaire immédiatement antérieure à celle de :func:`last_days`."""
+    data = _clean_daily(frame)
+    if data.empty:
+        return data
+    reference = pd.Timestamp(today).normalize() if today is not None else data["Date"].max()
+    window = max(1, int(days))
+    end = reference - pd.Timedelta(days=window)
+    start = end - pd.Timedelta(days=window - 1)
+    return data[(data["Date"] >= start) & (data["Date"] <= end)].reset_index(drop=True)
+
+
 def coverage_report(frame: pd.DataFrame | None) -> dict[str, Any]:
     """Couverture réelle de la période importée."""
     data = _clean_daily(frame)
     if data.empty:
-        return {"days_with_data": 0, "span_days": 0, "coverage_pct": 0.0, "gaps": 0, "start": None, "end": None}
+        return {
+            "days_with_data": 0,
+            "complete_days": 0,
+            "span_days": 0,
+            "coverage_pct": 0.0,
+            "complete_pct": 0.0,
+            "gaps": 0,
+            "start": None,
+            "end": None,
+        }
     start, end = data["Date"].min(), data["Date"].max()
     span = int((end - start).days) + 1
     measured = int(data["Date"].nunique())
+    # Une ligne existe dès qu'une seule des trois sources a renvoyé quelque chose.
+    # Compter ces jours comme couverts annonçait 100 % de couverture alors que
+    # ni la récupération ni le sommeil n'étaient disponibles.
+    core_columns = [column for column in ("Récupération (%)", "Sommeil (heures)", "Strain") if column in data.columns]
+    if core_columns:
+        complete = int(data.loc[data[core_columns].notna().all(axis=1), "Date"].nunique())
+    else:
+        complete = 0
     return {
         "days_with_data": measured,
+        "complete_days": complete,
         "span_days": span,
         "coverage_pct": round(measured / span * 100, 1) if span else 0.0,
+        "complete_pct": round(complete / span * 100, 1) if span else 0.0,
         "gaps": max(0, span - measured),
         "start": start,
         "end": end,
@@ -140,7 +197,15 @@ def training_load(frame: pd.DataFrame | None) -> dict[str, Any]:
     charge s'effondre. WHOOP affiche le strain du jour, pas cette dynamique.
     """
     data = _clean_daily(frame)
-    result = {"acute": float("nan"), "chronic": float("nan"), "ratio": float("nan"), "status": "indisponible", "days": 0}
+    result = {
+        "acute": float("nan"),
+        "chronic": float("nan"),
+        "ratio": float("nan"),
+        "status": "indisponible",
+        "days": 0,
+        "acute_days_measured": 0,
+        "chronic_days_measured": 0,
+    }
     if data.empty or "Strain" not in data.columns:
         return result
     grid = daily_grid(data)
@@ -150,11 +215,29 @@ def training_load(frame: pd.DataFrame | None) -> dict[str, Any]:
     if measured < MIN_DAYS_TRAINING_LOAD:
         return result
 
-    acute = float(strain.tail(ACUTE_LOAD_DAYS).mean(skipna=True))
-    chronic = float(strain.tail(CHRONIC_LOAD_DAYS).mean(skipna=True))
+    acute_window = strain.tail(ACUTE_LOAD_DAYS)
+    chronic_window = strain.tail(CHRONIC_LOAD_DAYS)
+    acute_measured = int(acute_window.notna().sum())
+    result["acute_days_measured"] = acute_measured
+    result["chronic_days_measured"] = int(chronic_window.notna().sum())
+
+    acute = float(acute_window.mean(skipna=True))
+    chronic = float(chronic_window.mean(skipna=True))
     result["acute"] = acute
     result["chronic"] = chronic
     if not np.isfinite(chronic) or chronic <= 0:
+        return result
+    # Deux journées intenses isolées dans une semaine peu portée donneraient une
+    # « charge aigüe » élevée qui ne décrit pas une semaine de travail réelle.
+    if acute_measured < MIN_ACUTE_COVERAGE:
+        result["status"] = "couverture insuffisante"
+        return result
+    # Tant que l'historique ne dépasse pas la fenêtre aigüe, les deux moyennes
+    # portent sur les mêmes jours : le rapport vaut alors 1,00 par construction
+    # et afficherait « charge maîtrisée » quelles que soient les données.
+    if result["chronic_days_measured"] <= acute_measured + MIN_CHRONIC_MARGIN:
+        result["status"] = "historique trop court"
+        result["ratio"] = float("nan")
         return result
 
     ratio = acute / chronic
@@ -176,7 +259,7 @@ def sleep_debt_summary(frame: pd.DataFrame | None, days: int = 7) -> dict[str, A
     result = {"nights": 0, "cumulative_debt": float("nan"), "mean_debt": float("nan"), "mean_sleep": float("nan"), "mean_need": float("nan")}
     if data.empty or "Dette de sommeil (heures)" not in data.columns:
         return result
-    recent = data.tail(max(1, int(days)))
+    recent = last_days(data, days)
     debt = recent["Dette de sommeil (heures)"].dropna()
     if debt.empty:
         return result
@@ -193,7 +276,14 @@ def sleep_debt_summary(frame: pd.DataFrame | None, days: int = 7) -> dict[str, A
 def weight_trend(merged: pd.DataFrame | None) -> dict[str, Any]:
     """Pente du poids estimée par moindres carrés sur les jours communs."""
     data = _clean_daily(merged)
-    result = {"slope_kg_per_day": float("nan"), "slope_kg_per_week": float("nan"), "days": 0, "span_days": 0, "r_squared": float("nan")}
+    result = {
+        "slope_kg_per_day": float("nan"),
+        "slope_kg_per_week": float("nan"),
+        "slope_std_error": float("nan"),
+        "days": 0,
+        "span_days": 0,
+        "r_squared": float("nan"),
+    }
     if data.empty or "Poids (Kgs)" not in data.columns:
         return result
     series = data[["Date", "Poids (Kgs)"]].dropna()
@@ -211,10 +301,18 @@ def weight_trend(merged: pd.DataFrame | None) -> dict[str, Any]:
     predicted = slope * x + intercept
     residual = float(np.sum((y - predicted) ** 2))
     total = float(np.sum((y - y.mean()) ** 2))
+    # Erreur-type de la pente : sans elle, une tendance estimée sur douze jours
+    # de pesées bruitées se lirait avec la même assurance qu'une tendance longue.
+    degrees = len(series) - 2
+    variance_x = float(np.sum((x - x.mean()) ** 2))
+    slope_error = (
+        float(np.sqrt(residual / degrees / variance_x)) if degrees > 0 and variance_x > 0 else float("nan")
+    )
     result.update(
         {
             "slope_kg_per_day": float(slope),
             "slope_kg_per_week": float(slope) * 7.0,
+            "slope_std_error": slope_error,
             "days": int(len(series)),
             "span_days": int(np.ptp(x)) + 1,
             "r_squared": 1.0 - residual / total if total > 0 else float("nan"),
@@ -223,7 +321,12 @@ def weight_trend(merged: pd.DataFrame | None) -> dict[str, Any]:
     return result
 
 
-def energy_balance(merged: pd.DataFrame | None, *, kcal_per_kg: float = KCAL_PER_KG) -> dict[str, Any]:
+def energy_balance(
+    merged: pd.DataFrame | None,
+    *,
+    kcal_per_kg: float = KCAL_PER_KG,
+    weight_history: pd.DataFrame | None = None,
+) -> dict[str, Any]:
     """Apport calorique implicite, déduit de la dépense WHOOP et de la pente du poids.
 
     WHOOP mesure la dépense quotidienne mais ignore le poids ; la balance ignore
@@ -238,13 +341,25 @@ def energy_balance(merged: pd.DataFrame | None, *, kcal_per_kg: float = KCAL_PER
         "mean_burn": float("nan"),
         "imbalance_per_day": float("nan"),
         "estimated_intake": float("nan"),
+        "intake_margin": float("nan"),
+        "trend_r_squared": float("nan"),
         "slope_kg_per_week": float("nan"),
     }
     if data.empty or "Calories (kcal)" not in data.columns:
         return result
 
     burn = data["Calories (kcal)"].dropna()
-    trend = weight_trend(data)
+    # La pente gagne à s'appuyer sur toutes les pesées de la période, y compris
+    # celles des jours où le bracelet n'a rien enregistré : la jointure interne
+    # en écartait une partie et rendait la tendance plus bruitée qu'utile.
+    trend_source = data
+    if weight_history is not None and not weight_history.empty:
+        window = _clean_daily(weight_history)
+        if not window.empty:
+            inside = window[(window["Date"] >= data["Date"].min()) & (window["Date"] <= data["Date"].max())]
+            if len(inside) > trend_source["Poids (Kgs)"].notna().sum():
+                trend_source = inside
+    trend = weight_trend(trend_source)
     usable_days = int(min(len(burn), trend["days"]))
     result["days"] = usable_days
     result["mean_burn"] = float(burn.mean()) if not burn.empty else float("nan")
@@ -256,6 +371,102 @@ def energy_balance(merged: pd.DataFrame | None, *, kcal_per_kg: float = KCAL_PER
     imbalance = trend["slope_kg_per_day"] * float(kcal_per_kg)
     result["imbalance_per_day"] = imbalance
     result["estimated_intake"] = result["mean_burn"] + imbalance
+    # Marge issue de l'incertitude sur la pente du poids, convertie en calories.
+    margin = trend["slope_std_error"] * 1.96 * float(kcal_per_kg)
+    result["intake_margin"] = float(margin) if np.isfinite(margin) else float("nan")
+    result["trend_r_squared"] = trend["r_squared"]
+    result["ready"] = True
+    return result
+
+
+# Seuil de signification avant correction pour tests multiples.
+ALPHA = 0.05
+
+
+def _correlation_p_value(correlation: float, observations: int) -> float:
+    """Probabilité d'obtenir une corrélation au moins aussi forte par hasard."""
+    if observations < 3 or not np.isfinite(correlation) or abs(correlation) >= 1.0:
+        return 0.0 if abs(correlation) >= 1.0 else 1.0
+    from scipy import stats
+
+    degrees = observations - 2
+    statistic = abs(correlation) * np.sqrt(degrees / (1.0 - correlation**2))
+    return float(2.0 * stats.t.sf(statistic, degrees))
+
+
+def _correlation_reading(correlation: float, significant: bool, tests: int) -> str:
+    """Formule la lecture en tenant compte du nombre de tests effectués."""
+    direction = "même sens" if correlation > 0 else "sens opposé"
+    if not significant:
+        return f"non distinguable du hasard sur {tests} tests"
+    magnitude = abs(correlation)
+    strength = "forte" if magnitude >= 0.5 else "modérée" if magnitude >= 0.3 else "faible"
+    return f"association {strength}, {direction}"
+
+
+DEFAULT_CORRELATION_TARGET = "Variation poids (kg/jour)"
+
+
+# Repères d'apport énergétique couramment cités pour un adulte. Ce ne sont pas
+# des seuils médicaux : ils servent uniquement à qualifier l'exigence d'un rythme.
+INTAKE_DEMANDING_KCAL = 1800.0
+INTAKE_VERY_DEMANDING_KCAL = 1400.0
+
+
+def target_pace_feasibility(
+    merged: pd.DataFrame | None,
+    *,
+    required_daily_kg: float,
+    kcal_per_kg: float = KCAL_PER_KG,
+) -> dict[str, Any]:
+    """Traduit le rythme visé par la trajectoire cible en apport calorique implicite.
+
+    L'objectif de poids est exprimé en kilogrammes et la dépense mesurée par WHOOP
+    en kilocalories. Les rapprocher indique ce que le rythme visé suppose de manger
+    chaque jour — un chiffre que ni la balance ni le bracelet ne produisent seuls,
+    et qui dit si l'objectif est atteignable ou seulement souhaitable.
+    """
+    result = {
+        "ready": False,
+        "required_daily_kg": float(required_daily_kg),
+        "required_weekly_kg": float(required_daily_kg) * 7.0,
+        "required_deficit": float(required_daily_kg) * float(kcal_per_kg),
+        "mean_burn": float("nan"),
+        "implied_intake": float("nan"),
+        "current_daily_kg": float("nan"),
+        "verdict": "indisponible",
+        "days": 0,
+    }
+    # Un rythme nul ou négatif ne décrit pas une perte de poids : sans cette
+    # garde, le déficit requis vaudrait zéro et l'apport implicite égalerait la
+    # dépense, ce qui se lirait comme un objectif trivialement atteignable.
+    if not np.isfinite(required_daily_kg) or required_daily_kg <= 0:
+        return result
+
+    data = _clean_daily(merged)
+    if data.empty or "Calories (kcal)" not in data.columns:
+        return result
+
+    burn = data["Calories (kcal)"].dropna()
+    result["days"] = int(len(burn))
+    if burn.empty:
+        return result
+    result["mean_burn"] = float(burn.mean())
+
+    trend = weight_trend(data)
+    result["current_daily_kg"] = -trend["slope_kg_per_day"] if np.isfinite(trend["slope_kg_per_day"]) else float("nan")
+
+    if result["days"] < MIN_DAYS_TRAINING_LOAD:
+        return result
+
+    implied = result["mean_burn"] - result["required_deficit"]
+    result["implied_intake"] = implied
+    if implied >= INTAKE_DEMANDING_KCAL:
+        result["verdict"] = "exigeant"
+    elif implied >= INTAKE_VERY_DEMANDING_KCAL:
+        result["verdict"] = "très exigeant"
+    else:
+        result["verdict"] = "sous les repères usuels"
     result["ready"] = True
     return result
 
@@ -263,7 +474,7 @@ def energy_balance(merged: pd.DataFrame | None, *, kcal_per_kg: float = KCAL_PER
 def lagged_correlations(
     merged: pd.DataFrame | None,
     *,
-    target: str = "Variation poids (kg)",
+    target: str = DEFAULT_CORRELATION_TARGET,
     lags: Sequence[int] = (0, 1, 2),
     min_pairs: int = MIN_DAYS_CORRELATION,
     metrics: Iterable[str] | None = None,
@@ -272,13 +483,19 @@ def lagged_correlations(
 
     Un entraînement intense pèse rarement sur la balance le jour même : tester
     plusieurs décalages évite de conclure à une absence de lien trop vite.
+
+    La cible par défaut est le rythme quotidien (kg/jour) et non la variation
+    brute : sans cette normalisation, deux pesées espacées de dix jours pèseraient
+    dix fois plus lourd qu'une variation d'un jour à l'autre.
     """
-    columns = ["Métrique", "Décalage (jours)", "Corrélation", "Observations", "Lecture"]
+    columns = ["Métrique", "Décalage (jours)", "Corrélation", "Observations", "Significatif", "Lecture"]
     grid = daily_grid(merged)
     if grid.empty or target not in grid.columns:
         return pd.DataFrame(columns=columns)
 
     candidates = list(metrics) if metrics is not None else available_metrics(grid)
+    # Les colonnes dérivées du poids corréleraient trivialement avec la cible.
+    candidates = [name for name in candidates if name != target]
     rows = []
     for metric in candidates:
         if metric not in grid.columns:
@@ -293,22 +510,34 @@ def lagged_correlations(
             correlation = float(pair["target"].corr(pair["metric"]))
             if not np.isfinite(correlation):
                 continue
-            magnitude = abs(correlation)
-            strength = "forte" if magnitude >= 0.5 else "modérée" if magnitude >= 0.3 else "faible"
-            direction = "même sens" if correlation > 0 else "sens opposé"
             rows.append(
                 {
                     "Métrique": metric,
                     "Décalage (jours)": int(lag),
                     "Corrélation": round(correlation, 3),
                     "Observations": int(len(pair)),
-                    "Lecture": f"association {strength}, {direction}",
+                    "_p": _correlation_p_value(correlation, len(pair)),
                 }
             )
     if not rows:
         return pd.DataFrame(columns=columns)
+
     frame = pd.DataFrame(rows)
-    return frame.reindex(frame["Corrélation"].abs().sort_values(ascending=False).index).reset_index(drop=True)[columns]
+    # Chaque métrique est testée à chaque décalage : avec une vingtaine de
+    # métriques et trois décalages, une corrélation « forte » apparaît presque
+    # sûrement par hasard. Le seuil est donc divisé par le nombre de tests.
+    tests = len(frame)
+    threshold = ALPHA / max(1, tests)
+    frame["Significatif"] = frame["_p"] <= threshold
+    frame["Lecture"] = [
+        _correlation_reading(row.Corrélation, row.Significatif, tests)
+        for row in frame.itertuples(index=False)
+    ]
+    frame = frame.drop(columns=["_p"])
+    ordered = frame.reindex(frame["Corrélation"].abs().sort_values(ascending=False).index)
+    # Les associations qui survivent à la correction passent devant.
+    ordered = ordered.sort_values("Significatif", ascending=False, kind="mergesort")
+    return ordered.reset_index(drop=True)[columns]
 
 
 def recovery_drivers(frame: pd.DataFrame | None, *, min_days: int = MIN_DAYS_REGRESSION) -> dict[str, Any]:
@@ -347,14 +576,32 @@ def recovery_drivers(frame: pd.DataFrame | None, *, min_days: int = MIN_DAYS_REG
     residual = float(np.sum((y - predicted) ** 2))
     total = float(np.sum((y - y.mean()) ** 2))
     result["coefficients"] = {name: float(coefficients[index + 1]) for index, name in enumerate(predictors)}
-    result["r_squared"] = 1.0 - residual / total if total > 0 else float("nan")
+    raw_r2 = 1.0 - residual / total if total > 0 else float("nan")
+    # Le R² brut augmente mécaniquement avec le nombre de variables : sur douze
+    # observations, il dépasse souvent 0,2 sur des données sans aucun lien.
+    observations, parameters = len(design), len(predictors)
+    if np.isfinite(raw_r2) and observations > parameters + 1:
+        adjusted = 1.0 - (1.0 - raw_r2) * (observations - 1) / (observations - parameters - 1)
+    else:
+        adjusted = float("nan")
+    result["r_squared"] = float(adjusted) if np.isfinite(adjusted) else float("nan")
+    result["raw_r_squared"] = float(raw_r2) if np.isfinite(raw_r2) else float("nan")
     result["ready"] = True
     return result
 
 
 def weekly_rollup(merged: pd.DataFrame | None) -> pd.DataFrame:
     """Synthèse hebdomadaire : récupération, sommeil, charge et variation de poids."""
-    columns = ["Semaine", "Jours", "Récupération (%)", "Sommeil (heures)", "Strain cumulé", "Poids moyen (kg)", "Variation (kg)"]
+    columns = [
+        "Semaine",
+        "Jours",
+        "Récupération (%)",
+        "Sommeil (heures)",
+        "Strain cumulé",
+        "Poids moyen (kg)",
+        "Variation (kg)",
+        "Sur (jours)",
+    ]
     data = _clean_daily(merged)
     if data.empty:
         return pd.DataFrame(columns=columns)
@@ -362,7 +609,14 @@ def weekly_rollup(merged: pd.DataFrame | None) -> pd.DataFrame:
     data = data.assign(_week=data["Date"].dt.to_period("W").dt.start_time)
     rows = []
     for week, chunk in data.groupby("_week", sort=True):
-        weights = chunk["Poids (Kgs)"].dropna() if "Poids (Kgs)" in chunk.columns else pd.Series(dtype=float)
+        weighed = chunk.dropna(subset=["Poids (Kgs)"]) if "Poids (Kgs)" in chunk.columns else chunk.iloc[0:0]
+        weights = weighed["Poids (Kgs)"] if not weighed.empty else pd.Series(dtype=float)
+        # L'écart entre la première et la dernière pesée ne couvre la semaine que
+        # si ces deux pesées en sont éloignées : le dire évite de lire « -1 kg
+        # cette semaine » pour deux pesées consécutives.
+        span_days = (
+            int((weighed["Date"].iloc[-1] - weighed["Date"].iloc[0]).days) + 1 if len(weighed) >= 2 else float("nan")
+        )
         rows.append(
             {
                 "Semaine": week,
@@ -373,6 +627,7 @@ def weekly_rollup(merged: pd.DataFrame | None) -> pd.DataFrame:
                 "Poids moyen (kg)": float(weights.mean()) if not weights.empty else float("nan"),
                 # Écart entre la première et la dernière pesée de la semaine.
                 "Variation (kg)": float(weights.iloc[-1] - weights.iloc[0]) if len(weights) >= 2 else float("nan"),
+                "Sur (jours)": span_days,
             }
         )
     return pd.DataFrame(rows)[columns]
@@ -406,7 +661,7 @@ def strain_recovery_balance(frame: pd.DataFrame | None) -> pd.DataFrame:
     C'est le signal que l'application WHOOP donne a posteriori ; le calculer ici
     permet de le relier ensuite à la courbe de poids.
     """
-    columns = ["Date", "Récupération (%)", "Strain", "Signal"]
+    columns = ["Date", "Récupération (%)", "Strain", "Signal", "Type"]
     grid = daily_grid(frame)
     if grid.empty or "Strain" not in grid.columns or "Récupération (%)" not in grid.columns:
         return pd.DataFrame(columns=columns)
@@ -416,17 +671,21 @@ def strain_recovery_balance(frame: pd.DataFrame | None) -> pd.DataFrame:
         return pd.DataFrame(columns=columns)
 
     median_strain = float(usable["Strain"].median())
-    signals = []
+    signals: list[str] = []
+    kinds: list[str] = []
     for _, row in usable.iterrows():
         recovery, strain = float(row["Récupération (%)"]), float(row["Strain"])
         if recovery < 34 and strain > median_strain:
-            signal = "charge élevée sur récupération basse"
+            signal, kind = "charge élevée sur récupération basse", "alerte"
         elif recovery >= 67 and strain < median_strain:
-            signal = "récupération élevée sous-exploitée"
+            signal, kind = "récupération élevée sous-exploitée", "occasion"
         else:
-            signal = "cohérent"
+            signal, kind = "cohérent", "cohérent"
         signals.append(signal)
-    return usable.assign(Signal=signals)[columns].reset_index(drop=True)
+        kinds.append(kind)
+    # Ranger une bonne journée parmi les alertes brouille la lecture : le type
+    # distingue un risque d'une occasion manquée.
+    return usable.assign(Signal=signals, Type=kinds)[columns].reset_index(drop=True)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -456,8 +715,13 @@ def personal_baseline(frame: pd.DataFrame | None, metric: str, *, days: int = BA
         return result
 
     # Le repère exclut la dernière mesure : sinon elle se compare à elle-même.
-    history = series.iloc[:-1].tail(max(1, int(days)))
-    baseline = float(history.median())
+    measured = data.loc[series.index, ["Date", metric]]
+    latest_date = measured["Date"].iloc[-1]
+    history = measured.iloc[:-1]
+    history = history[history["Date"] >= latest_date - pd.Timedelta(days=max(1, int(days)))]
+    if history.empty:
+        return result
+    baseline = float(history[metric].median())
     latest = float(series.iloc[-1])
     result.update({"latest": latest, "baseline": baseline})
     if not np.isfinite(baseline) or baseline == 0:
@@ -497,10 +761,21 @@ def indexed_series(frame: pd.DataFrame | None, metrics: Sequence[str], *, base: 
         if first_valid is None:
             continue
         reference = float(series.loc[first_valid])
-        if not np.isfinite(reference) or reference == 0:
+        if not np.isfinite(reference) or reference <= 0:
+            continue
+        # Une série qui traverse zéro ou passe en négatif inverse le sens de
+        # l'indice : se coucher plus tôt (-2 h) donnerait un indice de 200.
+        values = series.dropna()
+        if not values.empty and float(values.min()) <= 0:
             continue
         output[metric] = series / reference * float(base)
     return output
+
+
+def indexable_metrics(frame: pd.DataFrame | None, metrics: Sequence[str]) -> list[str]:
+    """Métriques pour lesquelles une base 100 reste interprétable."""
+    indexed = indexed_series(frame, metrics)
+    return [metric for metric in metrics if metric in indexed.columns]
 
 
 def calendar_matrix(frame: pd.DataFrame | None, metric: str) -> dict[str, Any]:
@@ -568,13 +843,22 @@ def _fr(value: float, decimals: int = 1, *, sign: bool = False) -> str:
     return f"{prefix}{value:.{decimals}f}".replace(".", ",")
 
 
+def _plural(count: Any, singular: str, plural: str | None = None) -> str:
+    """Accord du nom sur le nombre, plutôt qu'un « (s) » systématique."""
+    try:
+        numeric = int(count)
+    except (TypeError, ValueError):
+        return singular
+    return singular if abs(numeric) <= 1 else (plural or singular + "s")
+
+
 def _coverage_insight(daily: pd.DataFrame | None) -> Insight | None:
     coverage = coverage_report(daily)
     if coverage["span_days"] < 7 or coverage["coverage_pct"] >= 80:
         return None
     return Insight(
         "Port du bracelet irrégulier",
-        f"{coverage['gaps']} jour(s) sans mesure sur {coverage['span_days']}, soit "
+        f"{coverage['gaps']} {_plural(coverage['gaps'], 'jour')} sans mesure sur {coverage['span_days']}, soit "
         f"{_fr(coverage['coverage_pct'], 0)} % de couverture. Les moyennes et les tendances "
         "portent donc sur une base incomplète.",
         tone="warning",
@@ -587,13 +871,16 @@ def _recovery_insight(daily: pd.DataFrame | None) -> Insight | None:
     grid = daily_grid(daily)
     if grid.empty or "Récupération (%)" not in grid.columns:
         return None
-    series = grid["Récupération (%)"].dropna()
-    if len(series) < 10:
+    if grid["Récupération (%)"].notna().sum() < 10:
         return None
 
-    recent = float(series.tail(7).mean())
-    previous = float(series.iloc[:-7].tail(7).mean()) if len(series) > 7 else float("nan")
-    if not np.isfinite(previous):
+    recent_window = last_days(grid, 7)["Récupération (%)"].dropna()
+    previous_window = previous_days(grid, 7)["Récupération (%)"].dropna()
+    # Sous trois nuits par fenêtre, l'écart décrit le hasard des jours portés.
+    if len(recent_window) < 3 or len(previous_window) < 3:
+        return None
+    recent, previous = float(recent_window.mean()), float(previous_window.mean())
+    if not np.isfinite(recent) or not np.isfinite(previous):
         return None
 
     delta = recent - previous
@@ -625,7 +912,7 @@ def _sleep_debt_insight(daily: pd.DataFrame | None) -> Insight | None:
     if cumulative <= 0:
         return Insight(
             "Besoin de sommeil couvert",
-            f"Sur {debt['nights']} nuit(s), vous dormez en moyenne {_fr(debt['mean_sleep'])} h "
+            f"Sur {debt['nights']} {_plural(debt['nights'], 'nuit')}, vous dormez en moyenne {_fr(debt['mean_sleep'])} h "
             f"pour un besoin estimé à {_fr(debt['mean_need'])} h. Aucune dette accumulée.",
             tone="success",
             icon="🛌",
@@ -634,7 +921,7 @@ def _sleep_debt_insight(daily: pd.DataFrame | None) -> Insight | None:
     severity = "warning" if cumulative >= 3 else "info"
     return Insight(
         "Dette de sommeil accumulée",
-        f"{_fr(cumulative)} h de retard sur {debt['nights']} nuit(s), soit {_fr(debt['mean_debt'])} h "
+        f"{_fr(cumulative)} h de retard sur {debt['nights']} {_plural(debt['nights'], 'nuit')}, soit {_fr(debt['mean_debt'])} h "
         f"par nuit. WHOOP estime votre besoin à {_fr(debt['mean_need'])} h, vous en obtenez "
         f"{_fr(debt['mean_sleep'])} h.",
         tone=severity,
@@ -717,16 +1004,20 @@ def _correlation_insight(merged: pd.DataFrame | None) -> Insight | None:
     if table.empty:
         return None
     best = table.iloc[0]
-    if abs(float(best["Corrélation"])) < 0.4:
+    # Sans cette condition, le constat se déclenchait sur presque toutes les
+    # séries de bruit : une vingtaine de métriques testées à trois décalages
+    # produit mécaniquement une corrélation forte.
+    if not bool(best.get("Significatif", False)):
         return None
+    correlation = float(best["Corrélation"])
     lag = int(best["Décalage (jours)"])
-    when = "le jour même" if lag == 0 else f"avec {lag} jour(s) de décalage"
-    direction = "augmente" if float(best["Corrélation"]) > 0 else "diminue"
+    when = "le jour même" if lag == 0 else "le lendemain" if lag == 1 else f"{lag} jours plus tard"
+    direction = "plus vite" if correlation < 0 else "moins vite"
     return Insight(
-        f"{best['Métrique']} suit votre variation de poids",
-        f"Corrélation de {_fr(float(best['Corrélation']), 2)} {when}, sur "
-        f"{int(best['Observations'])} observations : quand cette métrique monte, votre poids "
-        f"{direction}. Association statistique, pas une relation de cause à effet.",
+        f"{best['Métrique']} accompagne votre rythme de perte",
+        f"Corrélation de {_fr(correlation, 2)} sur {int(best['Observations'])} jours : quand cette "
+        f"métrique est élevée, votre poids baisse {direction} {when}. L'association survit à la "
+        "correction pour tests multiples, mais reste une association, pas une cause.",
         tone="info",
         icon="🔗",
         priority=65,
@@ -753,7 +1044,7 @@ def _weekday_insight(daily: pd.DataFrame | None) -> Insight | None:
         f"Creux récurrent le {str(worst['Jour']).lower()}",
         f"Récupération moyenne de {_fr(float(worst['Moyenne']), 0)} % ce jour-là, contre "
         f"{_fr(overall, 0)} % en moyenne sur la semaine, sur {int(worst['Observations'])} "
-        "occurrences.",
+        f"{_plural(worst['Observations'], 'occurrence')}.",
         tone="warning",
         icon="📆",
         priority=55,
@@ -770,7 +1061,7 @@ def _drivers_insight(daily: pd.DataFrame | None) -> Insight | None:
     return Insight(
         "Ce qu'une heure de sommeil vous rapporte",
         f"Sur vos {drivers['days']} jours de données, chaque heure de sommeil supplémentaire "
-        f"s'accompagne de {_fr(coefficient, 1, sign=True)} point(s) de récupération. Le modèle "
+        f"s'accompagne de {_fr(coefficient, 1, sign=True)} {_plural(round(coefficient), 'point')} de récupération. Le modèle "
         f"explique {_fr(drivers['r_squared'] * 100, 0)} % des variations.",
         tone="success" if coefficient > 0 else "info",
         icon="🔬",
@@ -784,7 +1075,10 @@ def _contrast_insight(daily: pd.DataFrame | None) -> Insight | None:
         return None
     top = contrast["table"].iloc[0]
     factor, gap = str(top["Facteur"]), float(top["Écart"])
-    if abs(gap) < 0.3:
+    effect = float(top.get("Écart normalisé", float("nan")))
+    # Un écart normalisé sous 0,5 est un effet modeste : le publier comme « le
+    # facteur qui sépare le plus » lui donnerait un poids qu'il n'a pas.
+    if not np.isfinite(effect) or abs(effect) < 0.5:
         return None
     unit = "h" if "heures" in factor or "coucher" in factor else ""
     direction = "davantage" if gap > 0 else "moins"
@@ -821,11 +1115,39 @@ def _sport_insight(daily: pd.DataFrame | None, workouts: pd.DataFrame | None) ->
     )
 
 
+def _target_pace_insight(merged: pd.DataFrame | None, required_daily_kg: float | None) -> Insight | None:
+    """Confronte le rythme visé à la dépense réellement mesurée."""
+    if required_daily_kg is None or not np.isfinite(required_daily_kg) or required_daily_kg <= 0:
+        return None
+    feasibility = target_pace_feasibility(merged, required_daily_kg=required_daily_kg)
+    if not feasibility["ready"]:
+        return None
+
+    intake = feasibility["implied_intake"]
+    tone = "info" if feasibility["verdict"] == "exigeant" else "warning"
+    closing = (
+        " Un apport à ce niveau se discute avec un professionnel de santé plutôt qu'avec un tableau de bord."
+        if intake < INTAKE_DEMANDING_KCAL
+        else ""
+    )
+    return Insight(
+        f"Votre objectif suppose environ {_fr(intake, 0)} kcal/jour",
+        f"Atteindre la cible demande {_fr(feasibility['required_weekly_kg'], 2)} kg par semaine, soit un déficit "
+        f"d'environ {_fr(feasibility['required_deficit'], 0)} kcal/jour. Votre dépense mesurée par WHOOP étant de "
+        f"{_fr(feasibility['mean_burn'], 0)} kcal/jour, il resterait {_fr(intake, 0)} kcal/jour à consommer — "
+        f"un rythme {feasibility['verdict']}." + closing,
+        tone=tone,
+        icon="🎯",
+        priority=95,
+    )
+
+
 def generate_insights(
     daily: pd.DataFrame | None,
     merged: pd.DataFrame | None = None,
     workouts: pd.DataFrame | None = None,
     *,
+    required_daily_kg: float | None = None,
     limit: int = 6,
 ) -> list[Insight]:
     """Constats rédigés, classés par importance décroissante.
@@ -835,6 +1157,7 @@ def generate_insights(
     """
     candidates = [
         _coverage_insight(daily),
+        _target_pace_insight(merged, required_daily_kg),
         _energy_insight(merged),
         _training_load_insight(daily),
         _sleep_debt_insight(daily),
@@ -881,7 +1204,7 @@ def contrast_best_worst_days(
     faisiez différemment les jours où il était bon. La comparaison par tiers
     répond à cette question sans supposer de relation linéaire.
     """
-    columns = ["Facteur", "Meilleurs jours", "Pires jours", "Écart"]
+    columns = ["Facteur", "Meilleurs jours", "Pires jours", "Écart", "Écart normalisé"]
     result = {
         "ready": False,
         "days": 0,
@@ -919,12 +1242,18 @@ def contrast_best_worst_days(
         best_mean, worst_mean = float(best_values.mean()), float(worst_values.mean())
         if not np.isfinite(best_mean) or not np.isfinite(worst_mean):
             continue
+        # Comparer des heures de sommeil à des points de strain par leur écart
+        # brut revient à classer par unité de mesure : c'est l'échelle qui
+        # gagnerait, pas l'effet. L'écart est donc rapporté à la dispersion.
+        spread = float(np.sqrt((best_values.var(ddof=1) + worst_values.var(ddof=1)) / 2.0))
+        effect = (best_mean - worst_mean) / spread if np.isfinite(spread) and spread > 0 else float("nan")
         rows.append(
             {
                 "Facteur": factor,
                 "Meilleurs jours": round(best_mean, 2),
                 "Pires jours": round(worst_mean, 2),
                 "Écart": round(best_mean - worst_mean, 2),
+                "Écart normalisé": round(effect, 2) if np.isfinite(effect) else float("nan"),
             }
         )
 
@@ -932,7 +1261,8 @@ def contrast_best_worst_days(
         return result
 
     table = pd.DataFrame(rows)
-    table = table.reindex(table["Écart"].abs().sort_values(ascending=False).index).reset_index(drop=True)
+    ranking = table["Écart normalisé"].abs().fillna(-1)
+    table = table.reindex(ranking.sort_values(ascending=False).index).reset_index(drop=True)
     result.update(
         {
             "ready": True,

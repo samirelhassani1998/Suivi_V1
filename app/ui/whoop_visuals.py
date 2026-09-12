@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-from app.core.date_labels import format_day_month, format_long_date
+from app.core.date_labels import format_clock_hour, format_day_month, format_long_date
 
 # Palette catégorielle : ordre fixe, jamais recyclé ni réattribué au filtrage.
 SERIES_COLORS: tuple[str, ...] = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100")
@@ -46,6 +46,7 @@ CHART_HEIGHT = 340
 # Hauteur augmentée pour laisser la place à la bande d'axe et éviter qu'un
 # conteneur trop court ne provoque une barre de défilement interne.
 TALL_CHART_HEIGHT = 420
+MAX_CALENDAR_HEIGHT = 640
 
 
 def _base_layout(figure: go.Figure, title: str, *, y_title: str = "", height: int = CHART_HEIGHT, show_legend: bool = True) -> go.Figure:
@@ -167,18 +168,23 @@ def series_chart(
 
 def recovery_gauge(value: float, zone: str | None) -> go.Figure:
     """Jauge du dernier score de récupération, seuils WHOOP matérialisés."""
-    raw = float(value) if value is not None and np.isfinite(float(value)) else 0.0
-    # Un score de récupération vit entre 0 et 100 : borner évite qu'une valeur
-    # aberrante ne dessine une aiguille hors du cadran.
-    numeric = min(100.0, max(0.0, raw))
+    try:
+        raw = float(value)
+    except (TypeError, ValueError):
+        raw = float("nan")
+    missing = not np.isfinite(raw)
+    # Une mesure absente affichée à 0 % se lisait comme une récupération
+    # catastrophique, au centre de la zone rouge.
+    numeric = 0.0 if missing else min(100.0, max(0.0, raw))
     figure = go.Figure(
         go.Indicator(
-            mode="gauge+number",
+            mode="gauge" if missing else "gauge+number",
             value=numeric,
+            title=dict(text="Récupération du jour", font=dict(size=13, color=INK_SECONDARY)),
             number=dict(suffix=" %", font=dict(size=34, color="#0b0b0b")),
             gauge=dict(
                 axis=dict(range=[0, 100], tickwidth=1, tickcolor=AXIS, tickfont=dict(color=INK_MUTED, size=10)),
-                bar=dict(color=ZONE_COLORS.get(str(zone), SERIES_COLORS[0]), thickness=0.7),
+                bar=dict(color="rgba(0,0,0,0)" if missing else ZONE_COLORS.get(str(zone), SERIES_COLORS[0]), thickness=0.7),
                 bgcolor=SURFACE,
                 borderwidth=0,
                 steps=[
@@ -190,8 +196,8 @@ def recovery_gauge(value: float, zone: str | None) -> go.Figure:
         )
     )
     figure.update_layout(
-        height=220,
-        margin=dict(t=16, b=16, l=24, r=24),
+        height=240,
+        margin=dict(t=44, b=16, l=24, r=24),
         paper_bgcolor=SURFACE,
         font=dict(color=INK_SECONDARY),
     )
@@ -254,7 +260,9 @@ def recovery_calendar(matrix: Mapping[str, Any]) -> go.Figure | None:
         figure,
         "Calendrier de récupération",
         y_title="Semaine du",
-        height=max(220, 60 + 42 * len(week_labels)),
+        # Sans plafond, un an d'historique produisait un graphique de plus de
+        # deux mille pixels de haut, illisible et interminable à faire défiler.
+        height=min(MAX_CALENDAR_HEIGHT, max(220, 60 + 42 * len(week_labels))),
         show_legend=False,
     )
     figure.update_layout(hovermode="closest")
@@ -334,6 +342,38 @@ def weekday_chart(profile: pd.DataFrame, metric_label: str) -> go.Figure | None:
     figure = _base_layout(figure, f"{metric_label} par jour de la semaine", y_title=metric_label, show_legend=False)
     figure.update_layout(hovermode="closest", bargap=0.4)
     return figure
+
+
+def bedtime_chart(grid: pd.DataFrame) -> go.Figure | None:
+    """Heures de coucher, lues en horloge et non sur l'échelle interne signée.
+
+    Les couchers d'avant minuit sont stockés en négatif pour rester continus avec
+    ceux d'après minuit ; exposer ce codage sur l'axe afficherait « −1,5 » là où
+    le lecteur attend « 22:30 ».
+    """
+    if "Heure de coucher" not in grid.columns or not grid["Heure de coucher"].notna().any():
+        return None
+
+    values = grid["Heure de coucher"]
+    figure = go.Figure()
+    figure.add_scatter(
+        x=grid["Date"],
+        y=values,
+        mode="lines+markers",
+        name="Heure de coucher",
+        connectgaps=False,
+        line=dict(color=SERIES_COLORS[0], width=LINE_WIDTH),
+        marker=dict(size=MARKER_SIZE, line=dict(width=2, color=SURFACE)),
+        customdata=[format_clock_hour(value) for value in values],
+        hovertemplate="Coucher : %{customdata}<extra></extra>",
+    )
+    low, high = float(values.min()), float(values.max())
+    ticks = [tick / 2 for tick in range(int(np.floor(low * 2)), int(np.ceil(high * 2)) + 1)]
+    figure.update_yaxes(tickmode="array", tickvals=ticks, ticktext=[format_clock_hour(tick) for tick in ticks])
+    return _calendar_axis(
+        _base_layout(figure, "Heure de coucher", y_title="Heure locale", show_legend=False),
+        grid["Date"],
+    )
 
 
 def sparkline(values: Sequence[float], *, positive: bool = True) -> go.Figure:

@@ -20,6 +20,7 @@ from app.core.date_labels import (
     format_week_label,
 )
 from app.core.formatting import MISSING_VALUE as MISSING_TEXT, format_fr_number
+from app.core.target_trajectory import required_daily_loss
 from app.core.whoop_analytics import (
     KCAL_PER_KG,
     MIN_DAYS_BASELINE,
@@ -34,6 +35,7 @@ from app.core.whoop_analytics import (
     daily_grid,
     energy_balance,
     generate_insights,
+    indexable_metrics,
     indexed_series,
     lagged_correlations,
     personal_baseline,
@@ -42,12 +44,14 @@ from app.core.whoop_analytics import (
     rolling_trend,
     sleep_debt_summary,
     sport_recovery_impact,
+    target_pace_feasibility,
     strain_recovery_balance,
     training_load,
     weekday_profile,
     weekly_rollup,
 )
 from app.ui.whoop_visuals import (
+    bedtime_chart,
     indexed_comparison_chart,
     recovery_calendar,
     recovery_gauge,
@@ -94,6 +98,10 @@ from app.core.whoop import (
 from app.ui.components import empty_state, insight_card, kpi_card, page_hero, section_header
 
 METRIC_DECIMALS = {
+    "Variation poids (kg)": 2,
+    "Variation poids (kg/jour)": 3,
+    "Jours depuis la pesée précédente": 0,
+    "Sur (jours)": 0,
     "Récupération (%)": 0,
     "HRV (ms)": 0,
     "FC repos (bpm)": 0,
@@ -114,6 +122,9 @@ METRIC_DECIMALS = {
     "FC moyenne (bpm)": 0,
     "FC max (bpm)": 0,
 }
+
+# Métriques sans direction souhaitable : une hausse n'est ni bonne ni mauvaise.
+NEUTRAL_METRICS = {"Strain", "Calories (kcal)", "Heure de coucher"}
 
 # Une hausse est favorable pour ces métriques, défavorable pour les autres.
 HIGHER_IS_BETTER = {
@@ -136,10 +147,6 @@ def _secrets_mapping() -> dict:
         return {key: st.secrets[key] for key in st.secrets}
     except Exception:
         return {}
-
-
-def _plot_template() -> str:
-    return str(st.session_state.get("theme", "plotly"))
 
 
 def _default_redirect_uri() -> str:
@@ -331,6 +338,15 @@ def _connection_panel(credentials) -> None:
 
 
 def _sync_panel(credentials, token: WhoopToken) -> None:
+    """Réglages de synchronisation, repliés pour ne pas précéder les données."""
+    profile = st.session_state.get("whoop_profile", {}) or {}
+    owner = " ".join(str(part) for part in (profile.get("first_name"), profile.get("last_name")) if part).strip()
+    label = f"Compte WHOOP connecté{f' — {owner}' if owner else ''} · synchronisation"
+    with st.expander(label, expanded=False):
+        _sync_controls(credentials, token)
+
+
+def _sync_controls(credentials, token: WhoopToken) -> None:
     section_header("Synchronisation", "Importez vos cycles, récupérations, nuits et séances.", "🔄")
 
     cols = st.columns([1, 1, 1])
@@ -353,6 +369,11 @@ def _sync_panel(credentials, token: WhoopToken) -> None:
         launch = st.button("Synchroniser maintenant", use_container_width=True, type="primary")
 
     st.session_state["whoop_sync_days"] = int(days)
+
+    if st.button("Déconnecter WHOOP"):
+        clear_whoop_session()
+        st.info("Compte WHOOP déconnecté.")
+        return
 
     if not launch:
         return
@@ -391,6 +412,8 @@ def _sync_panel(credentials, token: WhoopToken) -> None:
 # Mise en forme
 # ──────────────────────────────────────────────────────────────────────────────
 
+SPARKLINE_DAYS = 14
+
 PERIOD_CHOICES: dict[str, int | None] = {
     "7 jours": 7,
     "30 jours": 30,
@@ -418,12 +441,14 @@ def _format_table(frame: pd.DataFrame, decimals: dict[str, int] | None = None) -
     display = pd.DataFrame(index=frame.index)
     for column in frame.columns:
         series = frame[column]
-        if pd.api.types.is_datetime64_any_dtype(series):
+        if column == "Semaine":
+            # Testé avant le cas général : cette colonne est un horodatage, et la
+            # branche datetime la réduisait à « 3 août » sans dire que c'est une semaine.
+            display[column] = series.apply(format_week_label)
+        elif pd.api.types.is_datetime64_any_dtype(series):
             # Une colonne d'horodatages perd tout son sens réduite au seul jour.
             formatter = format_datetime if column == "Début" else format_day_month
             display[column] = series.apply(formatter)
-        elif column == "Semaine":
-            display[column] = series.apply(format_week_label)
         elif column == "Durée (min)" or column == "Durée totale (min)":
             display[column] = series.apply(format_duration_minutes)
         elif column == "Heure de coucher":
@@ -547,7 +572,10 @@ def _headline_panel(daily: pd.DataFrame) -> None:
         if not headline:
             st.info("Pas encore assez de métriques pour un résumé.")
             return
-        st.caption("Moyennes des 7 derniers jours, comparées aux 7 jours précédents.")
+        st.caption(
+            f"Moyennes des 7 derniers jours, comparées aux 7 jours précédents. "
+            f"Les micro-courbes montrent les {SPARKLINE_DAYS} derniers jours mesurés."
+        )
         columns = st.columns(len(headline))
         for column, metric in zip(columns, headline):
             stats = summary[metric]
@@ -558,11 +586,15 @@ def _headline_panel(daily: pd.DataFrame) -> None:
                         metric,
                         _metric_value(metric, stats["current"]),
                         _metric_delta(metric, delta),
-                        delta_color="normal" if metric in HIGHER_IS_BETTER else "inverse",
+                        # Le strain n'est ni bon ni mauvais en soi : le colorer
+                        # en rouge à la hausse en ferait une alerte permanente.
+                        delta_color="normal" if metric in HIGHER_IS_BETTER else "off" if metric in NEUTRAL_METRICS else "inverse",
                     )
                 else:
                     kpi_card(metric, _metric_value(metric, stats["current"]), help_text="Pas encore de période précédente pour comparer.")
-                values = grid[metric].dropna().tail(14) if metric in grid.columns else pd.Series(dtype=float)
+                # Quatorze jours donnent une silhouette lisible ; la légende
+                # ci-dessus ne parle que des moyennes sur sept jours.
+                values = grid[metric].dropna().tail(SPARKLINE_DAYS) if metric in grid.columns else pd.Series(dtype=float)
                 if len(values) >= 3:
                     st.plotly_chart(
                         sparkline(values.tolist(), positive=metric in HIGHER_IS_BETTER),
@@ -576,7 +608,7 @@ def _overview_tab(daily: pd.DataFrame, merged: pd.DataFrame, workouts: pd.DataFr
     _headline_panel(daily)
 
     section_header("Ce que disent vos données", "Constats classés par importance, chiffres à l'appui.", "🧠")
-    _render_insights(generate_insights(daily, merged, workouts))
+    _render_insights(generate_insights(daily, merged, workouts, required_daily_kg=required_daily_loss()))
 
     with st.expander("Sur quoi reposent ces chiffres ?", expanded=False):
         coverage = coverage_report(daily)
@@ -584,7 +616,11 @@ def _overview_tab(daily: pd.DataFrame, merged: pd.DataFrame, workouts: pd.DataFr
         with cols[0]:
             kpi_card("Jours mesurés", f"{coverage['days_with_data']}", help_text=f"Sur {coverage['span_days']} jour(s) de période")
         with cols[1]:
-            kpi_card("Couverture", f"{format_fr_number(coverage['coverage_pct'], decimals=0)} %", help_text=f"{coverage['gaps']} jour(s) sans mesure")
+            kpi_card(
+                "Jours complets",
+                f"{coverage['complete_days']}",
+                help_text="Jours où récupération, sommeil et charge sont tous les trois disponibles.",
+            )
         with cols[2]:
             kpi_card("Jours croisés avec une pesée", f"{len(merged)}")
         st.divider()
@@ -635,8 +671,19 @@ def _recovery_tab(daily: pd.DataFrame) -> None:
         series_chart(grid, ["Récupération (%)"], "Score de récupération quotidien", "%", trend=rolling_trend(daily, "Récupération (%)")),
         "whoop-recovery-series",
     )
-    _render_chart(series_chart(grid, ["HRV (ms)", "FC repos (bpm)"], "Variabilité cardiaque et fréquence au repos", "Valeur"), "whoop-recovery-hrv")
-    _render_chart(series_chart(grid, ["Température peau (°C)", "SpO2 (%)"], "Température cutanée et saturation", "Valeur"), "whoop-recovery-temp")
+    # Superposer des grandeurs d'échelles différentes sur un axe nommé « Valeur »
+    # écrasait la courbe la plus basse : chaque mesure garde son axe et son unité.
+    heart_cols = st.columns(2)
+    with heart_cols[0]:
+        _render_chart(series_chart(grid, ["HRV (ms)"], "Variabilité cardiaque", "ms"), "whoop-recovery-hrv")
+    with heart_cols[1]:
+        _render_chart(series_chart(grid, ["FC repos (bpm)"], "Fréquence au repos", "bpm"), "whoop-recovery-rhr")
+
+    body_cols = st.columns(2)
+    with body_cols[0]:
+        _render_chart(series_chart(grid, ["Température peau (°C)"], "Température cutanée", "°C"), "whoop-recovery-temp")
+    with body_cols[1]:
+        _render_chart(series_chart(grid, ["SpO2 (%)"], "Saturation en oxygène", "%"), "whoop-recovery-spo2")
 
     section_header("Écart à votre repère personnel", "Une valeur ne vaut que comparée à vos propres habitudes.", "🫀")
     baseline_cols = st.columns(2)
@@ -665,7 +712,11 @@ def _recovery_tab(daily: pd.DataFrame) -> None:
             with column:
                 kpi_card(name, f"{format_fr_number(coefficient, decimals=1, sign=True)} pt", help_text=f"Par {unit} supplémentaire.")
         with driver_cols[-1]:
-            kpi_card("Pouvoir explicatif", f"{format_fr_number(drivers['r_squared'] * 100, decimals=0)} %")
+            kpi_card(
+                "Part des variations expliquée",
+                f"{format_fr_number(max(0.0, drivers['r_squared']) * 100, decimals=0)} %",
+                help_text="Valeur ajustée au nombre de variables : un modèle sans lien réel retombe vers zéro.",
+            )
         if drivers["r_squared"] < 0.15:
             st.warning(
                 "Le modèle explique une part faible des variations : sur vos données actuelles, "
@@ -690,7 +741,7 @@ def _recovery_tab(daily: pd.DataFrame) -> None:
             f"{contrast['worst_days']} pires (≤ {format_fr_number(contrast['worst_threshold'], decimals=0)} %)."
         )
         st.dataframe(
-            _format_table(contrast["table"], {"Meilleurs jours": 2, "Pires jours": 2, "Écart": 2}),
+            _format_table(contrast["table"], {"Meilleurs jours": 2, "Pires jours": 2, "Écart": 2, "Écart normalisé": 2}),
             use_container_width=True,
             hide_index=True,
         )
@@ -707,10 +758,11 @@ def _sleep_tab(daily: pd.DataFrame) -> None:
     else:
         cols = st.columns(4)
         with cols[0]:
+            nights = debt["nights"]
             st.metric(
-                "Dette cumulée (7 nuits)",
+                f"Dette cumulée ({nights} nuit{'s' if nights > 1 else ''})",
                 f"{format_fr_number(debt['cumulative_debt'], decimals=1, sign=True)} h",
-                help="Positif : vous dormez moins que le besoin estimé.",
+                help="Nuits mesurées au cours des 7 derniers jours. Positif : vous dormez moins que le besoin estimé.",
             )
         with cols[1]:
             kpi_card("Dette moyenne / nuit", f"{format_fr_number(debt['mean_debt'], decimals=1, sign=True)} h")
@@ -743,7 +795,7 @@ def _sleep_tab(daily: pd.DataFrame) -> None:
     if "Heure de coucher" in daily.columns and daily["Heure de coucher"].notna().sum() >= 3:
         section_header("Régularité du coucher", "Heure d'endormissement sur une échelle continue autour de minuit.", "🕰️")
         spread = float(daily["Heure de coucher"].std())
-        _render_chart(series_chart(grid, ["Heure de coucher"], "Heure de coucher", "Heure (négatif = avant minuit)"), "whoop-sleep-bedtime")
+        _render_chart(bedtime_chart(grid), "whoop-sleep-bedtime")
         st.caption(
             f"Dispersion des couchers : {format_fr_number(spread, decimals=1)} h d'écart-type. "
             "Une dispersion faible traduit un rythme régulier, que WHOOP relie à la qualité du sommeil."
@@ -761,14 +813,27 @@ def _effort_tab(daily: pd.DataFrame, workouts: pd.DataFrame) -> None:
         "Charge des 7 derniers jours rapportée à celle des 28 derniers : une dynamique que WHOOP n'affiche pas.",
         "⚖️",
     )
-    if not np.isfinite(load["ratio"]):
+    if load["status"] == "couverture insuffisante":
+        st.info(
+            f"Bracelet porté {load['acute_days_measured']} jour(s) sur les 7 derniers : trop peu pour "
+            "qualifier votre charge récente. Deux séances isolées ne décrivent pas une semaine d'entraînement."
+        )
+    elif not np.isfinite(load["ratio"]):
         st.info(f"Indicateur disponible à partir de {MIN_DAYS_TRAINING_LOAD} jours de mesure (actuellement {load['days']}).")
     else:
         cols = st.columns(3)
         with cols[0]:
-            kpi_card("Charge aigüe (7 j)", format_fr_number(load["acute"], decimals=1))
+            kpi_card(
+                "Charge aigüe (7 j)",
+                format_fr_number(load["acute"], decimals=1),
+                help_text=f"Moyenne sur {load['acute_days_measured']} jour(s) réellement mesuré(s).",
+            )
         with cols[1]:
-            kpi_card("Charge chronique (28 j)", format_fr_number(load["chronic"], decimals=1))
+            kpi_card(
+                "Charge chronique (28 j)",
+                format_fr_number(load["chronic"], decimals=1),
+                help_text=f"Moyenne sur {load['chronic_days_measured']} jour(s) réellement mesuré(s).",
+            )
         with cols[2]:
             kpi_card("Rapport aigu / chronique", format_fr_number(load["ratio"], decimals=2), help_text=load["status"])
         insight_card(
@@ -784,10 +849,23 @@ def _effort_tab(daily: pd.DataFrame, workouts: pd.DataFrame) -> None:
 
     balance = strain_recovery_balance(daily)
     if not balance.empty:
-        flagged = balance[balance["Signal"] != "cohérent"]
-        if not flagged.empty:
-            section_header("Jours à surveiller", "Charge et récupération qui ne vont pas dans le même sens.", "⚠️")
-            st.dataframe(_format_table(flagged, {"Récupération (%)": 0, "Strain": 1}), use_container_width=True, hide_index=True)
+        alerts = balance[balance["Type"] == "alerte"]
+        opportunities = balance[balance["Type"] == "occasion"]
+        if not alerts.empty:
+            section_header("Jours à surveiller", "Charge élevée alors que la récupération était basse.", "⚠️")
+            st.dataframe(
+                _format_table(alerts.drop(columns=["Type"]), {"Récupération (%)": 0, "Strain": 1}),
+                use_container_width=True,
+                hide_index=True,
+            )
+        if not opportunities.empty:
+            # Une bonne journée rangée parmi les alertes brouillait la lecture.
+            section_header("Occasions manquées", "Récupération élevée alors que la charge est restée faible.", "🟢")
+            st.dataframe(
+                _format_table(opportunities.drop(columns=["Type"]), {"Récupération (%)": 0, "Strain": 1}),
+                use_container_width=True,
+                hide_index=True,
+            )
 
     if workouts is None or workouts.empty:
         st.info("Aucune séance enregistrée sur la période choisie.")
@@ -837,10 +915,10 @@ def _effort_tab(daily: pd.DataFrame, workouts: pd.DataFrame) -> None:
     )
 
 
-def _energy_balance_panel(merged: pd.DataFrame) -> None:
+def _energy_balance_panel(merged: pd.DataFrame, weight_history: pd.DataFrame) -> None:
     """Le croisement que ni WHOOP ni une balance ne peuvent produire seuls."""
     section_header("Bilan énergétique estimé", "La dépense vient de WHOOP, le déficit de votre courbe de poids : l'apport s'en déduit.", "🔥")
-    balance = energy_balance(merged)
+    balance = energy_balance(merged, weight_history=weight_history)
     if not balance["ready"]:
         missing = max(0, balance["required_days"] - balance["days"])
         st.info(f"Estimation disponible à partir de {balance['required_days']} jours croisés : il en manque {missing}.")
@@ -861,17 +939,80 @@ def _energy_balance_panel(merged: pd.DataFrame) -> None:
             help_text="Négatif : déficit. Déduit de la pente du poids.",
         )
     with cols[3]:
-        kpi_card("Apport estimé", f"{format_fr_number(balance['estimated_intake'], decimals=0)} kcal/j")
+        margin = balance.get("intake_margin", float("nan"))
+        # Publier ce chiffre au kcal près suggérerait une précision que la pente
+        # d'une courbe de poids bruitée ne possède pas.
+        margin_text = (
+            f"± {format_fr_number(margin, decimals=0)} kcal/j" if np.isfinite(margin) else "marge indisponible"
+        )
+        kpi_card(
+            "Apport estimé",
+            f"{format_fr_number(balance['estimated_intake'], decimals=0)} kcal/j",
+            help_text=f"Intervalle à 95 % : {margin_text}.",
+        )
 
+    _target_pace_panel(merged)
+
+    margin = balance.get("intake_margin", float("nan"))
+    precision = (
+        f" L'incertitude sur la pente donne une marge de ± {format_fr_number(margin, decimals=0)} kcal/jour."
+        if np.isfinite(margin)
+        else ""
+    )
     st.caption(
         "Méthode : la pente du poids est convertie en énergie sur la base de "
         f"{format_fr_number(KCAL_PER_KG, decimals=0)} kcal par kilogramme, puis ajoutée à la dépense "
-        "mesurée par WHOOP. Estimation sensible aux variations d'eau et de glycogène, au bruit de "
-        "pesée et à la précision de la dépense WHOOP."
+        f"mesurée par WHOOP.{precision} Sur quelques semaines, une part de la variation de poids est de "
+        "l'eau et du glycogène, pour lesquels cette équivalence ne vaut pas : l'estimation situe un "
+        "ordre de grandeur, pas une valeur exacte."
+    )
+
+
+def _target_pace_panel(merged: pd.DataFrame) -> None:
+    """Ce que l'objectif de poids suppose de manger, au vu de la dépense mesurée."""
+    feasibility = target_pace_feasibility(merged, required_daily_kg=required_daily_loss())
+    if not feasibility["ready"]:
+        return
+
+    st.divider()
+    section_header(
+        "Votre objectif, traduit en calories",
+        "L'objectif est exprimé en kilogrammes, la dépense en kilocalories : les rapprocher dit ce que le rythme visé suppose.",
+        "🎯",
+    )
+    cols = st.columns(4)
+    with cols[0]:
+        kpi_card("Rythme visé", f"{format_fr_number(feasibility['required_weekly_kg'], decimals=2)} kg/sem")
+    with cols[1]:
+        kpi_card("Rythme actuel", f"{format_fr_number(feasibility['current_daily_kg'] * 7, decimals=2)} kg/sem")
+    with cols[2]:
+        kpi_card("Déficit requis", f"{format_fr_number(feasibility['required_deficit'], decimals=0)} kcal/j")
+    with cols[3]:
+        kpi_card(
+            "Apport que cela suppose",
+            f"{format_fr_number(feasibility['implied_intake'], decimals=0)} kcal/j",
+            help_text=f"Dépense mesurée ({format_fr_number(feasibility['mean_burn'], decimals=0)} kcal/j) moins le déficit requis.",
+        )
+
+    if feasibility["verdict"] != "exigeant":
+        insight_card(
+            f"Un rythme {feasibility['verdict']}",
+            f"L'apport correspondant, environ {format_fr_number(feasibility['implied_intake'], decimals=0)} kcal/jour, "
+            "se situe sous les repères couramment cités pour un adulte. Ce n'est pas un avis médical : "
+            "c'est l'arithmétique de votre objectif confrontée à votre dépense mesurée. Un tel niveau "
+            "se discute avec un professionnel de santé, ou l'échéance peut être allongée.",
+            tone="warning",
+            icon="⚠️",
+        )
+    st.caption(
+        "Calcul : rythme visé × "
+        f"{format_fr_number(KCAL_PER_KG, decimals=0)} kcal/kg = déficit requis ; apport = dépense mesurée − déficit. "
+        "Estimation sensible aux mêmes réserves que le bilan énergétique."
     )
 
 
 def _weight_tab(daily: pd.DataFrame, merged: pd.DataFrame) -> None:
+    weights = get_filtered_or_working_data()
     if merged.empty:
         empty_state("Aucun jour commun entre vos pesées et la période WHOOP choisie.")
         return
@@ -881,12 +1022,14 @@ def _weight_tab(daily: pd.DataFrame, merged: pd.DataFrame) -> None:
         f"({format_date_range(merged['Date'].min(), merged['Date'].max())})."
     )
 
-    _energy_balance_panel(merged)
+    _energy_balance_panel(merged, weights)
 
     section_header("Poids et métrique WHOOP", "Les deux séries ramenées à une base 100 commune, lisibles sur un axe unique.", "⚖️")
-    metrics = available_metrics(merged)
+    # Une base 100 sur une grandeur qui passe par zéro ou devient négative
+    # inverse le sens de la courbe : ces métriques sont écartées du sélecteur.
+    metrics = indexable_metrics(merged, available_metrics(merged))
     if not metrics:
-        st.info("Aucune métrique WHOOP exploitable sur les jours communs.")
+        st.info("Aucune métrique WHOOP comparable au poids sur les jours communs.")
         return
 
     default_index = metrics.index("Récupération (%)") if "Récupération (%)" in metrics else 0
@@ -902,7 +1045,7 @@ def _weight_tab(daily: pd.DataFrame, merged: pd.DataFrame) -> None:
 
     section_header(
         "Corrélations décalées",
-        "Un entraînement pèse rarement sur la balance le jour même : chaque métrique est testée à 0, 1 et 2 jours.",
+        "Chaque métrique est confrontée à votre rythme de perte en kg/jour, testé à 0, 1 et 2 jours de décalage.",
         "🧮",
     )
     correlations = lagged_correlations(merged)
@@ -916,8 +1059,11 @@ def _weight_tab(daily: pd.DataFrame, merged: pd.DataFrame) -> None:
             hide_index=True,
         )
     st.caption(
-        "⚠️ Une corrélation n'est pas une causalité : sur de courtes séries, ces valeurs restent "
-        "indicatives et sensibles au bruit de mesure (hydratation, horaire de pesée)."
+        "⚠️ Une corrélation n'est pas une causalité. La cible est le rythme quotidien (kg/jour) et non "
+        "l'écart brut entre deux pesées : sans cette normalisation, dix jours d'écart pèseraient dix fois "
+        "plus lourd qu'un jour. Sur de courtes séries, ces valeurs restent indicatives et sensibles au "
+        "bruit de mesure (hydratation, horaire de pesée). Plusieurs métriques et décalages étant testés, "
+        "la plus forte corrélation affichée est aussi la plus susceptible d'être un artefact."
     )
 
     weekly = weekly_rollup(merged)
@@ -926,12 +1072,23 @@ def _weight_tab(daily: pd.DataFrame, merged: pd.DataFrame) -> None:
         st.dataframe(
             _format_table(
                 weekly,
-                {"Jours": 0, "Récupération (%)": 0, "Sommeil (heures)": 1, "Strain cumulé": 1, "Poids moyen (kg)": 1, "Variation (kg)": 2},
+                {
+                    "Jours": 0,
+                    "Récupération (%)": 0,
+                    "Sommeil (heures)": 1,
+                    "Strain cumulé": 1,
+                    "Poids moyen (kg)": 1,
+                    "Variation (kg)": 2,
+                    "Sur (jours)": 0,
+                },
             ),
             use_container_width=True,
             hide_index=True,
         )
-        st.caption("La variation compare la première et la dernière pesée de chaque semaine.")
+        st.caption(
+            "La variation compare la première et la dernière pesée de la semaine ; la colonne "
+            "« Sur (jours) » indique la durée réellement couverte, qui n'est pas toujours sept jours."
+        )
 
     _table_view(merged, "Voir tous les jours communs")
 
@@ -954,14 +1111,6 @@ def main() -> None:
         _connection_panel(credentials)
         st.divider()
         st.caption("Aucun compte WHOOP connecté : les autres onglets restent pleinement fonctionnels.")
-        return
-
-    profile = st.session_state.get("whoop_profile", {}) or {}
-    owner = " ".join(str(part) for part in (profile.get("first_name"), profile.get("last_name")) if part).strip()
-    st.success(f"Compte WHOOP connecté{f' — {owner}' if owner else ''}.")
-    if st.button("Déconnecter WHOOP"):
-        clear_whoop_session()
-        st.info("Compte WHOOP déconnecté.")
         return
 
     _sync_panel(credentials, token)
@@ -994,17 +1143,17 @@ def main() -> None:
 
     merged = merge_with_weight(get_filtered_or_working_data(), daily)
 
-    tabs = st.tabs(["Vue d'ensemble", "Récupération", "Sommeil", "Effort", "Poids × WHOOP"])
+    tabs = st.tabs(["Vue d'ensemble", "Poids × WHOOP", "Récupération", "Sommeil", "Effort"])
     with tabs[0]:
         _overview_tab(daily, merged, workouts)
     with tabs[1]:
-        _recovery_tab(daily)
-    with tabs[2]:
-        _sleep_tab(daily)
-    with tabs[3]:
-        _effort_tab(daily, workouts)
-    with tabs[4]:
         _weight_tab(daily, merged)
+    with tabs[2]:
+        _recovery_tab(daily)
+    with tabs[3]:
+        _sleep_tab(daily)
+    with tabs[4]:
+        _effort_tab(daily, workouts)
 
 
 main()

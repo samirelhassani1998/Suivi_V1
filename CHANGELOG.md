@@ -1,5 +1,44 @@
 # Changelog
 
+## 2026-09-12 — Révision de la logique des calculs
+
+Audit de l'onglet WHOOP sur sept angles (calculs, statistiques, normalisation, UI, dates, robustesse, constats). Les défauts ci-dessous ont été reproduits avant correction.
+
+Plantage et données fausses :
+- **La page entière plantait** (`ValueError: cannot reindex on an axis with duplicate labels`) dès que WHOOP renvoyait deux récupérations le même jour : `recoveries_to_frame` était le seul convertisseur sans déduplication. La source est corrigée et `daily_grid` tolère désormais les doublons plutôt que de lever une exception, étant trop en aval pour emporter l'affichage.
+- **Le sommeil était surestimé** : `total_in_bed − total_awake` comptait le temps où le capteur perd le signal comme du sommeil (8 h affichées pour 7 h réelles).
+- **Les enregistrements non notés** (`PENDING_SCORE`, `UNSCORABLE`) étaient conservés et écrasaient la mesure valide du même jour à la déduplication.
+- **La date des récupérations ignorait le fuseau horaire**, contrairement au sommeil et aux cycles : une récupération créée à 23h30 UTC était datée de la veille.
+- **« Les 7 derniers jours » désignait les 7 dernières lignes** dans quatre fonctions. Sur un bracelet porté par à-coups, la « dette des 7 dernières nuits » incluait une nuit vieille de six semaines. Introduction de `last_days` et `previous_days`, qui filtrent sur le calendrier.
+- **La variation de poids entre deux pesées espacées** était traitée comme une variation journalière dans les corrélations : trois kilos sur dix jours pesaient comme trois kilos en un jour. La cible devient le rythme en kg/jour, et la durée écoulée est exposée.
+
+Honnêteté statistique :
+- **Les corrélations décalées testaient une cinquantaine d'hypothèses** et affichaient la plus forte : le constat se déclenchait sur presque toutes les séries de bruit. Après correction pour tests multiples, le taux de faux positifs mesuré tombe de la quasi-totalité à 5 % sur 40 simulations, l'effet réel injecté restant détecté.
+- **Le rapport aigu/chronique valait exactement 1,00** sous 14 jours d'historique, les deux fenêtres portant sur les mêmes jours : « charge maîtrisée » était garanti. Il se tait désormais, et refuse aussi de conclure sur une semaine où le bracelet n'a été porté que deux jours.
+- **Le R² de la régression de récupération n'était pas ajusté** : il dépassait 0,25 sur du bruit pur à douze observations, déclenchant à tort le constat sur le sommeil.
+- **Le bilan énergétique publiait un apport au kcal près** sans incertitude, et estimait la pente sur les seuls jours croisés avec WHOOP en ignorant les pesées intermédiaires. Il expose désormais son intervalle à 95 % et utilise toutes les pesées de la période.
+- **Le contraste bons/mauvais jours classait par écart brut**, donc par unité de mesure : un écart de 0,6 point de strain devançait 0,5 h de sommeil. Le classement se fait sur la taille d'effet.
+- **`indexed_series` inversait le sens** des métriques négatives ou traversant zéro : se coucher plus tôt (−2 h) donnait un indice de 200. Ces métriques sont écartées du sélecteur.
+- **La couverture annonçait 100 %** dès qu'une seule des trois sources répondait ; les jours complets sont désormais comptés séparément.
+
+Nouveau croisement :
+- **Votre objectif traduit en calories** (`target_pace_feasibility`) : le rythme de la trajectoire cible est converti en déficit, puis confronté à la dépense mesurée, pour donner l'apport quotidien que l'objectif suppose. Le résultat est qualifié, et un apport sous les repères usuels renvoie vers un professionnel de santé plutôt que vers un tableau de bord.
+
+Lisibilité :
+- Les heures de coucher s'affichaient en décimal signé (« −1,5 ») dans les graphiques : elles se lisent en horloge sur l'axe comme au survol.
+- Deux unités partageaient un axe nommé « Valeur », écrasant la courbe la plus basse : HRV, fréquence au repos, température et SpO2 ont chacune leur graphique.
+- La jauge de récupération n'avait pas de titre et affichait 0 % (zone rouge) pour une mesure absente.
+- La colonne « Semaine » affichait une date nue, la branche de formatage étant inatteignable.
+- Le calendrier dépassait 2 000 pixels de haut sur un an d'historique.
+- Le croisement « Poids × WHOOP » passe du cinquième au deuxième onglet, et la plomberie de connexion est repliée derrière les données.
+- Les « jours à surveiller » mêlaient alertes et occasions manquées : les deux sont séparés.
+- Le strain était coloré comme une mauvaise nouvelle à la hausse ; il est désormais neutre.
+- Accords grammaticaux dans les constats, à la place des « (s) ».
+- Retrait du sélecteur de thème Plotly, qui était du code mort : l'onglet utilise une palette fixe validée pour la vision des couleurs.
+
+Tests : 341 passés, 4 échecs préexistants inchangés. Les correctifs statistiques sont validés par simulation (taux de faux positifs mesuré, effets injectés retrouvés), et non par relecture.
+
+
 ## 2026-09-11 — Dates lisibles et analyse des bons jours
 
 Lisibilité des dates (`app/core/date_labels.py`, nouveau module) :
