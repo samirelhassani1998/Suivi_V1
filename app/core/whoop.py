@@ -79,6 +79,7 @@ WHOOP_DAILY_METRICS: tuple[str, ...] = (
     "Sommeil profond (heures)",
     "Sommeil REM (heures)",
     "Perturbations sommeil",
+    "Fréquence respiratoire (resp/min)",
     "Heure de coucher",
     "Strain",
     "Calories (kcal)",
@@ -580,6 +581,7 @@ SLEEP_COLUMNS = (
     "Sommeil profond (heures)",
     "Sommeil REM (heures)",
     "Perturbations sommeil",
+    "Fréquence respiratoire (resp/min)",
     "Heure de coucher",
     "Sieste",
 )
@@ -653,6 +655,10 @@ def sleeps_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
                 "Besoin de sommeil (heures)": needed_hours,
                 "Dette de sommeil (heures)": debt_hours,
                 "Heure de coucher": _decimal_hour(record.get("start"), record.get("timezone_offset")),
+                # Signe vital nocturne renvoyé par WHOOP et jusqu'ici ignoré :
+                # une fréquence respiratoire qui s'élève est l'un des signaux
+                # les plus précoces d'une infection des voies respiratoires.
+                "Fréquence respiratoire (resp/min)": _number(score.get("respiratory_rate")),
                 "Performance sommeil (%)": _number(score.get("sleep_performance_percentage")),
                 "Efficacité sommeil (%)": _number(score.get("sleep_efficiency_percentage")),
                 "Régularité sommeil (%)": _number(score.get("sleep_consistency_percentage")),

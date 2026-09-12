@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from html import escape
+
 import streamlit as st
 
 
@@ -88,5 +90,51 @@ def progress_panel(title: str, percent: float, caption: str, tone: str = "primar
             <p>{caption}</p>
         </div>
         """,
+        unsafe_allow_html=True,
+    )
+
+
+def day_card(
+    date_label: str,
+    relative_label: str,
+    zone: str | None,
+    stats: list[tuple[str, str, str]],
+    sessions: list[tuple[str, str, str]],
+    *,
+    empty_message: str | None = None,
+) -> None:
+    """Carte d'une journée : date en tête, mesures du jour, séances rattachées.
+
+    ``stats`` reçoit des triplets (libellé, valeur, unité) déjà formatés, et
+    ``sessions`` des triplets (heure, intitulé, détail). La mise en forme des
+    nombres et des dates appartient à l'appelant : ce composant n'assemble que
+    le balisage.
+    """
+    tone = str(zone).lower() if zone else "vide"
+    head = f"<span class='suivi-day-date'>{escape(date_label)}</span>"
+    if relative_label:
+        head += f"<span class='suivi-day-ago'>{escape(relative_label)}</span>"
+
+    if empty_message:
+        body = f"<p class='suivi-day-empty'>{escape(empty_message)}</p>"
+    else:
+        cells = "".join(
+            f"<div class='suivi-day-stat'><b>{escape(value)}</b>"
+            f"<span>{escape(unit)}</span><span>· {escape(label)}</span></div>"
+            for label, value, unit in stats
+        )
+        body = f"<div class='suivi-day-stats'>{cells}</div>"
+
+    if sessions:
+        items = "".join(
+            f"<li><time>{escape(when)}</time><strong>{escape(title)}</strong>"
+            f"<span>{escape(detail)}</span></li>"
+            for when, title, detail in sessions
+        )
+        body += f"<ul class='suivi-day-sessions'>{items}</ul>"
+
+    st.markdown(
+        f"<div class='suivi-day-card suivi-day-{tone}'>"
+        f"<div class='suivi-day-head'>{head}</div>{body}</div>",
         unsafe_allow_html=True,
     )

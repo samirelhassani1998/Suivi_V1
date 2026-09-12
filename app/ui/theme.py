@@ -200,6 +200,66 @@ def apply_global_theme() -> None:
         .suivi-progress-track {height: 0.72rem; background: #e5e7eb; border-radius: 999px; overflow: hidden; margin: 0.85rem 0 0.35rem 0;}
         .suivi-progress-track div {height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--suivi-blue), var(--suivi-green));}
         .suivi-progress-success .suivi-progress-track div {background: linear-gradient(90deg, var(--suivi-green), #86efac);}
+        .suivi-day-card {
+            position: relative;
+            margin: 0.5rem 0;
+            padding: 0.85rem 1rem 0.85rem 1.1rem;
+            border: 1px solid var(--suivi-border);
+            border-left: 4px solid var(--suivi-subtle);
+            border-radius: 16px;
+            background: var(--suivi-card);
+            box-shadow: 0 6px 16px rgba(15,23,42,0.035);
+        }
+        .suivi-day-vert {border-left-color: #0ca30c;}
+        .suivi-day-jaune {border-left-color: #fab219;}
+        .suivi-day-rouge {border-left-color: #d03b3b;}
+        .suivi-day-vide {border-left-color: #e1e0d9; background: var(--suivi-card-soft);}
+        .suivi-day-head {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: baseline;
+            gap: 0.5rem;
+            margin-bottom: 0.45rem;
+        }
+        .suivi-day-date {font-weight: 800; font-size: 0.98rem; color: var(--suivi-ink);}
+        .suivi-day-ago {
+            padding: 0.1rem 0.5rem;
+            border-radius: 999px;
+            background: var(--suivi-card-soft);
+            color: var(--suivi-muted);
+            font-size: 0.76rem;
+            font-weight: 700;
+        }
+        .suivi-day-stats {display: flex; flex-wrap: wrap; gap: 0.35rem 1.15rem;}
+        .suivi-day-stat {display: flex; align-items: baseline; gap: 0.3rem; font-size: 0.9rem;}
+        .suivi-day-stat b {font-size: 1.02rem; color: var(--suivi-ink); font-weight: 800;}
+        .suivi-day-stat span {color: var(--suivi-muted); font-size: 0.8rem;}
+        .suivi-day-sessions {
+            margin: 0.55rem 0 0 0;
+            padding: 0.5rem 0 0 0;
+            border-top: 1px dashed var(--suivi-border);
+            list-style: none;
+        }
+        .suivi-day-sessions li {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.4rem 0.7rem;
+            padding: 0.16rem 0;
+            color: var(--suivi-muted);
+            font-size: 0.88rem;
+        }
+        .suivi-day-sessions li strong {color: var(--suivi-ink); font-weight: 700;}
+        .suivi-day-sessions li time {
+            min-width: 3.6rem;
+            color: var(--suivi-blue);
+            font-weight: 800;
+            font-variant-numeric: tabular-nums;
+        }
+        .suivi-day-empty {margin: 0; color: var(--suivi-subtle); font-size: 0.88rem; font-style: italic;}
+        @media (max-width: 768px) {
+            .suivi-day-stats {gap: 0.3rem 0.8rem;}
+            .suivi-day-stat b {font-size: 0.96rem;}
+        }
         div[data-testid="stAlert"] {border-radius: 18px; border: 1px solid rgba(226,232,240,0.9);}
         .stDataFrame, div[data-testid="stDataEditor"] {border-radius: 18px; overflow: hidden;}
         @media (max-width: 768px) {

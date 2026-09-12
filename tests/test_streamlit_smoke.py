@@ -424,6 +424,7 @@ def _whoop_rich_state(at: AppTest, *, whoop_days: int = 45) -> None:
             "Régularité sommeil (%)": [0.0] * whoop_days,
             "Sommeil profond (heures)": [1.1 + (i % 4) * 0.2 for i in range(whoop_days)],
             "Sommeil REM (heures)": [1.5 + (i % 3) * 0.2 for i in range(whoop_days)],
+            "Fréquence respiratoire (resp/min)": [14.4 + (i % 5) * 0.15 for i in range(whoop_days)],
             "Heure de coucher": [-1.5 + (i % 4) * 0.4 for i in range(whoop_days)],
             "Strain": [8 + (i % 8) for i in range(whoop_days)],
             "Calories (kcal)": [2500 + (i % 7) * 120 for i in range(whoop_days)],
@@ -505,7 +506,15 @@ def test_whoop_page_breaks_lines_on_days_without_measurement():
     _whoop_connected_state(at)
     _whoop_rich_state(at)
     daily = at.session_state["whoop_daily"]
-    at.session_state["whoop_daily"] = daily.drop(index=[5, 6, 7]).reset_index(drop=True)
+    holed = daily.drop(index=[5, 6, 7]).reset_index(drop=True)
+    at.session_state["whoop_daily"] = holed
+    # Un jour pesé sans mesure WHOOP reste une journée à montrer : pour obtenir
+    # des journées réellement vides, la pesée doit manquer aussi.
+    weights = at.session_state["working_data"]
+    without = weights[weights["Date"].isin(holed["Date"])].reset_index(drop=True)
+    at.session_state["working_data"] = without
+    at.session_state["source_data"] = without.copy()
+    at.session_state["raw_data"] = without.copy()
     at.run(timeout=30)
 
     assert not at.exception
@@ -665,8 +674,9 @@ def test_whoop_page_writes_dates_in_french():
     assert all(month not in label for label in labels for month in ("Jan", "Feb", "Aug", "Sep", "Oct", "Dec"))
 
 
-def test_whoop_page_puts_the_weight_crossing_second_not_last():
-    """Le croisement poids × WHOOP est ce que l'app WHOOP ne sait pas faire."""
+def test_whoop_page_leads_with_the_readings_the_whoop_app_cannot_give():
+    """La lecture jour par jour et le croisement avec le poids passent devant
+    les onglets que l'application WHOOP fournit déjà."""
     at = AppTest.from_file("app/pages/Whoop.py")
     _whoop_connected_state(at)
     _whoop_rich_state(at)
@@ -674,7 +684,9 @@ def test_whoop_page_puts_the_weight_crossing_second_not_last():
 
     assert not at.exception
     labels = [tab.label for tab in at.tabs]
-    assert labels[:2] == ["Vue d'ensemble", "Poids × WHOOP"]
+    assert labels[:3] == ["Vue d'ensemble", "Jour par jour", "Poids × WHOOP"]
+    # Les onglets redondants avec l'app WHOOP viennent après.
+    assert labels.index("Jour par jour") < labels.index("Récupération")
 
 
 def test_whoop_page_survives_two_recoveries_on_the_same_day():
@@ -719,3 +731,81 @@ def test_whoop_page_hides_the_connection_plumbing_behind_the_data():
     # La déconnexion reste accessible, mais dans le panneau replié.
     assert "Déconnecter WHOOP" in [button.label for button in at.button]
     assert any("synchronisation" in str(exp.label).lower() for exp in at.get("expander"))
+
+
+def test_whoop_page_renders_a_dated_journal_with_sessions_under_their_day():
+    """Demande explicite : voir les récupérations par date, et les séances aussi."""
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at)
+    session_day = at.session_state["whoop_workouts"]["Date"].iloc[0]
+    at.run(timeout=30)
+
+    assert not at.exception
+    rendered = " ".join(str(m.value) for m in at.markdown)
+    assert "suivi-day-card" in rendered
+    # Chaque journée porte sa date en toutes lettres.
+    assert any(weekday in rendered for weekday in ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"))
+    # La séance apparaît avec son heure de début, sous sa date.
+    assert "18:30" in rendered
+    assert "Boxing" in rendered
+    assert pd.Timestamp(session_day).strftime("%d") in rendered
+
+
+def test_whoop_journal_hides_empty_days_until_asked():
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at)
+    daily = at.session_state["whoop_daily"]
+    holed = daily.drop(index=[5, 6, 7]).reset_index(drop=True)
+    at.session_state["whoop_daily"] = holed
+    # Un jour pesé sans mesure WHOOP reste une journée à montrer : pour obtenir
+    # des journées réellement vides, la pesée doit manquer aussi.
+    weights = at.session_state["working_data"]
+    without = weights[weights["Date"].isin(holed["Date"])].reset_index(drop=True)
+    at.session_state["working_data"] = without
+    at.session_state["source_data"] = without.copy()
+    at.session_state["raw_data"] = without.copy()
+    at.run(timeout=30)
+
+    assert not at.exception
+    toggle = next(item for item in at.toggle if "sans aucune mesure" in item.label)
+    assert toggle.value is False
+    rendered_before = " ".join(str(m.value) for m in at.markdown)
+
+    toggle.set_value(True).run(timeout=30)
+    assert not at.exception
+    rendered_after = " ".join(str(m.value) for m in at.markdown)
+    # Les jours vides apparaissent, signalés comme tels.
+    assert rendered_after.count("suivi-day-card") > rendered_before.count("suivi-day-card")
+    assert "Aucune mesure ce jour-là" in rendered_after
+
+
+def test_whoop_page_shows_the_physiological_watch_without_diagnosing():
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at)
+    daily = at.session_state["whoop_daily"].copy()
+    last = daily.index[-1]
+    daily.loc[last, "FC repos (bpm)"] = 72.0
+    daily.loc[last, "HRV (ms)"] = 22.0
+    daily.loc[last, "Fréquence respiratoire (resp/min)"] = 18.5
+    at.session_state["whoop_daily"] = daily
+    at.run(timeout=30)
+
+    assert not at.exception
+    rendered = " ".join(str(m.value) for m in at.markdown) + " ".join(str(c.value) for c in at.caption)
+    assert "Veille physiologique" in rendered
+    # L'avertissement est explicite et aucune pathologie n'est nommée.
+    assert "ne constituent pas un diagnostic" in rendered
+    assert "professionnel de santé" in rendered
+
+
+def test_whoop_page_exports_the_journal():
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at)
+    at.run(timeout=30)
+
+    assert not at.exception
+    assert "Exporter le journal (CSV)" in [button.label for button in at.get("download_button")]

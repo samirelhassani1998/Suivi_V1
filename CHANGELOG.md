@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-09-12 — Lecture jour par jour et veille physiologique
+
+Lecture chronologique (demande explicite : voir les récupérations et les séances par date) :
+- **Nouvel onglet « Jour par jour »**, placé en deuxième position. Une carte par journée, du plus récent au plus ancien, avec la récupération et sa zone en liseré coloré, le sommeil et sa dette, l'heure de coucher, la charge, la HRV, la fréquence au repos, le poids et sa variation — puis **les séances du jour, chacune située par son heure de début** avec durée, charge, calories et fréquence maximale. Trois séances de boxe le même jour se lisent enfin comme trois séances distinctes.
+- Les journées sans aucune mesure sont masquées par défaut et affichables au besoin, plutôt que de disparaître silencieusement.
+- Export CSV du journal et vue tableau équivalente.
+
+Veille physiologique (`vital_deviations`, `physiological_watch`) :
+- **La fréquence respiratoire était renvoyée par WHOOP et jamais extraite.** C'est l'un des cinq signes vitaux nocturnes, et l'un des signaux les plus précoces d'une atteinte respiratoire. Elle est désormais captée.
+- Les cinq signes vitaux sont comparés non à une norme de population mais à un **repère personnel robuste** : médiane et écart absolu médian des trente derniers jours. Sur dix à trente nuits, une seule nuit aberrante gonfle un écart-type classique et masque ensuite tout écart réel.
+- Seule la direction cliniquement pertinente est signalée : une variabilité cardiaque haute n'est pas un signal à surveiller, une variabilité basse l'est.
+- Le seuil a été **choisi par mesure** sur 200 séries sans anomalie : à 2,0 unités un signal apparaît une nuit sur cinq sans raison, à 2,5 une nuit sur treize, et deux signaux simultanés n'apparaissent jamais. Un indicateur de santé qui crie au loup finit ignoré.
+- Cadrage strictement informatif : aucune pathologie n'est nommée, l'avertissement « ces mesures ne constituent pas un diagnostic » est affiché, et plusieurs signaux concordants renvoient vers un professionnel de santé. Les cartes de repère individuelles sont supprimées quand la veille les nomme déjà, pour ne pas dire trois fois la même chose.
+
+Architecture du sommeil (`sleep_architecture`) :
+- Part de sommeil profond et de sommeil REM dans la nuit, rapportée aux plages usuellement citées chez l'adulte. WHOOP affiche des heures ; c'est la proportion qui se compare, une nuit courte réduisant mécaniquement les heures de chaque stade.
+- La moyenne porte sur les parts de chaque nuit et non sur la part du total, pour qu'une nuit très longue ne pèse pas davantage qu'une nuit courte.
+- Les plages sont présentées comme des repères de population, jamais comme des objectifs personnels.
+
+Tests : 368 passés, 4 échecs préexistants inchangés. Les seuils de la veille physiologique sont validés par simulation, la robustesse de la dispersion par comparaison directe à l'écart-type, et la moyenne des parts de sommeil par un cas où les deux méthodes divergent.
+
+
 ## 2026-09-12 — Révision de la logique des calculs
 
 Audit de l'onglet WHOOP sur sept angles (calculs, statistiques, normalisation, UI, dates, robustesse, constats). Les défauts ci-dessous ont été reproduits avant correction.
