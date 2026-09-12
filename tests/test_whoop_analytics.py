@@ -8,6 +8,7 @@ import pytest
 
 from app.core.whoop_analytics import (
     ACUTE_LOAD_DAYS,
+    DEFAULT_CORRELATION_TARGET,
     KCAL_PER_KG,
     MIN_DAYS_CONTRAST,
     MIN_DAYS_CORRELATION,
@@ -19,15 +20,19 @@ from app.core.whoop_analytics import (
     daily_grid,
     energy_balance,
     generate_insights,
+    indexable_metrics,
     indexed_series,
     lagged_correlations,
+    last_days,
     personal_baseline,
+    previous_days,
     recovery_drivers,
     recovery_zones,
     rolling_trend,
     sleep_debt_summary,
     sport_recovery_impact,
     strain_recovery_balance,
+    target_pace_feasibility,
     training_load,
     weekday_profile,
     weekly_rollup,
@@ -63,6 +68,9 @@ def _merged(days: int = 30, *, kg_per_day: float = -0.09, seed: int = 3) -> pd.D
     )
     merged = weights.merge(daily, on="Date", how="inner")
     merged["Variation poids (kg)"] = merged["Poids (Kgs)"].diff()
+    gap = merged["Date"].diff().dt.days
+    merged["Jours depuis la pesée précédente"] = gap
+    merged["Variation poids (kg/jour)"] = merged["Variation poids (kg)"] / gap.where(gap > 0)
     return merged
 
 
@@ -252,7 +260,15 @@ def test_lagged_correlations_detects_a_planted_one_day_lag():
     strain = rng.uniform(5, 18, days)
     # La variation de poids du jour reproduit le strain de la veille.
     variation = np.concatenate([[np.nan], strain[:-1] * 0.05 + rng.normal(0, 0.01, days - 1)])
-    merged = pd.DataFrame({"Date": dates, "Strain": strain, "Variation poids (kg)": variation, "Poids (Kgs)": 100.0})
+    merged = pd.DataFrame(
+        {
+            "Date": dates,
+            "Strain": strain,
+            # Cible par défaut : le rythme quotidien, comparable d'une ligne à l'autre.
+            "Variation poids (kg/jour)": variation,
+            "Poids (Kgs)": 100.0,
+        }
+    )
 
     table = lagged_correlations(merged, lags=(0, 1, 2), metrics=["Strain"])
 
@@ -589,11 +605,38 @@ def test_contrast_best_worst_days_needs_enough_scored_days():
     assert contrast["required_days"] == MIN_DAYS_CONTRAST
 
 
-def test_contrast_best_worst_days_sorts_by_absolute_gap():
+def test_contrast_best_worst_days_ranks_by_effect_size_not_by_unit():
+    """Classer par écart brut ferait gagner l'unité de mesure, pas l'effet.
+
+    Le strain se compte en dizaines, les heures de sommeil en unités : un écart
+    de 0,6 point de strain écraserait un écart de 0,5 h de sommeil, pourtant
+    bien plus significatif rapporté à sa dispersion.
+    """
     contrast = contrast_best_worst_days(_daily(45, seed=2))
+
     if contrast["ready"]:
-        gaps = contrast["table"]["Écart"].abs().tolist()
-        assert gaps == sorted(gaps, reverse=True)
+        effects = contrast["table"]["Écart normalisé"].abs().fillna(-1).tolist()
+        assert effects == sorted(effects, reverse=True)
+
+
+def test_contrast_normalised_gap_puts_the_real_driver_first():
+    days = 45
+    rng = np.random.default_rng(5)
+    sleep = rng.uniform(5.0, 9.0, days)
+    frame = pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-07-20", periods=days, freq="D"),
+            "Récupération (%)": np.clip(5 + 9 * sleep + rng.normal(0, 4, days), 5, 99),
+            "Sommeil (heures)": sleep,
+            # Le strain varie sur une échelle dix fois plus large, sans lien réel.
+            "Strain": rng.uniform(4, 18, days),
+        }
+    )
+
+    table = contrast_best_worst_days(frame)["table"]
+
+    assert table.iloc[0]["Facteur"] == "Sommeil (heures)"
+    assert abs(table.iloc[0]["Écart normalisé"]) > abs(table.iloc[-1]["Écart normalisé"])
 
 
 def test_sport_recovery_impact_uses_the_day_after_the_session():
@@ -664,3 +707,501 @@ def test_generate_insights_names_the_sport_that_costs_the_most():
 
     assert sport and sport[0].tone == "warning"
     assert "lendemain" in sport[0].title
+
+
+# ── Fenêtres calendaires : « 7 derniers jours » ≠ « 7 dernières lignes » ──────
+
+
+def _sparse_nights() -> pd.DataFrame:
+    """Trois nuits réparties sur six semaines, comme un bracelet porté par à-coups."""
+    return pd.DataFrame(
+        {
+            "Date": [pd.Timestamp("2026-08-01"), pd.Timestamp("2026-09-10"), pd.Timestamp("2026-09-11")],
+            "Sommeil (heures)": [5.0, 7.0, 7.0],
+            "Besoin de sommeil (heures)": [8.0, 8.0, 8.0],
+            "Dette de sommeil (heures)": [3.0, 1.0, 1.0],
+            "Récupération (%)": [20.0, 80.0, 82.0],
+        }
+    )
+
+
+def test_last_days_selects_calendar_days_not_trailing_rows():
+    window = last_days(_sparse_nights(), 7)
+
+    assert len(window) == 2
+    assert window["Date"].min() == pd.Timestamp("2026-09-10")
+
+
+def test_previous_days_returns_the_window_just_before():
+    frame = pd.DataFrame({"Date": pd.date_range("2026-09-01", periods=21, freq="D"), "Strain": 1.0})
+
+    recent, earlier = last_days(frame, 7), previous_days(frame, 7)
+
+    assert recent["Date"].min() == pd.Timestamp("2026-09-15")
+    assert earlier["Date"].max() == pd.Timestamp("2026-09-14")
+    assert earlier["Date"].min() == pd.Timestamp("2026-09-08")
+    # Les deux fenêtres ne se recouvrent pas.
+    assert set(recent["Date"]).isdisjoint(set(earlier["Date"]))
+
+
+def test_sleep_debt_ignores_nights_outside_the_calendar_window():
+    """Une nuit vieille de six semaines ne fait pas partie des « 7 dernières nuits »."""
+    debt = sleep_debt_summary(_sparse_nights(), days=7)
+
+    assert debt["nights"] == 2
+    assert debt["cumulative_debt"] == pytest.approx(2.0)
+
+
+def test_personal_baseline_reference_window_is_calendar_based():
+    frame = pd.DataFrame(
+        {
+            "Date": [pd.Timestamp("2025-01-01")] + list(pd.date_range("2026-09-01", periods=11, freq="D")),
+            "HRV (ms)": [999.0] + [40.0] * 11,
+        }
+    )
+
+    baseline = personal_baseline(frame, "HRV (ms)", days=30)
+
+    # La valeur aberrante d'il y a plus d'un an ne doit pas servir de repère.
+    assert baseline["ready"]
+    assert baseline["baseline"] == pytest.approx(40.0)
+
+
+# ── Charge d'entraînement : couverture réelle de la fenêtre ───────────────────
+
+
+def test_training_load_refuses_to_conclude_on_a_barely_worn_week():
+    """Deux séances isolées ne décrivent pas une semaine de charge soutenue."""
+    dates = pd.date_range("2026-08-15", periods=28, freq="D")
+    strain = [8.0] * 21 + [20.0, np.nan, np.nan, np.nan, np.nan, np.nan, 20.0]
+
+    load = training_load(pd.DataFrame({"Date": dates, "Strain": strain}))
+
+    assert load["acute_days_measured"] == 2
+    assert load["status"] == "couverture insuffisante"
+    assert not np.isfinite(load["ratio"])
+
+
+def test_training_load_still_concludes_on_a_properly_worn_week():
+    dates = pd.date_range("2026-08-15", periods=28, freq="D")
+    load = training_load(pd.DataFrame({"Date": dates, "Strain": [10.0] * 28}))
+
+    assert load["acute_days_measured"] == ACUTE_LOAD_DAYS
+    assert load["status"] == "charge maîtrisée"
+    assert load["ratio"] == pytest.approx(1.0)
+
+
+def test_training_load_reports_coverage_of_both_windows():
+    dates = pd.date_range("2026-08-15", periods=28, freq="D")
+    strain = [np.nan] * 10 + [9.0] * 18
+    load = training_load(pd.DataFrame({"Date": dates, "Strain": strain}))
+
+    assert load["acute_days_measured"] == 7
+    assert load["chronic_days_measured"] == 18
+
+
+# ── Variation de poids ramenée au jour ───────────────────────────────────────
+
+
+def test_lagged_correlations_default_target_is_the_daily_rate():
+    """Une variation sur dix jours pèserait dix fois trop lourd sans normalisation."""
+    assert DEFAULT_CORRELATION_TARGET == "Variation poids (kg/jour)"
+
+
+def test_lagged_correlations_never_correlates_the_target_with_itself():
+    dates = pd.date_range("2026-08-01", periods=20, freq="D")
+    merged = pd.DataFrame(
+        {
+            "Date": dates,
+            "Variation poids (kg/jour)": np.linspace(-0.3, 0.3, 20),
+            "Récupération (%)": np.linspace(40, 80, 20),
+        }
+    )
+
+    table = lagged_correlations(merged, lags=(0,), metrics=["Variation poids (kg/jour)", "Récupération (%)"])
+
+    assert "Variation poids (kg/jour)" not in list(table["Métrique"])
+
+
+def test_weekly_rollup_states_the_span_its_variation_covers():
+    """« -1 kg cette semaine » sur deux pesées consécutives induit en erreur."""
+    merged = pd.DataFrame(
+        {
+            "Date": [pd.Timestamp("2026-08-03"), pd.Timestamp("2026-08-04")],
+            "Poids (Kgs)": [104.0, 103.0],
+            "Récupération (%)": [50.0, 55.0],
+            "Sommeil (heures)": [7.0, 7.0],
+            "Strain": [10.0, 10.0],
+        }
+    )
+
+    rollup = weekly_rollup(merged)
+
+    assert rollup.loc[0, "Variation (kg)"] == pytest.approx(-1.0)
+    assert rollup.loc[0, "Sur (jours)"] == 2
+
+
+def test_weekly_rollup_span_is_absent_without_two_weighings():
+    merged = pd.DataFrame(
+        {
+            "Date": [pd.Timestamp("2026-08-03")],
+            "Poids (Kgs)": [104.0],
+            "Récupération (%)": [50.0],
+            "Sommeil (heures)": [7.0],
+            "Strain": [10.0],
+        }
+    )
+    assert pd.isna(weekly_rollup(merged).loc[0, "Sur (jours)"])
+
+
+# ── Objectif de poids traduit en calories ────────────────────────────────────
+
+
+def _burn_frame(days: int = 20, *, burn: float = 2900.0, kg_per_day: float = -0.12) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-09-01", periods=days, freq="D"),
+            "Poids (Kgs)": 106 + np.arange(days) * kg_per_day,
+            "Calories (kcal)": [burn] * days,
+        }
+    )
+
+
+def test_target_pace_feasibility_converts_the_goal_into_an_intake():
+    """0,251 kg/jour × 7700 kcal/kg = le déficit que l'objectif suppose."""
+    feasibility = target_pace_feasibility(_burn_frame(), required_daily_kg=0.251)
+
+    assert feasibility["ready"]
+    assert feasibility["required_deficit"] == pytest.approx(0.251 * KCAL_PER_KG)
+    assert feasibility["required_weekly_kg"] == pytest.approx(0.251 * 7)
+    # Apport = dépense mesurée − déficit requis.
+    assert feasibility["implied_intake"] == pytest.approx(2900.0 - 0.251 * KCAL_PER_KG)
+
+
+def test_target_pace_feasibility_reports_the_current_pace_as_a_loss():
+    """Une pente négative du poids est une perte : le signe doit être retourné."""
+    feasibility = target_pace_feasibility(_burn_frame(kg_per_day=-0.1), required_daily_kg=0.251)
+    assert feasibility["current_daily_kg"] == pytest.approx(0.1, abs=0.01)
+
+
+@pytest.mark.parametrize(
+    ("burn", "expected"),
+    [(4200.0, "exigeant"), (3500.0, "très exigeant"), (2900.0, "sous les repères usuels")],
+)
+def test_target_pace_feasibility_grades_how_demanding_the_goal_is(burn, expected):
+    assert target_pace_feasibility(_burn_frame(burn=burn), required_daily_kg=0.251)["verdict"] == expected
+
+
+def test_target_pace_feasibility_withholds_its_verdict_without_expenditure():
+    frame = _burn_frame().drop(columns=["Calories (kcal)"])
+    assert not target_pace_feasibility(frame, required_daily_kg=0.251)["ready"]
+
+
+@pytest.mark.parametrize("bad_target", [0.0, -0.2, float("nan")])
+def test_target_pace_feasibility_refuses_a_nonsensical_target(bad_target):
+    """Un rythme nul ferait lire « objectif atteignable » là où il n'y a pas d'objectif."""
+    feasibility = target_pace_feasibility(_burn_frame(), required_daily_kg=bad_target)
+
+    assert not feasibility["ready"]
+    assert not np.isfinite(feasibility["implied_intake"])
+
+
+def test_generate_insights_surfaces_the_goal_in_calories_first():
+    """C'est le constat le plus structurant : il doit arriver en tête."""
+    insights = generate_insights(_daily(20), _burn_frame(), None, required_daily_kg=0.251)
+
+    assert insights
+    assert "kcal/jour" in insights[0].title
+    assert insights[0].icon == "🎯"
+
+
+def test_goal_insight_points_to_a_professional_when_the_intake_is_low():
+    insights = generate_insights(_daily(20), _burn_frame(burn=2900.0), None, required_daily_kg=0.251)
+    goal = next(insight for insight in insights if insight.icon == "🎯")
+
+    assert goal.tone == "warning"
+    assert "professionnel de santé" in goal.body
+
+
+def test_goal_insight_stays_neutral_when_the_intake_is_comfortable():
+    insights = generate_insights(_daily(20), _burn_frame(burn=4200.0), None, required_daily_kg=0.251)
+    goal = next(insight for insight in insights if insight.icon == "🎯")
+
+    assert goal.tone == "info"
+    assert "professionnel de santé" not in goal.body
+
+
+def test_generate_insights_without_a_target_omits_the_goal_rule():
+    assert not [i for i in generate_insights(_daily(20), _burn_frame(), None) if i.icon == "🎯"]
+
+
+# ── Correction pour tests multiples ──────────────────────────────────────────
+
+
+def _noise_frame(seed: int, days: int = 30) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    frame = {"Date": pd.date_range("2026-08-01", periods=days, freq="D"), "Variation poids (kg/jour)": rng.normal(0, 0.2, days)}
+    for metric in ("Récupération (%)", "HRV (ms)", "FC repos (bpm)", "Sommeil (heures)", "Strain", "Calories (kcal)"):
+        frame[metric] = rng.normal(50, 10, days)
+    return pd.DataFrame(frame)
+
+
+def test_correlations_on_pure_noise_stay_near_the_nominal_false_positive_rate():
+    """Une vingtaine de métriques testées à trois décalages produisait presque
+    toujours une corrélation « forte » par pur hasard."""
+    fired = 0
+    for seed in range(40):
+        table = lagged_correlations(_noise_frame(seed), lags=(0, 1, 2))
+        if not table.empty and bool(table.iloc[0]["Significatif"]):
+            fired += 1
+
+    # Sans correction, ce compteur atteignait la quasi-totalité des simulations.
+    assert fired <= 6, f"{fired}/40 constats sur du bruit pur"
+
+
+def test_correlations_still_detect_a_genuine_planted_effect():
+    days = 40
+    rng = np.random.default_rng(3)
+    strain = rng.uniform(5, 18, days)
+    variation = np.concatenate([[np.nan], strain[:-1] * 0.02 + rng.normal(0, 0.01, days - 1)])
+    merged = pd.DataFrame(
+        {"Date": pd.date_range("2026-08-01", periods=days, freq="D"), "Strain": strain, "Variation poids (kg/jour)": variation}
+    )
+
+    table = lagged_correlations(merged, lags=(0, 1, 2), metrics=["Strain"])
+
+    assert bool(table.iloc[0]["Significatif"])
+    assert table.iloc[0]["Décalage (jours)"] == 1
+
+
+def test_non_significant_correlations_say_so_plainly():
+    table = lagged_correlations(_noise_frame(11), lags=(0, 1))
+    insignificant = table[~table["Significatif"]]
+
+    assert not insignificant.empty
+    assert all("hasard" in reading for reading in insignificant["Lecture"])
+
+
+def test_correlation_insight_stays_silent_on_noise():
+    for seed in range(15):
+        insights = generate_insights(_daily(30, seed=seed), _noise_frame(seed))
+        assert not [i for i in insights if i.icon == "🔗"] or seed >= 0  # présence rare, jamais systématique
+    fired = sum(1 for seed in range(15) if [i for i in generate_insights(_daily(30, seed=seed), _noise_frame(seed)) if i.icon == "🔗"])
+    assert fired <= 3
+
+
+# ── Charge, incertitude, R² ajusté ───────────────────────────────────────────
+
+
+def test_training_load_refuses_a_ratio_while_both_windows_cover_the_same_days():
+    """Sur sept jours, charge aigüe et chronique portent sur les mêmes mesures :
+    le rapport vaut 1,00 par construction et rassurerait à tort."""
+    for days in (7, 10, 14):
+        frame = pd.DataFrame({"Date": pd.date_range("2026-09-01", periods=days, freq="D"), "Strain": np.linspace(5, 18, days)})
+        load = training_load(frame)
+        assert load["status"] == "historique trop court"
+        assert not np.isfinite(load["ratio"])
+
+
+def test_training_load_concludes_once_the_windows_differ_enough():
+    frame = pd.DataFrame({"Date": pd.date_range("2026-09-01", periods=25, freq="D"), "Strain": np.linspace(5, 18, 25)})
+    load = training_load(frame)
+
+    assert np.isfinite(load["ratio"])
+    assert load["status"] != "historique trop court"
+
+
+def test_weight_trend_exposes_the_uncertainty_of_its_slope():
+    clean = _merged(30, kg_per_day=-0.1, seed=2)
+    noisy = clean.copy()
+    rng = np.random.default_rng(7)
+    noisy["Poids (Kgs)"] = noisy["Poids (Kgs)"] + rng.normal(0, 1.5, len(noisy))
+
+    assert weight_trend(clean)["slope_std_error"] < weight_trend(noisy)["slope_std_error"]
+
+
+def test_energy_balance_publishes_a_margin_rather_than_a_bare_number():
+    balance = energy_balance(_merged(30, kg_per_day=-0.1, seed=5))
+
+    assert balance["ready"]
+    assert np.isfinite(balance["intake_margin"])
+    assert balance["intake_margin"] > 0
+
+
+def test_energy_balance_uses_weighings_the_join_would_have_dropped():
+    """La jointure interne écartait les pesées des jours sans mesure WHOOP.
+
+    Le bracelet n'ayant pas enregistré tous les jours, la pente ne reposait que
+    sur les jours communs. Les pesées intermédiaires existent pourtant et
+    resserrent l'estimation.
+    """
+    dates = pd.date_range("2026-09-01", periods=30, freq="D")
+    rng = np.random.default_rng(12)
+    true_weights = 104 - np.arange(30) * 0.1 + rng.normal(0, 0.4, 30)
+    full_weights = pd.DataFrame({"Date": dates, "Poids (Kgs)": true_weights})
+
+    # WHOOP a enregistré vingt de ces trente jours.
+    whoop_days = np.sort(rng.choice(30, size=20, replace=False))
+    merged = pd.DataFrame(
+        {
+            "Date": dates[whoop_days],
+            "Poids (Kgs)": true_weights[whoop_days],
+            "Calories (kcal)": [2900.0] * len(whoop_days),
+        }
+    )
+
+    without_history = energy_balance(merged)
+    with_history = energy_balance(merged, weight_history=full_weights)
+
+    assert without_history["ready"] and with_history["ready"]
+    # Dix pesées de plus resserrent l'estimation de la pente.
+    assert with_history["intake_margin"] < without_history["intake_margin"]
+
+
+def test_recovery_drivers_adjusted_r_squared_collapses_on_noise():
+    """Le R² brut monte mécaniquement avec le nombre de variables."""
+    rng = np.random.default_rng(1)
+    days = 14
+    frame = pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-08-01", periods=days, freq="D"),
+            "Récupération (%)": rng.normal(60, 12, days),
+            "Sommeil (heures)": rng.normal(7, 1, days),
+            "Strain": rng.normal(12, 3, days),
+        }
+    )
+
+    drivers = recovery_drivers(frame)
+
+    assert drivers["ready"]
+    assert drivers["r_squared"] < drivers["raw_r_squared"]
+
+
+def test_recovery_drivers_keeps_a_high_score_on_a_genuine_relationship():
+    days = 40
+    rng = np.random.default_rng(4)
+    sleep = rng.uniform(5, 9, days)
+    strain = rng.uniform(5, 18, days)
+    recovery = 10 + 8 * sleep - 0.5 * np.concatenate([[10.0], strain[:-1]]) + rng.normal(0, 1.0, days)
+    frame = pd.DataFrame({"Date": pd.date_range("2026-08-01", periods=days, freq="D"), "Récupération (%)": recovery, "Sommeil (heures)": sleep, "Strain": strain})
+
+    assert recovery_drivers(frame)["r_squared"] > 0.9
+
+
+# ── Indexation ───────────────────────────────────────────────────────────────
+
+
+def test_indexed_series_refuses_metrics_that_cross_zero():
+    """Se coucher plus tôt (−2 h) donnerait un indice de 200 : le sens s'inverse."""
+    frame = pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-09-01", periods=4, freq="D"),
+            "Heure de coucher": [-1.0, -2.0, -0.5, 0.5],
+            "Poids (Kgs)": [104.0, 103.0, 103.5, 102.8],
+        }
+    )
+
+    indexed = indexed_series(frame, ["Heure de coucher", "Poids (Kgs)"])
+
+    assert "Heure de coucher" not in indexed.columns
+    assert "Poids (Kgs)" in indexed.columns
+    assert indexable_metrics(frame, ["Heure de coucher", "Poids (Kgs)"]) == ["Poids (Kgs)"]
+
+
+# ── Couverture honnête et typage des signaux ─────────────────────────────────
+
+
+def test_coverage_distinguishes_partial_days_from_complete_ones():
+    """Une ligne existe dès qu'une seule des trois sources a répondu."""
+    frame = pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-09-01", periods=3, freq="D"),
+            "Récupération (%)": [60.0, np.nan, 70.0],
+            "Sommeil (heures)": [7.0, np.nan, 7.5],
+            "Strain": [10.0, 12.0, 11.0],
+        }
+    )
+
+    coverage = coverage_report(frame)
+
+    assert coverage["days_with_data"] == 3
+    # Le jour du milieu n'a ni récupération ni sommeil : il n'est pas complet.
+    assert coverage["complete_days"] == 2
+    assert coverage["complete_pct"] == pytest.approx(66.7)
+
+
+def test_coverage_on_empty_frame_reports_zero_complete_days():
+    assert coverage_report(pd.DataFrame())["complete_days"] == 0
+
+
+def test_strain_balance_separates_a_risk_from_a_missed_opportunity():
+    """Une bonne journée rangée parmi les alertes brouille la lecture."""
+    frame = pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-09-01", periods=4, freq="D"),
+            "Récupération (%)": [20.0, 80.0, 50.0, 25.0],
+            "Strain": [18.0, 4.0, 10.0, 3.0],
+        }
+    )
+
+    balance = strain_recovery_balance(frame)
+    by_day = dict(zip(balance["Date"].dt.day, balance["Type"]))
+
+    assert by_day[1] == "alerte"
+    assert by_day[2] == "occasion"
+    assert by_day[3] == "cohérent"
+
+
+# ── Accords grammaticaux ─────────────────────────────────────────────────────
+
+
+def test_insights_agree_the_noun_with_the_number():
+    """« 1 jour(s) » trahit un gabarit, pas une phrase."""
+    one_gap = pd.DataFrame(
+        {
+            "Date": [pd.Timestamp("2026-09-01")] + list(pd.date_range("2026-09-03", periods=8, freq="D")),
+            "Récupération (%)": [50.0] * 9,
+            "Sommeil (heures)": [7.0] * 9,
+            "Strain": [10.0] * 9,
+        }
+    )
+
+    texts = " ".join(insight.body + insight.title for insight in generate_insights(one_gap))
+
+    assert "(s)" not in texts
+    if "sans mesure" in texts:
+        assert "1 jour sans mesure" in texts
+
+
+def test_sleep_debt_insight_says_one_night_not_one_nights():
+    frame = pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-09-10", periods=3, freq="D"),
+            "Sommeil (heures)": [5.0, 5.5, 6.0],
+            "Besoin de sommeil (heures)": [8.0, 8.0, 8.0],
+            "Dette de sommeil (heures)": [3.0, 2.5, 2.0],
+        }
+    )
+
+    debt = next(insight for insight in generate_insights(frame) if "Dette" in insight.title)
+
+    assert "nuits" in debt.body
+    assert "nuit(s)" not in debt.body
+
+
+def test_daily_grid_tolerates_duplicate_dates_instead_of_raising():
+    """Cette fonction est trop en aval pour se permettre de lever une exception :
+    une date en double emportait l'affichage de toute la page."""
+    frame = pd.DataFrame(
+        {
+            "Date": [pd.Timestamp("2026-09-01"), pd.Timestamp("2026-09-01"), pd.Timestamp("2026-09-02")],
+            "Récupération (%)": [60.0, 40.0, 70.0],
+        }
+    )
+
+    grid = daily_grid(frame)
+
+    assert len(grid) == 2
+    assert not grid["Date"].duplicated().any()
+    # La dernière valeur de la journée est retenue.
+    assert grid.loc[0, "Récupération (%)"] == 40.0

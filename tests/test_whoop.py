@@ -492,3 +492,89 @@ def test_empty_workout_frame_types_its_datetime_columns():
     assert frame.empty
     assert str(frame["Date"].dtype).startswith("datetime64")
     assert str(frame["Début"].dtype).startswith("datetime64")
+
+
+def _scored_recovery(created_at: str, score: float = 60.0, *, cycle_id: int = 1, state: str = "SCORED") -> dict:
+    return {
+        "cycle_id": cycle_id,
+        "sleep_id": "11111111-1111-1111-1111-111111111111",
+        "user_id": 7,
+        "created_at": created_at,
+        "updated_at": created_at,
+        "score_state": state,
+        "score": {
+            "user_calibrating": False,
+            "recovery_score": score,
+            "resting_heart_rate": 54.0,
+            "hrv_rmssd_milli": 45.0,
+            "spo2_percentage": 96.0,
+            "skin_temp_celsius": 33.0,
+        },
+    }
+
+
+def test_two_recoveries_on_one_day_collapse_to_a_single_row():
+    """Des dates dupliquées rendaient la trame non réindexable et faisaient
+    remonter une ValueError jusqu'à l'affichage de la page entière."""
+    frame = recoveries_to_frame(
+        [_scored_recovery("2026-09-10T08:00:00.000Z", 60.0), _scored_recovery("2026-09-10T20:00:00.000Z", 40.0)]
+    )
+
+    assert len(frame) == 1
+    assert not frame["Date"].duplicated().any()
+    # La mesure la plus récente de la journée est conservée.
+    assert frame.loc[0, "Récupération (%)"] == 40.0
+
+
+def test_recovery_date_follows_the_users_timezone_when_known():
+    """Une récupération créée à 23h30 UTC appartient au lendemain en heure d'été européenne."""
+    utc_only = recoveries_to_frame([_scored_recovery("2026-09-10T23:30:00.000Z")])
+    localised = recoveries_to_frame([_scored_recovery("2026-09-10T23:30:00.000Z")], {1: "+02:00"})
+
+    assert utc_only.loc[0, "Date"] == pd.Timestamp("2026-09-10")
+    assert localised.loc[0, "Date"] == pd.Timestamp("2026-09-11")
+
+
+@pytest.mark.parametrize("state", ["PENDING_SCORE", "UNSCORABLE"])
+def test_unscored_records_are_discarded_instead_of_overwriting_a_real_one(state):
+    """Une ligne non notée déduplique et écrase la mesure valide du même jour."""
+    frame = recoveries_to_frame(
+        [_scored_recovery("2026-09-10T08:00:00.000Z", 62.0), _scored_recovery("2026-09-10T20:00:00.000Z", 0.0, state=state)]
+    )
+
+    assert len(frame) == 1
+    assert frame.loc[0, "Récupération (%)"] == 62.0
+
+
+def test_unscored_cycles_and_sleeps_are_discarded_too():
+    assert cycles_to_frame([{**_cycle_record("2026-09-10T04:00:00.000Z", 12.0), "score_state": "PENDING_SCORE"}]).empty
+    assert sleeps_to_frame([{**_sleep_record("2026-09-09T22:00:00.000Z", "2026-09-10T06:30:00.000Z"), "score_state": "UNSCORABLE"}]).empty
+
+
+def test_sleep_duration_excludes_time_without_sensor_data():
+    """Le temps où le capteur perd le signal n'est ni de l'éveil ni du sommeil."""
+    record = _sleep_record("2026-09-09T22:00:00.000Z", "2026-09-10T06:30:00.000Z")
+    record["score"]["stage_summary"]["total_no_data_time_milli"] = 3_600_000
+
+    frame = sleeps_to_frame([record])
+
+    # 8 h 30 au lit − 30 min d'éveil − 1 h sans données = 7 h.
+    assert frame.loc[0, "Sommeil (heures)"] == pytest.approx(7.0)
+
+
+def test_weight_variation_is_also_expressed_per_day():
+    """Trois kilos sur dix jours ne se comparent pas à deux cents grammes sur un jour."""
+    weights = pd.DataFrame(
+        {
+            "Date": [pd.Timestamp("2026-09-01"), pd.Timestamp("2026-09-11"), pd.Timestamp("2026-09-12")],
+            "Poids (Kgs)": [106.0, 103.0, 102.8],
+        }
+    )
+    daily = pd.DataFrame({"Date": pd.date_range("2026-09-01", periods=12, freq="D"), "Récupération (%)": 60.0})
+
+    merged = merge_with_weight(weights, daily)
+
+    assert merged.loc[1, "Variation poids (kg)"] == pytest.approx(-3.0)
+    assert merged.loc[1, "Jours depuis la pesée précédente"] == 10
+    assert merged.loc[1, "Variation poids (kg/jour)"] == pytest.approx(-0.3)
+    assert merged.loc[2, "Variation poids (kg/jour)"] == pytest.approx(-0.2)

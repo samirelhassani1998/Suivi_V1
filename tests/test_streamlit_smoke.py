@@ -663,3 +663,59 @@ def test_whoop_page_writes_dates_in_french():
     ]
     assert labels, "les axes temporels doivent porter des étiquettes explicites"
     assert all(month not in label for label in labels for month in ("Jan", "Feb", "Aug", "Sep", "Oct", "Dec"))
+
+
+def test_whoop_page_puts_the_weight_crossing_second_not_last():
+    """Le croisement poids × WHOOP est ce que l'app WHOOP ne sait pas faire."""
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at)
+    at.run(timeout=30)
+
+    assert not at.exception
+    labels = [tab.label for tab in at.tabs]
+    assert labels[:2] == ["Vue d'ensemble", "Poids × WHOOP"]
+
+
+def test_whoop_page_survives_two_recoveries_on_the_same_day():
+    """Des dates dupliquées faisaient remonter une ValueError jusqu'à la page."""
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at)
+    daily = at.session_state["whoop_daily"]
+    duplicated = pd.concat([daily, daily.tail(1)], ignore_index=True)
+    at.session_state["whoop_daily"] = duplicated
+    at.run(timeout=30)
+
+    assert not at.exception
+
+
+def test_whoop_page_reads_bedtimes_as_a_clock_never_as_signed_decimals():
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at)
+    at.run(timeout=30)
+
+    assert not at.exception
+    specs = [json.loads(chart.proto.spec) for chart in at.get("plotly_chart")]
+    bedtime_axes = [
+        spec["layout"]["yaxis"]["ticktext"]
+        for spec in specs
+        if spec.get("layout", {}).get("yaxis", {}).get("ticktext")
+        and any(trace.get("name") == "Heure de coucher" for trace in spec.get("data", []))
+    ]
+    assert bedtime_axes, "le graphique des couchers doit porter un axe en horloge"
+    assert all(":" in label for label in bedtime_axes[0])
+
+
+def test_whoop_page_hides_the_connection_plumbing_behind_the_data():
+    """Le bouton de déconnexion occupait le haut de page avant toute mesure."""
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at)
+    at.run(timeout=30)
+
+    assert not at.exception
+    # La déconnexion reste accessible, mais dans le panneau replié.
+    assert "Déconnecter WHOOP" in [button.label for button in at.button]
+    assert any("synchronisation" in str(exp.label).lower() for exp in at.get("expander"))

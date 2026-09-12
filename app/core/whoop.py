@@ -496,6 +496,22 @@ def _to_local_date(value: Any, offset: Any = None) -> pd.Timestamp:
     return pd.Timestamp(local).normalize()
 
 
+SCORED_STATE = "SCORED"
+
+
+def _is_scored(record: Mapping[str, Any]) -> bool:
+    """Un enregistrement non noté n'a pas de score exploitable.
+
+    WHOOP publie des cycles et des nuits en ``PENDING_SCORE`` ou ``UNSCORABLE``.
+    Les conserver revient à laisser une ligne vide écraser la mesure valide du
+    même jour lors de la déduplication.
+    """
+    state = record.get("score_state")
+    if state is None:
+        return isinstance(record.get("score"), Mapping)
+    return str(state) == SCORED_STATE
+
+
 def _score(record: Mapping[str, Any]) -> Mapping[str, Any]:
     score = record.get("score")
     return score if isinstance(score, Mapping) else {}
@@ -512,11 +528,25 @@ def _number(value: Any) -> float:
 RECOVERY_COLUMNS = ("Date", "Récupération (%)", "HRV (ms)", "FC repos (bpm)", "Température peau (°C)", "SpO2 (%)", "Calibration")
 
 
-def recoveries_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
+def recoveries_to_frame(
+    records: Iterable[Mapping[str, Any]],
+    timezone_offsets: Mapping[Any, str] | None = None,
+) -> pd.DataFrame:
+    """Normalise les récupérations en une ligne par jour.
+
+    ``timezone_offsets`` associe un identifiant de cycle à son décalage horaire :
+    l'enregistrement de récupération n'en porte pas, alors qu'une récupération
+    créée à 23h30 UTC appartient au lendemain pour un utilisateur en heure d'été
+    européenne. Sans cette table, la date reste celle d'UTC.
+    """
+    offsets = dict(timezone_offsets or {})
     rows = []
     for record in records or []:
+        if not _is_scored(record):
+            continue
         score = _score(record)
-        date = _to_local_date(record.get("created_at") or record.get("updated_at"))
+        offset = offsets.get(record.get("cycle_id"))
+        date = _to_local_date(record.get("created_at") or record.get("updated_at"), offset)
         if pd.isna(date):
             continue
         rows.append(
@@ -532,7 +562,11 @@ def recoveries_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
         )
     if not rows:
         return _empty_frame(RECOVERY_COLUMNS)
-    return pd.DataFrame(rows).sort_values("Date", kind="mergesort").reset_index(drop=True)[list(RECOVERY_COLUMNS)]
+    frame = pd.DataFrame(rows).sort_values("Date", kind="mergesort")
+    # Deux récupérations le même jour rendaient la trame non réindexable, ce qui
+    # faisait remonter une ValueError jusqu'à l'affichage de la page entière.
+    frame = frame.drop_duplicates(subset=["Date"], keep="last").reset_index(drop=True)
+    return frame[list(RECOVERY_COLUMNS)]
 
 
 SLEEP_COLUMNS = (
@@ -589,6 +623,8 @@ def _decimal_hour(value: Any, offset: Any = None) -> float:
 def sleeps_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     rows = []
     for record in records or []:
+        if not _is_scored(record):
+            continue
         score = _score(record)
         stages = score.get("stage_summary") if isinstance(score.get("stage_summary"), Mapping) else {}
         # La nuit est rattachée au jour du réveil, cohérent avec la pesée du matin.
@@ -597,7 +633,11 @@ def sleeps_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
             continue
         in_bed = _number(stages.get("total_in_bed_time_milli"))
         awake = _number(stages.get("total_awake_time_milli"))
-        asleep = in_bed - awake if np.isfinite(in_bed) and np.isfinite(awake) else float("nan")
+        # Le capteur perd parfois le signal : ce temps n'est ni de l'éveil ni du
+        # sommeil, et le compter comme dormi surestime la nuit.
+        no_data = _number(stages.get("total_no_data_time_milli"))
+        no_data = no_data if np.isfinite(no_data) else 0.0
+        asleep = in_bed - awake - no_data if np.isfinite(in_bed) and np.isfinite(awake) else float("nan")
         asleep_hours = asleep * MILLI_TO_HOURS if np.isfinite(asleep) else float("nan")
         needed_milli = _total_sleep_need_milli(score)
         needed_hours = needed_milli * MILLI_TO_HOURS if np.isfinite(needed_milli) else float("nan")
@@ -637,6 +677,8 @@ CYCLE_COLUMNS = ("Date", "Strain", "Calories (kcal)", "FC moyenne (bpm)", "FC ma
 def cycles_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     rows = []
     for record in records or []:
+        if not _is_scored(record):
+            continue
         score = _score(record)
         date = _to_local_date(record.get("start"), record.get("timezone_offset"))
         if pd.isna(date):
@@ -664,6 +706,8 @@ WORKOUT_COLUMNS = ("Date", "Début", "Sport", "Durée (min)", "Strain séance", 
 def workouts_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     rows = []
     for record in records or []:
+        if not _is_scored(record):
+            continue
         score = _score(record)
         date = _to_local_date(record.get("start"), record.get("timezone_offset"))
         if pd.isna(date):
@@ -732,8 +776,20 @@ def available_metrics(frame: pd.DataFrame) -> list[str]:
 
 
 def merge_with_weight(weight_df: pd.DataFrame, whoop_daily: pd.DataFrame) -> pd.DataFrame:
-    """Associe le poids quotidien aux métriques WHOOP du même jour."""
-    columns = ["Date", "Poids (Kgs)", "Variation poids (kg)"] + list(WHOOP_DAILY_METRICS)
+    """Associe le poids quotidien aux métriques WHOOP du même jour.
+
+    La variation brute entre deux pesées n'est pas comparable d'une ligne à
+    l'autre : dix jours d'écart produisent mécaniquement un chiffre plus grand
+    qu'un jour d'écart. La variation quotidienne, elle, se compare — c'est donc
+    elle que les corrélations utilisent.
+    """
+    columns = [
+        "Date",
+        "Poids (Kgs)",
+        "Variation poids (kg)",
+        "Jours depuis la pesée précédente",
+        "Variation poids (kg/jour)",
+    ] + list(WHOOP_DAILY_METRICS)
     if weight_df is None or weight_df.empty or whoop_daily is None or whoop_daily.empty:
         return _empty_frame(columns)
 
@@ -744,6 +800,9 @@ def merge_with_weight(weight_df: pd.DataFrame, whoop_daily: pd.DataFrame) -> pd.
         return _empty_frame(columns)
     weights = weights.groupby("Date", as_index=False)["Poids (Kgs)"].mean().sort_values("Date", kind="mergesort")
     weights["Variation poids (kg)"] = weights["Poids (Kgs)"].diff()
+    gap_days = weights["Date"].diff().dt.days
+    weights["Jours depuis la pesée précédente"] = gap_days
+    weights["Variation poids (kg/jour)"] = weights["Variation poids (kg)"] / gap_days.where(gap_days > 0)
 
     whoop = whoop_daily.copy(deep=True)
     whoop["Date"] = pd.to_datetime(whoop["Date"], errors="coerce").dt.normalize()
@@ -766,8 +825,14 @@ def summarise_daily(frame: pd.DataFrame, days: int = 7) -> dict[str, dict[str, f
         return summary
 
     window = max(1, int(days))
-    recent = data.tail(window)
-    previous = data.iloc[max(0, len(data) - 2 * window) : max(0, len(data) - window)]
+    # Fenêtres calendaires : « les 7 derniers jours » doit désigner sept jours,
+    # pas les sept dernières lignes, qui peuvent s'étaler sur des semaines.
+    reference = data["Date"].max()
+    recent_start = reference - pd.Timedelta(days=window - 1)
+    previous_end = recent_start - pd.Timedelta(days=1)
+    previous_start = previous_end - pd.Timedelta(days=window - 1)
+    recent = data[data["Date"] >= recent_start]
+    previous = data[(data["Date"] >= previous_start) & (data["Date"] <= previous_end)]
     for metric in available_metrics(data):
         current_mean = float(recent[metric].mean()) if recent[metric].notna().any() else float("nan")
         previous_mean = float(previous[metric].mean()) if not previous.empty and previous[metric].notna().any() else float("nan")
