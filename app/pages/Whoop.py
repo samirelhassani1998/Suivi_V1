@@ -26,12 +26,15 @@ from app.core.whoop_analytics import (
     MIN_DAYS_BASELINE,
     MIN_DAYS_CORRELATION,
     MIN_DAYS_TRAINING_LOAD,
+    MIN_NIGHTS_VITALS,
     MIN_SESSIONS_PER_SPORT,
     Insight,
     analysis_availability,
     calendar_matrix,
     contrast_best_worst_days,
     coverage_report,
+    daily_log,
+    daily_log_table,
     daily_grid,
     energy_balance,
     generate_insights,
@@ -39,9 +42,11 @@ from app.core.whoop_analytics import (
     indexed_series,
     lagged_correlations,
     personal_baseline,
+    physiological_watch,
     recovery_drivers,
     recovery_zones,
     rolling_trend,
+    sleep_architecture,
     sleep_debt_summary,
     sport_recovery_impact,
     target_pace_feasibility,
@@ -95,7 +100,7 @@ from app.core.whoop import (
     workouts_to_frame,
     build_authorization_url,
 )
-from app.ui.components import empty_state, insight_card, kpi_card, page_hero, section_header
+from app.ui.components import day_card, empty_state, insight_card, kpi_card, page_hero, section_header
 
 METRIC_DECIMALS = {
     "Variation poids (kg)": 2,
@@ -604,6 +609,110 @@ def _headline_panel(daily: pd.DataFrame) -> None:
                     )
 
 
+def _day_entry_stats(entry) -> list[tuple[str, str, str]]:
+    """Mesures du jour, dans l'ordre où on les lit : état, sommeil, effort, poids."""
+    stats: list[tuple[str, str, str]] = []
+    if np.isfinite(entry.recovery):
+        stats.append(("récupération", format_fr_number(entry.recovery, decimals=0), "%"))
+    if np.isfinite(entry.sleep_hours):
+        stats.append(("sommeil", format_fr_number(entry.sleep_hours, decimals=1), "h"))
+    if np.isfinite(entry.sleep_debt) and entry.sleep_debt > 0.1:
+        stats.append(("dette", format_fr_number(entry.sleep_debt, decimals=1), "h"))
+    if np.isfinite(entry.bedtime):
+        stats.append(("coucher", format_clock_hour(entry.bedtime), ""))
+    if np.isfinite(entry.strain):
+        stats.append(("charge", format_fr_number(entry.strain, decimals=1), ""))
+    if np.isfinite(entry.hrv):
+        stats.append(("HRV", format_fr_number(entry.hrv, decimals=0), "ms"))
+    if np.isfinite(entry.resting_hr):
+        stats.append(("FC repos", format_fr_number(entry.resting_hr, decimals=0), "bpm"))
+    if np.isfinite(entry.weight):
+        change = (
+            f" ({format_fr_number(entry.weight_change, decimals=1, sign=True)})"
+            if np.isfinite(entry.weight_change)
+            else ""
+        )
+        stats.append(("poids", f"{format_fr_number(entry.weight, decimals=1)}{change}", "kg"))
+    return stats
+
+
+def _day_entry_sessions(entry) -> list[tuple[str, str, str]]:
+    """Séances du jour, situées par leur heure de début."""
+    rows = []
+    for session in entry.sessions:
+        when = (
+            pd.Timestamp(session.start).strftime("%H:%M")
+            if session.start is not None and pd.notna(session.start)
+            else "—"
+        )
+        details = []
+        if np.isfinite(session.duration_min):
+            details.append(format_duration_minutes(session.duration_min))
+        if np.isfinite(session.strain):
+            details.append(f"charge {format_fr_number(session.strain, decimals=1)}")
+        if np.isfinite(session.calories):
+            details.append(f"{format_fr_number(session.calories, decimals=0)} kcal")
+        if np.isfinite(session.max_hr):
+            details.append(f"FC max {format_fr_number(session.max_hr, decimals=0)}")
+        title = str(session.sport).replace("_", " ").capitalize()
+        rows.append((when, title, " · ".join(details)))
+    return rows
+
+
+def _day_by_day_tab(daily: pd.DataFrame, workouts: pd.DataFrame) -> None:
+    """Lecture chronologique : ce qui s'est passé chaque jour, du plus récent au plus ancien.
+
+    Les courbes disent comment les choses évoluent ; elles ne disent jamais ce
+    qui s'est passé mardi. Ce journal comble cet écart.
+    """
+    weights = get_filtered_or_working_data()
+    entries = daily_log(daily, workouts, weights)
+    if not entries:
+        empty_state("Aucune journée à afficher sur la période choisie.")
+        return
+
+    section_header(
+        "Journal",
+        f"{len(entries)} jour(s) sur la période, du plus récent au plus ancien. "
+        "La couleur du liseré reprend la zone de récupération WHOOP.",
+        "📔",
+    )
+
+    measured = [entry for entry in entries if entry.has_measurement]
+    show_gaps = st.toggle(
+        "Afficher aussi les jours sans aucune mesure",
+        value=False,
+        help=f"{len(entries) - len(measured)} jour(s) sans mesure sur la période.",
+    )
+    visible = entries if show_gaps else measured
+    if not visible:
+        empty_state("Aucune mesure sur la période choisie.")
+        return
+
+    for entry in visible:
+        stats = _day_entry_stats(entry)
+        day_card(
+            format_long_date(entry.date),
+            format_relative_day(entry.date),
+            entry.zone,
+            stats,
+            _day_entry_sessions(entry),
+            empty_message=None if stats else "Aucune mesure ce jour-là.",
+        )
+
+    _table_view(
+        daily_log_table(entries),
+        "Voir le journal sous forme de tableau",
+        {"Récupération (%)": 0, "Sommeil (heures)": 1, "Dette de sommeil (heures)": 1, "Strain": 1, "Poids (Kgs)": 1, "Séances": 0},
+    )
+    st.download_button(
+        "Exporter le journal (CSV)",
+        daily_log_table(entries).to_csv(index=False).encode("utf-8"),
+        file_name="whoop_journal.csv",
+        mime="text/csv",
+    )
+
+
 def _overview_tab(daily: pd.DataFrame, merged: pd.DataFrame, workouts: pd.DataFrame) -> None:
     _headline_panel(daily)
 
@@ -652,6 +761,76 @@ def _overview_tab(daily: pd.DataFrame, merged: pd.DataFrame, workouts: pd.DataFr
     )
 
 
+def _vitals_panel(daily: pd.DataFrame) -> None:
+    """Les cinq signes vitaux nocturnes, rapportés au repère personnel.
+
+    Les valeurs absolues de ces grandeurs varient trop d'une personne à l'autre
+    pour être interprétées seules : seul l'écart à sa propre habitude se lit.
+    """
+    watch = physiological_watch(daily)
+    section_header(
+        "Veille physiologique",
+        "Fréquence cardiaque de repos, variabilité, fréquence respiratoire, température cutanée et saturation, comparées à votre habitude.",
+        "🩺",
+    )
+    if not watch["ready"]:
+        st.info(
+            f"Comparaison disponible à partir de {MIN_NIGHTS_VITALS} nuits mesurées : un repère "
+            "construit sur moins que cela décrirait surtout la dernière nuit elle-même."
+        )
+        return
+
+    badge = {"aucun signal": "🟢", "un signal isolé": "🟡", "plusieurs signaux concordants": "🔴"}
+    cols = st.columns([1, 2])
+    with cols[0]:
+        kpi_card(
+            "Signaux inhabituels",
+            f"{badge.get(watch['level'], '⚪')} {watch['count']}",
+            help_text=f"Nuit du {format_long_date(watch['date'], with_weekday=False)}.",
+        )
+    with cols[1]:
+        if watch["count"] == 0:
+            insight_card(
+                "Aucun signe vital hors de votre habitude",
+                "Les cinq grandeurs mesurées cette nuit se situent dans votre plage usuelle.",
+                tone="success",
+                icon="🟢",
+            )
+        else:
+            names = ", ".join(
+                f"{item['Signe vital'].split(' (')[0].lower()} {item['Sens']}" for item in watch["flagged"]
+            )
+            several = watch["count"] > 1
+            insight_card(
+                f"{watch['count']} {'signes vitaux' if several else 'signe vital'} hors de votre habitude",
+                f"Cette nuit : {names}. "
+                + (
+                    "Plusieurs signes qui dévient ensemble méritent d'être signalés à un professionnel "
+                    "de santé s'ils persistent."
+                    if several
+                    else "Un signe isolé s'explique souvent par une soirée tardive, un repas copieux ou l'alcool."
+                ),
+                tone="warning" if several else "info",
+                icon="🩺",
+            )
+
+    st.dataframe(
+        _format_table(
+            watch["table"].drop(columns=["Inhabituel"]),
+            {"Dernière nuit": 1, "Repère habituel": 1, "Écart": 1},
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.caption(
+        "L'écart est exprimé en unités de dispersion robuste par rapport à la médiane de vos trente "
+        "derniers jours, et non à une norme de population. Un écart est signalé au-delà de 2,5 unités : "
+        "sur des séries sans anomalie, ce seuil se déclenche environ une nuit sur treize, contre une "
+        "sur cinq à 2,0. **Ces mesures ne constituent pas un diagnostic** : un bracelet ne remplace "
+        "pas un examen, et l'interprétation revient à un professionnel de santé."
+    )
+
+
 def _recovery_tab(daily: pd.DataFrame) -> None:
     zones = recovery_zones(daily)
     grid = daily_grid(daily)
@@ -684,6 +863,8 @@ def _recovery_tab(daily: pd.DataFrame) -> None:
         _render_chart(series_chart(grid, ["Température peau (°C)"], "Température cutanée", "°C"), "whoop-recovery-temp")
     with body_cols[1]:
         _render_chart(series_chart(grid, ["SpO2 (%)"], "Saturation en oxygène", "%"), "whoop-recovery-spo2")
+
+    _vitals_panel(daily)
 
     section_header("Écart à votre repère personnel", "Une valeur ne vaut que comparée à vos propres habitudes.", "🫀")
     baseline_cols = st.columns(2)
@@ -791,6 +972,30 @@ def _sleep_tab(daily: pd.DataFrame) -> None:
         st.caption("Métrique(s) masquée(s) car encore nulle(s) chez WHOOP : " + ", ".join(ignored) + ".")
 
     _render_chart(sleep_stages_chart(grid), "whoop-sleep-stages", fallback="Stades de sommeil indisponibles sur la période choisie.")
+
+    architecture = sleep_architecture(daily)
+    section_header(
+        "Architecture du sommeil",
+        "La part de chaque stade dans la nuit, et non ses heures : une nuit courte réduit mécaniquement les deux.",
+        "🌙",
+    )
+    if not architecture["ready"]:
+        st.info(
+            f"Comparaison disponible à partir de {architecture['required_nights']} nuits mesurées "
+            f"(actuellement {architecture['nights']})."
+        )
+    else:
+        st.dataframe(
+            _format_table(architecture["table"], {"Votre part (%)": 1}),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(
+            "Les plages indiquées sont des repères de population adulte couramment cités, pas des "
+            "objectifs personnels : une nuit hors plage n'a pas de signification isolée, et "
+            f"allonger la nuit — {format_fr_number(architecture['mean_sleep'], decimals=1)} h en "
+            "moyenne actuellement — augmente généralement les deux stades en valeur absolue."
+        )
 
     if "Heure de coucher" in daily.columns and daily["Heure de coucher"].notna().sum() >= 3:
         section_header("Régularité du coucher", "Heure d'endormissement sur une échelle continue autour de minuit.", "🕰️")
@@ -1143,16 +1348,18 @@ def main() -> None:
 
     merged = merge_with_weight(get_filtered_or_working_data(), daily)
 
-    tabs = st.tabs(["Vue d'ensemble", "Poids × WHOOP", "Récupération", "Sommeil", "Effort"])
+    tabs = st.tabs(["Vue d'ensemble", "Jour par jour", "Poids × WHOOP", "Récupération", "Sommeil", "Effort"])
     with tabs[0]:
         _overview_tab(daily, merged, workouts)
     with tabs[1]:
-        _weight_tab(daily, merged)
+        _day_by_day_tab(daily, workouts)
     with tabs[2]:
-        _recovery_tab(daily)
+        _weight_tab(daily, merged)
     with tabs[3]:
-        _sleep_tab(daily)
+        _recovery_tab(daily)
     with tabs[4]:
+        _sleep_tab(daily)
+    with tabs[5]:
         _effort_tab(daily, workouts)
 
 

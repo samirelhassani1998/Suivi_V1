@@ -12,7 +12,7 @@ Toutes les fonctions sont pures et refusent explicitement de conclure sur un
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -844,7 +844,11 @@ def _fr(value: float, decimals: int = 1, *, sign: bool = False) -> str:
 
 
 def _plural(count: Any, singular: str, plural: str | None = None) -> str:
-    """Accord du nom sur le nombre, plutôt qu'un « (s) » systématique."""
+    """Accord du nom sur le nombre, plutôt qu'un « (s) » systématique.
+
+    La forme plurielle doit être fournie pour tout nom qui ne prend pas un
+    simple « s » : « signe vital » devient « signes vitaux », pas « signe vitals ».
+    """
     try:
         numeric = int(count)
     except (TypeError, ValueError):
@@ -1157,12 +1161,14 @@ def generate_insights(
     """
     candidates = [
         _coverage_insight(daily),
+        _vitals_insight(daily),
         _target_pace_insight(merged, required_daily_kg),
         _energy_insight(merged),
         _training_load_insight(daily),
         _sleep_debt_insight(daily),
         _recovery_insight(daily),
         _drivers_insight(daily),
+        _architecture_insight(daily),
         _correlation_insight(merged),
         _contrast_insight(daily),
         _sport_insight(daily, workouts),
@@ -1171,6 +1177,10 @@ def generate_insights(
         _baseline_insight(daily, "FC repos (bpm)", "Fréquence au repos", lower_is_better=True),
     ]
     found = [insight for insight in candidates if insight is not None]
+    # La veille physiologique nomme déjà les signes vitaux qui dévient : les
+    # répéter en cartes séparées ferait dire trois fois la même chose.
+    if any(insight.icon == "🩺" for insight in found):
+        found = [insight for insight in found if insight.icon != "🫀"]
     found.sort(key=lambda insight: insight.priority, reverse=True)
     return found[: max(1, int(limit))]
 
@@ -1333,3 +1343,439 @@ def sport_recovery_impact(
     if not rows:
         return pd.DataFrame(columns=columns)
     return pd.DataFrame(rows).sort_values("Écart à votre moyenne").reset_index(drop=True)[columns]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Signes vitaux nocturnes
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Les cinq grandeurs que WHOOP mesure pendant le sommeil. Pour chacune, le sens
+# de l'écart qui mérite attention : une fréquence cardiaque de repos qui monte et
+# une variabilité qui descend sont les signatures classiques d'une charge mal
+# absorbée ou d'une infection qui débute.
+NOCTURNAL_VITALS: tuple[tuple[str, str, str], ...] = (
+    ("FC repos (bpm)", "haut", "élevée"),
+    ("HRV (ms)", "bas", "basse"),
+    ("Fréquence respiratoire (resp/min)", "haut", "élevée"),
+    ("Température peau (°C)", "haut", "élevée"),
+    ("SpO2 (%)", "bas", "basse"),
+)
+
+# Nuits minimales avant de parler d'écart : un repère construit sur moins que
+# cela décrirait surtout la dernière nuit elle-même.
+MIN_NIGHTS_VITALS = 10
+# Seuil d'écart, en unités d'écart robuste. Mesuré sur 200 séries de bruit :
+# à 2,0 un signal apparaît une nuit sur cinq sans rien à signaler, à 2,5 une
+# nuit sur treize, et deux signaux simultanés n'apparaissent jamais. Un
+# indicateur de santé qui crie au loup finit ignoré : c'est 2,5 qui est retenu.
+VITAL_DEVIATION_THRESHOLD = 2.5
+# Facteur ramenant l'écart absolu médian à une échelle comparable à un
+# écart-type sous une distribution normale.
+MAD_TO_SIGMA = 1.4826
+
+
+def _robust_scale(values: pd.Series) -> float:
+    """Dispersion résistante aux valeurs isolées.
+
+    Sur dix à trente nuits, une seule nuit aberrante gonfle l'écart-type et
+    masque ensuite tout écart réel. L'écart absolu médian ne bouge pas.
+    """
+    if len(values) < 3:
+        return float("nan")
+    median = float(values.median())
+    mad = float((values - median).abs().median())
+    return mad * MAD_TO_SIGMA if mad > 0 else float("nan")
+
+
+def vital_deviations(
+    frame: pd.DataFrame | None,
+    *,
+    days: int = BASELINE_DAYS,
+    min_nights: int = MIN_NIGHTS_VITALS,
+    threshold: float = VITAL_DEVIATION_THRESHOLD,
+) -> pd.DataFrame:
+    """Écart de la dernière nuit au repère personnel, signe vital par signe vital.
+
+    Les valeurs absolues de ces grandeurs varient énormément d'une personne à
+    l'autre : seule la comparaison à sa propre habitude est interprétable.
+    """
+    columns = ["Signe vital", "Dernière nuit", "Repère habituel", "Écart", "Sens", "Inhabituel"]
+    data = _clean_daily(frame)
+    if data.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows = []
+    for metric, concerning_direction, concerning_label in NOCTURNAL_VITALS:
+        if metric not in data.columns:
+            continue
+        measured = data[["Date", metric]].dropna()
+        if len(measured) < max(3, int(min_nights)):
+            continue
+
+        latest = float(measured[metric].iloc[-1])
+        latest_date = measured["Date"].iloc[-1]
+        history = measured.iloc[:-1]
+        history = history[history["Date"] >= latest_date - pd.Timedelta(days=max(1, int(days)))]
+        if len(history) < 3:
+            continue
+
+        baseline = float(history[metric].median())
+        scale = _robust_scale(history[metric])
+        if not np.isfinite(scale):
+            continue
+
+        deviation = (latest - baseline) / scale
+        above = deviation > 0
+        unusual = abs(deviation) >= float(threshold) and (
+            (concerning_direction == "haut" and above) or (concerning_direction == "bas" and not above)
+        )
+        rows.append(
+            {
+                "Signe vital": metric,
+                "Dernière nuit": round(latest, 2),
+                "Repère habituel": round(baseline, 2),
+                "Écart": round(deviation, 2),
+                "Sens": concerning_label if unusual else ("au-dessus" if above else "en dessous"),
+                "Inhabituel": bool(unusual),
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    frame_out = pd.DataFrame(rows)
+    ranking = frame_out["Écart"].abs()
+    return frame_out.reindex(ranking.sort_values(ascending=False).index).reset_index(drop=True)[columns]
+
+
+def physiological_watch(frame: pd.DataFrame | None, **kwargs: Any) -> dict[str, Any]:
+    """Combien de signes vitaux sortent simultanément de leur habitude.
+
+    Plusieurs signes qui dévient ensemble pèsent davantage qu'un seul, sans que
+    cela constitue pour autant un diagnostic : ce sont des mesures de bracelet,
+    et leur interprétation appartient à un professionnel de santé.
+    """
+    table = vital_deviations(frame, **kwargs)
+    result = {
+        "ready": not table.empty,
+        "table": table,
+        "flagged": [],
+        "count": 0,
+        "level": "indisponible",
+        "date": None,
+    }
+    if table.empty:
+        return result
+
+    data = _clean_daily(frame)
+    result["date"] = data["Date"].max() if not data.empty else None
+    flagged = table[table["Inhabituel"]]
+    result["flagged"] = [
+        {"Signe vital": row["Signe vital"], "Sens": row["Sens"], "Écart": row["Écart"]}
+        for _, row in flagged.iterrows()
+    ]
+    result["count"] = int(len(flagged))
+    if result["count"] == 0:
+        result["level"] = "aucun signal"
+    elif result["count"] == 1:
+        result["level"] = "un signal isolé"
+    else:
+        result["level"] = "plusieurs signaux concordants"
+    return result
+
+
+def _vitals_insight(daily: pd.DataFrame | None) -> Insight | None:
+    """Signale une nuit physiologiquement atypique, sans jamais conclure."""
+    watch = physiological_watch(daily)
+    if not watch["ready"] or watch["count"] == 0:
+        return None
+
+    names = ", ".join(f"{item['Signe vital'].split(' (')[0].lower()} {item['Sens']}" for item in watch["flagged"])
+    several = watch["count"] > 1
+    return Insight(
+        f"{watch['count']} {_plural(watch['count'], 'signe vital', 'signes vitaux')} hors de votre habitude",
+        f"La dernière nuit montre : {names}. Ces écarts sont mesurés par rapport à votre propre "
+        "repère des trente derniers jours, pas à une norme. Un bracelet ne diagnostique rien ; "
+        + (
+            "plusieurs signes qui dévient ensemble méritent toutefois d'être signalés à un "
+            "professionnel de santé s'ils persistent."
+            if several
+            else "un signe isolé s'explique souvent par une soirée tardive, un repas copieux ou l'alcool."
+        ),
+        tone="warning" if several else "info",
+        icon="🩺",
+        priority=88 if several else 58,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Journal jour par jour
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class DaySession:
+    """Une séance, située dans sa journée par son heure de début."""
+
+    start: Any
+    sport: str
+    duration_min: float
+    strain: float
+    calories: float
+    average_hr: float
+    max_hr: float
+
+
+@dataclass(frozen=True)
+class DayEntry:
+    """Tout ce qui s'est passé un jour donné, réuni sur une seule ligne de lecture."""
+
+    date: Any
+    recovery: float
+    zone: str | None
+    hrv: float
+    resting_hr: float
+    sleep_hours: float
+    sleep_debt: float
+    bedtime: float
+    strain: float
+    calories: float
+    weight: float
+    weight_change: float
+    sessions: tuple[DaySession, ...] = ()
+
+    @property
+    def has_measurement(self) -> bool:
+        return any(
+            np.isfinite(value)
+            for value in (self.recovery, self.sleep_hours, self.strain, self.weight)
+        ) or bool(self.sessions)
+
+
+def _value(row: Mapping[str, Any] | pd.Series, column: str) -> float:
+    if column not in row:
+        return float("nan")
+    try:
+        numeric = float(row[column])
+    except (TypeError, ValueError):
+        return float("nan")
+    return numeric if np.isfinite(numeric) else float("nan")
+
+
+def _zone_of(recovery: float) -> str | None:
+    if not np.isfinite(recovery):
+        return None
+    return next((label for label, low, high, _ in RECOVERY_ZONES if low <= recovery < high), None)
+
+
+def daily_log(
+    daily: pd.DataFrame | None,
+    workouts: pd.DataFrame | None = None,
+    weights: pd.DataFrame | None = None,
+    *,
+    newest_first: bool = True,
+    limit: int | None = None,
+) -> list[DayEntry]:
+    """Journal chronologique : une entrée par jour, séances rattachées à leur date.
+
+    Les graphiques et les moyennes répondent à « comment ça évolue » ; ils ne
+    répondent jamais à « que s'est-il passé mardi ». C'est ce que ce journal
+    rétablit, en réunissant récupération, sommeil, charge, poids et séances du
+    jour sur une même ligne de lecture.
+    """
+    grid = daily_grid(daily)
+    if grid.empty:
+        return []
+
+    weight_by_day: dict[Any, tuple[float, float]] = {}
+    if weights is not None and not weights.empty and "Poids (Kgs)" in weights.columns:
+        weight_frame = _clean_daily(weights)[["Date", "Poids (Kgs)"]].dropna()
+        if not weight_frame.empty:
+            averaged = weight_frame.groupby("Date", as_index=False)["Poids (Kgs)"].mean()
+            averaged["_change"] = averaged["Poids (Kgs)"].diff()
+            weight_by_day = {
+                pd.Timestamp(date): (float(value), float(change) if pd.notna(change) else float("nan"))
+                for date, value, change in zip(averaged["Date"], averaged["Poids (Kgs)"], averaged["_change"])
+            }
+
+    sessions_by_day: dict[Any, list[DaySession]] = {}
+    if workouts is not None and not workouts.empty and "Date" in workouts.columns:
+        session_frame = workouts.copy()
+        session_frame["Date"] = pd.to_datetime(session_frame["Date"], errors="coerce").dt.normalize()
+        session_frame = session_frame.dropna(subset=["Date"])
+        if "Début" in session_frame.columns:
+            session_frame = session_frame.sort_values(["Date", "Début"], kind="mergesort")
+        for row in session_frame.to_dict("records"):
+            sessions_by_day.setdefault(pd.Timestamp(row["Date"]), []).append(
+                DaySession(
+                    start=row.get("Début"),
+                    sport=str(row.get("Sport") or "Séance"),
+                    duration_min=_value(row, "Durée (min)"),
+                    strain=_value(row, "Strain séance"),
+                    calories=_value(row, "Calories séance (kcal)"),
+                    average_hr=_value(row, "FC moyenne (bpm)"),
+                    max_hr=_value(row, "FC max (bpm)"),
+                )
+            )
+
+    entries: list[DayEntry] = []
+    for row in grid.to_dict("records"):
+        date = pd.Timestamp(row["Date"])
+        recovery = _value(row, "Récupération (%)")
+        weight, change = weight_by_day.get(date, (float("nan"), float("nan")))
+        entries.append(
+            DayEntry(
+                date=date,
+                recovery=recovery,
+                zone=_zone_of(recovery),
+                hrv=_value(row, "HRV (ms)"),
+                resting_hr=_value(row, "FC repos (bpm)"),
+                sleep_hours=_value(row, "Sommeil (heures)"),
+                sleep_debt=_value(row, "Dette de sommeil (heures)"),
+                bedtime=_value(row, "Heure de coucher"),
+                strain=_value(row, "Strain"),
+                calories=_value(row, "Calories (kcal)"),
+                weight=weight,
+                weight_change=change,
+                sessions=tuple(sessions_by_day.get(date, ())),
+            )
+        )
+
+    if newest_first:
+        entries.reverse()
+    if limit is not None:
+        entries = entries[: max(1, int(limit))]
+    return entries
+
+
+def daily_log_table(entries: Sequence[DayEntry]) -> pd.DataFrame:
+    """Contrepartie tabulaire du journal, exportable et lisible au clavier."""
+    columns = [
+        "Date",
+        "Récupération (%)",
+        "Sommeil (heures)",
+        "Dette de sommeil (heures)",
+        "Strain",
+        "Poids (Kgs)",
+        "Séances",
+    ]
+    if not entries:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(
+        [
+            {
+                "Date": entry.date,
+                "Récupération (%)": entry.recovery,
+                "Sommeil (heures)": entry.sleep_hours,
+                "Dette de sommeil (heures)": entry.sleep_debt,
+                "Strain": entry.strain,
+                "Poids (Kgs)": entry.weight,
+                "Séances": len(entry.sessions),
+            }
+            for entry in entries
+        ]
+    )[columns]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Architecture du sommeil
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Plages usuellement citées chez l'adulte pour la part de chaque stade dans une
+# nuit. Ce sont des repères de population, pas des objectifs personnels : une
+# nuit hors plage n'a pas de signification isolée.
+SLEEP_STAGE_REFERENCES: tuple[tuple[str, str, float, float], ...] = (
+    ("Sommeil profond (heures)", "Sommeil profond", 13.0, 23.0),
+    ("Sommeil REM (heures)", "Sommeil REM", 20.0, 25.0),
+)
+
+MIN_NIGHTS_ARCHITECTURE = 5
+
+
+def sleep_architecture(
+    frame: pd.DataFrame | None,
+    *,
+    days: int = BASELINE_DAYS,
+    min_nights: int = MIN_NIGHTS_ARCHITECTURE,
+) -> dict[str, Any]:
+    """Part de sommeil profond et de sommeil REM, rapportée aux repères adultes.
+
+    WHOOP affiche des heures de stades ; c'est leur *proportion* dans la nuit
+    qui se compare d'une nuit à l'autre et à une référence, une nuit courte
+    réduisant mécaniquement les heures de chaque stade.
+    """
+    columns = ["Stade", "Votre part (%)", "Plage usuelle", "Position"]
+    result = {
+        "ready": False,
+        "nights": 0,
+        "required_nights": int(min_nights),
+        "table": pd.DataFrame(columns=columns),
+        "mean_sleep": float("nan"),
+    }
+    data = _clean_daily(frame)
+    if data.empty or "Sommeil (heures)" not in data.columns:
+        return result
+
+    window = last_days(data, days)
+    usable = window.dropna(subset=["Sommeil (heures)"])
+    usable = usable[usable["Sommeil (heures)"] > 0]
+    result["nights"] = int(len(usable))
+    if len(usable) < max(3, int(min_nights)):
+        return result
+    result["mean_sleep"] = float(usable["Sommeil (heures)"].mean())
+
+    rows = []
+    for column, label, low, high in SLEEP_STAGE_REFERENCES:
+        if column not in usable.columns:
+            continue
+        pair = usable[["Sommeil (heures)", column]].dropna()
+        if len(pair) < 3:
+            continue
+        # Part moyenne des nuits, et non part de la somme : une nuit très longue
+        # ne doit pas peser davantage qu'une nuit courte dans la moyenne.
+        shares = (pair[column] / pair["Sommeil (heures)"] * 100.0).replace([np.inf, -np.inf], np.nan).dropna()
+        if shares.empty:
+            continue
+        share = float(shares.mean())
+        if share < low:
+            position = "sous la plage"
+        elif share > high:
+            position = "au-dessus de la plage"
+        else:
+            position = "dans la plage"
+        rows.append(
+            {
+                "Stade": label,
+                "Votre part (%)": round(share, 1),
+                "Plage usuelle": f"{low:.0f} à {high:.0f} %",
+                "Position": position,
+            }
+        )
+
+    if not rows:
+        return result
+    result["table"] = pd.DataFrame(rows)[columns]
+    result["ready"] = True
+    return result
+
+
+def _architecture_insight(daily: pd.DataFrame | None) -> Insight | None:
+    """Signale un stade durablement hors plage, sans en faire un objectif."""
+    architecture = sleep_architecture(daily)
+    if not architecture["ready"]:
+        return None
+    outside = architecture["table"][architecture["table"]["Position"] != "dans la plage"]
+    if outside.empty:
+        return None
+
+    first = outside.iloc[0]
+    return Insight(
+        f"{first['Stade']} {first['Position']}",
+        f"Sur {architecture['nights']} {_plural(architecture['nights'], 'nuit')}, ce stade représente "
+        f"{_fr(float(first['Votre part (%)']))} % de votre sommeil, contre {first['Plage usuelle']} "
+        "couramment cités chez l'adulte. Ces plages décrivent une population, pas un objectif "
+        f"personnel ; allonger la nuit (actuellement {_fr(architecture['mean_sleep'])} h en moyenne) "
+        "augmente généralement les deux stades en valeur absolue.",
+        tone="info",
+        icon="🌙",
+        priority=50,
+    )

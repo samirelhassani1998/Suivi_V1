@@ -18,6 +18,8 @@ from app.core.whoop_analytics import (
     contrast_best_worst_days,
     coverage_report,
     daily_grid,
+    daily_log,
+    daily_log_table,
     energy_balance,
     generate_insights,
     indexable_metrics,
@@ -25,10 +27,12 @@ from app.core.whoop_analytics import (
     lagged_correlations,
     last_days,
     personal_baseline,
+    physiological_watch,
     previous_days,
     recovery_drivers,
     recovery_zones,
     rolling_trend,
+    sleep_architecture,
     sleep_debt_summary,
     sport_recovery_impact,
     strain_recovery_balance,
@@ -36,8 +40,10 @@ from app.core.whoop_analytics import (
     training_load,
     weekday_profile,
     weekly_rollup,
+    vital_deviations,
     weight_trend,
 )
+from app.core.whoop_analytics import _robust_scale
 
 
 def _daily(days: int = 30, *, seed: int = 7, strain: float | None = None) -> pd.DataFrame:
@@ -1205,3 +1211,294 @@ def test_daily_grid_tolerates_duplicate_dates_instead_of_raising():
     assert not grid["Date"].duplicated().any()
     # La dernière valeur de la journée est retenue.
     assert grid.loc[0, "Récupération (%)"] == 40.0
+
+
+# ── Signes vitaux nocturnes ──────────────────────────────────────────────────
+
+
+def _vitals_frame(nights: int = 25, *, seed: int = 9) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    return pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-08-20", periods=nights, freq="D"),
+            "FC repos (bpm)": 54 + rng.normal(0, 1.5, nights),
+            "HRV (ms)": 45 + rng.normal(0, 4, nights),
+            "Fréquence respiratoire (resp/min)": 14.5 + rng.normal(0, 0.4, nights),
+            "Température peau (°C)": 33.2 + rng.normal(0, 0.2, nights),
+            "SpO2 (%)": 96.5 + rng.normal(0, 0.4, nights),
+        }
+    )
+
+
+def test_vital_deviations_measure_the_gap_to_the_personal_reference():
+    frame = _vitals_frame()
+    frame.loc[frame.index[-1], "FC repos (bpm)"] = 62.0
+
+    table = vital_deviations(frame)
+    rhr = table[table["Signe vital"] == "FC repos (bpm)"].iloc[0]
+
+    assert rhr["Dernière nuit"] == 62.0
+    assert rhr["Repère habituel"] == pytest.approx(54.0, abs=1.5)
+    assert rhr["Écart"] > 2.5
+    assert bool(rhr["Inhabituel"])
+
+
+def test_vital_deviations_only_flag_the_clinically_concerning_direction():
+    """Une variabilité cardiaque haute n'est pas un signal à surveiller."""
+    frame = _vitals_frame()
+    frame.loc[frame.index[-1], "HRV (ms)"] = 90.0
+
+    hrv = vital_deviations(frame).set_index("Signe vital").loc["HRV (ms)"]
+
+    assert hrv["Écart"] > 2.5
+    assert not bool(hrv["Inhabituel"])
+
+
+def test_vital_deviations_stay_silent_on_a_short_history():
+    assert vital_deviations(_vitals_frame(nights=6)).empty
+
+
+def test_physiological_watch_counts_concordant_signals():
+    frame = _vitals_frame()
+    last = frame.index[-1]
+    frame.loc[last, ["FC repos (bpm)", "HRV (ms)", "Fréquence respiratoire (resp/min)", "Température peau (°C)"]] = [
+        62.0,
+        28.0,
+        16.8,
+        34.1,
+    ]
+
+    watch = physiological_watch(frame)
+
+    assert watch["count"] == 4
+    assert watch["level"] == "plusieurs signaux concordants"
+
+
+def test_physiological_watch_rarely_cries_wolf_on_a_quiet_series():
+    """Un indicateur de santé qui se déclenche sans raison finit ignoré."""
+    alarms = sum(1 for seed in range(60) if physiological_watch(_vitals_frame(seed=seed))["count"] >= 1)
+    concordant = sum(1 for seed in range(60) if physiological_watch(_vitals_frame(seed=seed))["count"] >= 2)
+
+    assert alarms <= 12, f"{alarms}/60 nuits signalées sans anomalie"
+    assert concordant == 0
+
+
+def test_robust_scale_resists_a_single_outlier_night():
+    """Une seule nuit aberrante gonfle l'écart-type et masque ensuite tout
+    écart réel ; la dispersion robuste, elle, bouge à peine."""
+    steady = pd.Series([50.0, 51.0, 49.0, 50.5, 49.5, 50.0, 51.0, 50.2, 49.8, 50.3])
+    with_outlier = pd.concat([steady, pd.Series([120.0])], ignore_index=True)
+
+    robust_inflation = _robust_scale(with_outlier) / _robust_scale(steady)
+    std_inflation = float(with_outlier.std()) / float(steady.std())
+
+    # L'écart-type est multiplié par un ordre de grandeur, la mesure robuste non.
+    assert std_inflation > 20
+    assert robust_inflation < 2.0
+    assert robust_inflation < std_inflation / 10
+
+
+def test_vitals_insight_never_diagnoses():
+    frame = _vitals_frame()
+    last = frame.index[-1]
+    frame.loc[last, ["FC repos (bpm)", "HRV (ms)", "Fréquence respiratoire (resp/min)"]] = [63.0, 27.0, 17.0]
+
+    insight = next(item for item in generate_insights(frame) if item.icon == "🩺")
+
+    assert "signes vitaux" in insight.title
+    assert "diagnostique rien" in insight.body
+    assert "professionnel de santé" in insight.body
+    # Aucun nom de maladie ni conseil thérapeutique.
+    assert not any(word in insight.body.lower() for word in ("grippe", "covid", "infection à", "traitement"))
+
+
+def test_vitals_insight_replaces_the_redundant_baseline_cards():
+    """Trois cartes disant la même chose sur la HRV noieraient le reste."""
+    frame = _vitals_frame()
+    last = frame.index[-1]
+    frame.loc[last, ["FC repos (bpm)", "HRV (ms)", "Fréquence respiratoire (resp/min)"]] = [63.0, 27.0, 17.0]
+
+    icons = [insight.icon for insight in generate_insights(frame)]
+
+    assert "🩺" in icons
+    assert "🫀" not in icons
+
+
+# ── Journal jour par jour ────────────────────────────────────────────────────
+
+
+def _log_fixtures():
+    dates = pd.date_range("2026-09-08", periods=4, freq="D")
+    daily = pd.DataFrame(
+        {
+            "Date": dates,
+            "Récupération (%)": [np.nan, 55.0, 42.0, 28.0],
+            "HRV (ms)": [np.nan, 44.0, 40.2, 37.5],
+            "FC repos (bpm)": [np.nan, 57.0, 60.0, 69.0],
+            "Sommeil (heures)": [np.nan, 1.4, 7.3, 4.0],
+            "Dette de sommeil (heures)": [np.nan, 6.0, 1.0, 4.2],
+            "Strain": [np.nan, 4.5, 16.4, 5.2],
+        }
+    )
+    workouts = pd.DataFrame(
+        {
+            "Date": [pd.Timestamp("2026-09-10")] * 3,
+            "Début": [
+                pd.Timestamp("2026-09-10 11:00"),
+                pd.Timestamp("2026-09-10 18:30"),
+                pd.Timestamp("2026-09-10 21:05"),
+            ],
+            "Sport": ["boxing"] * 3,
+            "Durée (min)": [16.0, 43.0, 39.0],
+            "Strain séance": [5.3, 13.9, 7.8],
+            "Calories séance (kcal)": [110.8, 505.5, 236.0],
+            "FC moyenne (bpm)": [120.0, 142.0, 115.0],
+            "FC max (bpm)": [142.0, 185.0, 170.0],
+        }
+    )
+    weights = pd.DataFrame({"Date": dates, "Poids (Kgs)": [103.6, 104.0, 103.1, 102.9]})
+    return daily, workouts, weights
+
+
+def test_daily_log_reads_newest_first():
+    entries = daily_log(*_log_fixtures())
+
+    assert [entry.date for entry in entries] == list(pd.date_range("2026-09-11", periods=4, freq="-1D"))
+
+
+def test_daily_log_attaches_each_session_to_its_own_day_and_hour():
+    """Trois séances le même jour doivent rester distinctes et ordonnées."""
+    entries = {entry.date: entry for entry in daily_log(*_log_fixtures())}
+    tenth = entries[pd.Timestamp("2026-09-10")]
+
+    assert len(tenth.sessions) == 3
+    assert [pd.Timestamp(session.start).strftime("%H:%M") for session in tenth.sessions] == ["11:00", "18:30", "21:05"]
+    assert all(session.sport == "boxing" for session in tenth.sessions)
+    # Les autres jours n'héritent pas de ces séances.
+    assert entries[pd.Timestamp("2026-09-11")].sessions == ()
+
+
+def test_daily_log_carries_the_recovery_zone_of_each_day():
+    entries = {entry.date: entry for entry in daily_log(*_log_fixtures())}
+
+    assert entries[pd.Timestamp("2026-09-11")].zone == "Rouge"
+    assert entries[pd.Timestamp("2026-09-10")].zone == "Jaune"
+    # Un jour sans score n'a pas de zone plutôt qu'une zone par défaut.
+    assert entries[pd.Timestamp("2026-09-08")].zone is None
+
+
+def test_daily_log_reports_the_weight_and_its_change():
+    entries = {entry.date: entry for entry in daily_log(*_log_fixtures())}
+    eleventh = entries[pd.Timestamp("2026-09-11")]
+
+    assert eleventh.weight == pytest.approx(102.9)
+    assert eleventh.weight_change == pytest.approx(-0.2)
+
+
+def test_daily_log_marks_days_without_any_measurement():
+    daily, workouts, weights = _log_fixtures()
+    entries = {entry.date: entry for entry in daily_log(daily, workouts, weights.iloc[1:])}
+
+    assert not entries[pd.Timestamp("2026-09-08")].has_measurement
+    assert entries[pd.Timestamp("2026-09-10")].has_measurement
+
+
+def test_daily_log_keeps_calendar_gaps_visible():
+    daily, workouts, weights = _log_fixtures()
+    holed = daily.drop(index=[1]).reset_index(drop=True)
+
+    entries = daily_log(holed, workouts, weights)
+
+    # Le jour retiré reste présent, sans mesure, plutôt que de disparaître.
+    assert len(entries) == 4
+    assert not next(entry for entry in entries if entry.date == pd.Timestamp("2026-09-09")).sessions
+
+
+def test_daily_log_honours_its_limit_and_ordering():
+    entries = daily_log(*_log_fixtures(), limit=2)
+    assert len(entries) == 2
+    assert entries[0].date > entries[1].date
+
+
+def test_daily_log_on_empty_input_returns_nothing():
+    assert daily_log(pd.DataFrame()) == []
+    assert daily_log_table([]).empty
+
+
+def test_daily_log_table_counts_the_sessions_of_each_day():
+    table = daily_log_table(daily_log(*_log_fixtures())).set_index("Date")
+
+    assert table.loc[pd.Timestamp("2026-09-10"), "Séances"] == 3
+    assert table.loc[pd.Timestamp("2026-09-11"), "Séances"] == 0
+
+
+# ── Architecture du sommeil ──────────────────────────────────────────────────
+
+
+def _architecture_frame(nights: int = 14, *, deep_share: float = 0.18, rem_share: float = 0.22) -> pd.DataFrame:
+    rng = np.random.default_rng(4)
+    sleep = 7.0 + rng.normal(0, 0.4, nights)
+    return pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-08-30", periods=nights, freq="D"),
+            "Sommeil (heures)": sleep,
+            "Sommeil profond (heures)": sleep * deep_share,
+            "Sommeil REM (heures)": sleep * rem_share,
+        }
+    )
+
+
+def test_sleep_architecture_reports_shares_not_hours():
+    """Une nuit courte réduit mécaniquement les heures de chaque stade."""
+    architecture = sleep_architecture(_architecture_frame(deep_share=0.18, rem_share=0.22))
+    shares = architecture["table"].set_index("Stade")["Votre part (%)"]
+
+    assert architecture["ready"]
+    assert shares["Sommeil profond"] == pytest.approx(18.0, abs=0.3)
+    assert shares["Sommeil REM"] == pytest.approx(22.0, abs=0.3)
+    assert all(architecture["table"]["Position"] == "dans la plage")
+
+
+def test_sleep_architecture_places_a_share_outside_the_usual_range():
+    architecture = sleep_architecture(_architecture_frame(deep_share=0.09))
+    deep = architecture["table"].set_index("Stade").loc["Sommeil profond"]
+
+    assert deep["Position"] == "sous la plage"
+    assert deep["Plage usuelle"] == "13 à 23 %"
+
+
+def test_sleep_architecture_averages_nights_rather_than_totals():
+    """Une nuit très longue ne doit pas peser davantage qu'une nuit courte."""
+    frame = pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-09-01", periods=5, freq="D"),
+            "Sommeil (heures)": [2.0, 2.0, 2.0, 10.0, 10.0],
+            "Sommeil profond (heures)": [0.6, 0.6, 0.6, 1.0, 1.0],
+            "Sommeil REM (heures)": [0.4, 0.4, 0.4, 2.0, 2.0],
+        }
+    )
+
+    deep_share = sleep_architecture(frame)["table"].set_index("Stade").loc["Sommeil profond", "Votre part (%)"]
+
+    # Moyenne des parts : (30 + 30 + 30 + 10 + 10) / 5 = 22 %. La part du total
+    # vaudrait 3,8 / 26 = 14,6 %, dominée par les deux nuits longues.
+    assert deep_share == pytest.approx(22.0, abs=0.2)
+
+
+def test_sleep_architecture_ignores_nights_without_sleep():
+    frame = _architecture_frame(6)
+    frame.loc[frame.index[:3], "Sommeil (heures)"] = 0.0
+    assert not sleep_architecture(frame)["ready"]
+
+
+def test_sleep_architecture_stays_silent_on_a_short_history():
+    architecture = sleep_architecture(_architecture_frame(3))
+    assert not architecture["ready"]
+    assert architecture["table"].empty
+
+
+def test_architecture_insight_presents_the_range_as_a_reference_not_a_target():
+    insight = next(item for item in generate_insights(_architecture_frame(deep_share=0.09)) if item.icon == "🌙")
+
+    assert "pas des objectifs" in insight.body or "pas un objectif" in insight.body
+    assert "population" in insight.body
