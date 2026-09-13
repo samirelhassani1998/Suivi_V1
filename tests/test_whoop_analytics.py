@@ -8,6 +8,8 @@ import pytest
 
 from app.core.whoop_analytics import (
     _fr,
+    _load_cost_insight,
+    _observed_strain_contrast,
     ACUTE_LOAD_DAYS,
     DEFAULT_CORRELATION_TARGET,
     KCAL_PER_KG,
@@ -1951,3 +1953,86 @@ def test_high_band_floor_is_not_presented_as_an_estimated_breakpoint():
     spread = base.copy()
     spread["Strain"] = spread["Strain"].mean() + (spread["Strain"] - spread["Strain"].mean()) * 2.0
     assert strain_tolerance(spread)["high_band_floor"] != strain_tolerance(base)["high_band_floor"]
+
+
+def _two_level_strain_frame(days: int = 40) -> pd.DataFrame:
+    """Effectif largement suffisant, mais une charge à deux niveaux seulement."""
+    rng = np.random.default_rng(0)
+    return pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-03-01", periods=days, freq="D"),
+            "Strain": np.where(np.arange(days) % 2 == 0, 5.0, 15.0),
+            "Récupération (%)": np.clip(60 + rng.normal(0, 12, days), 5, 99),
+        }
+    )
+
+
+def test_uniform_load_is_not_reported_as_a_missing_history():
+    """Réclamer « plus de jours » quand l'effectif est atteint est insatisfaisable."""
+    tolerance = strain_tolerance(_two_level_strain_frame())
+    assert not tolerance["ready"]
+    assert tolerance["pairs"] > tolerance["required_pairs"], "l'effectif est déjà dépassé"
+    assert tolerance["reason"] == "charge trop uniforme"
+
+
+def test_short_history_still_reports_an_effectif_reason():
+    tolerance = strain_tolerance(_daily(10))
+    assert not tolerance["ready"]
+    assert tolerance["reason"] == "effectif"
+
+
+def _constant_bands_frame(days: int = 33) -> pd.DataFrame:
+    """Bandes parfaitement séparées et chacune constante : variances nulles."""
+    strain = np.tile([3.0, 7.0, 11.0, 15.0, 19.0], days // 5 + 1)[:days]
+    low, high = np.quantile(strain, 1 / 3), np.quantile(strain, 2 / 3)
+    following = np.where(strain <= low, 80.0, np.where(strain >= high, 50.0, 65.0))
+    recovery = np.empty(days)
+    recovery[0] = 70.0
+    recovery[1:] = following[:-1]
+    return pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-06-01", periods=days, freq="D"),
+            "Strain": strain,
+            "Récupération (%)": recovery,
+        }
+    )
+
+
+def test_an_untestable_separation_is_not_called_indistinguishable_from_chance():
+    """Le test de Welch n'est pas défini à variance nulle : il faut le dire."""
+    tolerance = strain_tolerance(_constant_bands_frame())
+    assert tolerance["ready"]
+    assert tolerance["gap"] > 0, "les bandes sont pourtant parfaitement séparées"
+    assert tolerance["inference"] == "indisponible"
+    assert not tolerance["declines"], "aucune conclusion sans test praticable"
+
+
+def test_a_tested_gap_is_marked_as_tested():
+    tolerance = strain_tolerance(_lagged_recovery_frame())
+    assert tolerance["inference"] == "testée"
+    assert np.isfinite(tolerance["p_value"])
+
+
+def test_load_cost_insight_illustrates_with_an_observed_contrast():
+    """Un exemple figé à cinq points extrapole chez qui varie moins que cela."""
+    frame = _lagged_recovery_frame()
+    insight = next(
+        (item for item in generate_insights(frame, limit=12) if item.icon == "⚡"),
+        None,
+    )
+    if insight is None:  # supprimé au profit du seuil quand les deux se déclenchent
+        insight = _load_cost_insight(frame)
+    assert insight is not None
+    assert "5 points au-dessus de l'ordinaire" not in insight.body
+    # L'écart illustré ne dépasse pas la dispersion réellement mesurée.
+    contrast = _observed_strain_contrast(frame)
+    assert contrast is None or contrast <= frame["Strain"].max() - frame["Strain"].min()
+
+
+def test_load_cost_insight_keeps_its_conclusion_associative():
+    """« coûte donc » ferait d'une association mesurée un effet établi."""
+    insight = _load_cost_insight(_lagged_recovery_frame())
+    assert insight is not None
+    assert "coûte donc" not in insight.body
+    assert "association" in insight.body
+    assert "s'accompagne de" in insight.body

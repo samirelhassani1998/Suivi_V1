@@ -1153,11 +1153,20 @@ def _effort_tab(daily: pd.DataFrame, workouts: pd.DataFrame) -> None:
         "🧗",
     )
     if not tolerance["ready"]:
-        st.info(
-            f"Disponible à partir de {tolerance['required_pairs']} journées suivies d'un lendemain noté "
-            f"(actuellement {tolerance['pairs']})."
-        )
-        st.progress(min(1.0, tolerance["pairs"] / max(1, tolerance["required_pairs"])))
+        if tolerance["reason"] == "charge trop uniforme":
+            # Réclamer « plus de jours » alors que l'effectif est atteint donne
+            # une consigne qu'aucune journée de plus ne peut satisfaire.
+            st.info(
+                f"Vos {tolerance['pairs']} journées mesurées se ressemblent trop en charge pour être "
+                "rangées en trois tiers distincts. Cette comparaison s'ouvrira lorsque vos journées "
+                "seront plus contrastées — quelques séances intenses et quelques journées calmes."
+            )
+        else:
+            st.info(
+                f"Disponible à partir de {tolerance['required_pairs']} journées suivies d'un lendemain noté "
+                f"(actuellement {tolerance['pairs']})."
+            )
+            st.progress(min(1.0, tolerance["pairs"] / max(1, tolerance["required_pairs"])))
     else:
         cols = st.columns(3)
         with cols[0]:
@@ -1188,6 +1197,14 @@ def _effort_tab(daily: pd.DataFrame, workouts: pd.DataFrame) -> None:
                 f"Calculé sur {tolerance['pairs']} paires jour chargé → lendemain. L'écart entre vos journées "
                 "calmes et vos journées chargées résiste à un test statistique : il ne s'explique pas par le "
                 "seul hasard d'échantillonnage."
+            )
+        elif tolerance["inference"] == "indisponible":
+            # Conclure « indistinguable du hasard » sur un test qui n'a pas pu
+            # tourner ferait dire à l'absence de calcul ce qu'un calcul n'a pas dit.
+            st.caption(
+                f"Calculé sur {tolerance['pairs']} paires jour chargé → lendemain. Vos mesures ne permettent "
+                "pas de tester l'écart statistiquement sur cette période : le tableau est affiché tel quel, "
+                "sans conclusion sur sa solidité."
             )
         else:
             st.caption(

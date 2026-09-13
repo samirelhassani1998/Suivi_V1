@@ -1128,6 +1128,20 @@ def _drivers_insight(daily: pd.DataFrame | None) -> Insight | None:
     )
 
 
+def _observed_strain_contrast(frame: pd.DataFrame | None) -> float | None:
+    """Écart de charge réellement observé, pour illustrer sans extrapoler."""
+    grid = daily_grid(frame)
+    if grid.empty or "Strain" not in grid.columns:
+        return None
+    values = grid["Strain"].dropna()
+    if len(values) < 4:
+        return None
+    spread = float(values.quantile(0.75) - values.quantile(0.25))
+    if not np.isfinite(spread) or spread < 1.0:
+        return None
+    return round(spread)
+
+
 def _load_cost_insight(daily: pd.DataFrame | None) -> Insight | None:
     """Ce qu'une journée chargée coûte à la récupération du lendemain.
 
@@ -1140,14 +1154,29 @@ def _load_cost_insight(daily: pd.DataFrame | None) -> Insight | None:
     coefficient = _significant_coefficient(drivers, "Strain de la veille")
     if coefficient is None or abs(coefficient) < 0.3:
         return None
-    points = abs(coefficient) * 5.0
     if coefficient < 0:
         body = (
             f"Sur vos {drivers['days']} jours de données, chaque point de strain supplémentaire "
             f"s'accompagne de {_fr(abs(coefficient))} {_plural(round(abs(coefficient)) or 1, 'point')} "
-            f"de récupération en moins le lendemain matin, à sommeil égal. Une séance qui pousse "
-            f"votre strain de 5 points au-dessus de l'ordinaire coûte donc environ "
-            f"{_fr(points, 0)} points de récupération le jour suivant."
+            f"de récupération en moins le lendemain matin, à sommeil égal."
+        )
+        # L'exemple chiffré était figé à cinq points de strain. Chez qui varie
+        # moins que cela, il extrapole hors de la plage observée et présente le
+        # résultat comme une prévision. L'écart illustré est donc repris de la
+        # dispersion réellement mesurée, et omis lorsqu'elle est trop faible.
+        contrast = _observed_strain_contrast(daily)
+        if contrast is not None:
+            body += (
+                f" Entre une journée ordinaire et une journée {_fr(contrast, 0)} points plus chargée — "
+                f"un écart courant chez vous — l'écart de récupération observé le lendemain est "
+                f"d'environ {_fr(abs(coefficient) * contrast, 0)} points."
+            )
+        # « coûte donc » transformerait une association en cause. Le strain peut
+        # accompagner un facteur non mesuré — maladie, jour de repos planifié,
+        # récupération de la veille — auquel l'écart serait en réalité imputable.
+        body += (
+            " Il s'agit d'une association mesurée sur vos données, pas d'un effet établi :"
+            " d'autres facteurs non mesurés varient avec la charge."
         )
         tone = "warning"
     else:
@@ -1542,6 +1571,9 @@ def strain_tolerance(frame: pd.DataFrame | None, *, min_pairs: int = MIN_PAIRS_T
         "declines": False,
         "pairs": 0,
         "required_pairs": int(min_pairs),
+        # Pourquoi l'analyse ne s'affiche pas : « effectif » se comble avec le
+        # temps, « charge trop uniforme » non.
+        "reason": "effectif",
         "table": pd.DataFrame(columns=columns),
         # Bord inférieur du tiers haut de VOTRE distribution de charge, et non
         # un point de rupture estimé sur la récupération : il se déplace si vous
@@ -1555,6 +1587,7 @@ def strain_tolerance(frame: pd.DataFrame | None, *, min_pairs: int = MIN_PAIRS_T
         "gap_low": float("nan"),
         "gap_high": float("nan"),
         "p_value": float("nan"),
+        "inference": "testée",
     }
     grid = daily_grid(frame)
     if grid.empty or "Strain" not in grid.columns or "Récupération (%)" not in grid.columns:
@@ -1567,11 +1600,16 @@ def strain_tolerance(frame: pd.DataFrame | None, *, min_pairs: int = MIN_PAIRS_T
     ).dropna()
     result["pairs"] = int(len(paired))
     if len(paired) < max(9, int(min_pairs)):
+        result["reason"] = "effectif"
         return result
 
     low = float(paired["strain"].quantile(1 / 3))
     high = float(paired["strain"].quantile(2 / 3))
     if not np.isfinite(low) or not np.isfinite(high) or high <= low:
+        # Assez de jours, mais une charge trop uniforme pour former trois tiers.
+        # Réclamer « plus de jours » serait une consigne qu'aucune journée
+        # supplémentaire de ce type ne pourrait satisfaire.
+        result["reason"] = "charge trop uniforme"
         return result
 
     red_ceiling = RECOVERY_ZONES[0][2]
@@ -1594,6 +1632,9 @@ def strain_tolerance(frame: pd.DataFrame | None, *, min_pairs: int = MIN_PAIRS_T
             }
         )
     if len(rows) < 3:
+        # Les bornes de tiers peuvent coïncider au point de vider la bande
+        # centrale : là encore, c'est la diversité de la charge qui manque.
+        result["reason"] = "charge trop uniforme"
         return result
 
     heavy, calm = rows[-1], rows[0]
@@ -1606,6 +1647,10 @@ def strain_tolerance(frame: pd.DataFrame | None, *, min_pairs: int = MIN_PAIRS_T
     # confiance, plutôt que comparé à un seuil fixe.
     gap = float(calm_values.mean() - heavy_values.mean())
     gap_low = gap_high = p_value = float("nan")
+    # Si les deux bandes sont chacune constantes, leurs variances sont nulles :
+    # le test de Welch n'est pas défini. Le dire, plutôt que de laisser l'écran
+    # conclure « ne se distingue pas du hasard » sur une séparation parfaite.
+    inference = "testée"
     if len(calm_values) >= 2 and len(heavy_values) >= 2:
         from scipy import stats
 
@@ -1622,6 +1667,12 @@ def strain_tolerance(frame: pd.DataFrame | None, *, min_pairs: int = MIN_PAIRS_T
                 p_value = float(2.0 * stats.t.sf(abs(gap) / error, degrees))
                 margin = float(stats.t.ppf(1.0 - ALPHA / 2.0, degrees)) * error
                 gap_low, gap_high = gap - margin, gap + margin
+            else:
+                inference = "indisponible"
+        elif abs(gap) > 0:
+            inference = "indisponible"
+    else:
+        inference = "indisponible"
 
     result.update(
         {
@@ -1638,6 +1689,7 @@ def strain_tolerance(frame: pd.DataFrame | None, *, min_pairs: int = MIN_PAIRS_T
             "gap_low": round(gap_low, 1) if np.isfinite(gap_low) else float("nan"),
             "gap_high": round(gap_high, 1) if np.isfinite(gap_high) else float("nan"),
             "p_value": p_value,
+            "inference": inference,
         }
     )
     return result
