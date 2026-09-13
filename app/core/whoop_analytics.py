@@ -1103,11 +1103,18 @@ def _significant_coefficient(drivers: Mapping[str, Any], name: str) -> float | N
     """
     if not drivers.get("ready"):
         return None
-    coefficient = drivers.get("coefficients", {}).get(name)
+    coefficients = drivers.get("coefficients", {})
+    coefficient = coefficients.get(name)
     p_value = drivers.get("p_values", {}).get(name)
     if coefficient is None or p_value is None:
         return None
-    if not np.isfinite(coefficient) or not np.isfinite(p_value) or p_value > ALPHA:
+    # Les deux coefficients du modèle sont interrogés au cours d'un même appel à
+    # generate_insights. Les accepter chacun à 5 % laisse près de 10 % de chances
+    # qu'au moins un passe alors qu'aucun lien n'existe — 8,2 % mesurés sur
+    # 600 séries sans lien. Le seuil est donc divisé par le nombre de
+    # coefficients testés, comme il l'est déjà pour les corrélations décalées.
+    threshold = ALPHA / max(1, len(coefficients))
+    if not np.isfinite(coefficient) or not np.isfinite(p_value) or p_value > threshold:
         return None
     return float(coefficient)
 
@@ -1180,12 +1187,19 @@ def _load_cost_insight(daily: pd.DataFrame | None) -> Insight | None:
         )
         tone = "warning"
     else:
+        # Conclure « votre charge reste dans ce que vous encaissez » ferait de
+        # cette branche une recommandation. Or si vous vous entraînez plus fort
+        # après une bonne nuit, et que la récupération est autocorrélée, un
+        # coefficient positif apparaît sans que la charge y soit pour rien. La
+        # branche positive reste donc aussi prudente que la négative.
         body = (
-            f"Sur vos {drivers['days']} jours de données, les journées chargées ne sont pas suivies "
+            f"Sur vos {drivers['days']} jours de données, vos journées chargées ne sont pas suivies "
             f"d'une récupération dégradée : le lien mesuré est de {_fr(coefficient, 1, sign=True)} point "
-            f"par point de strain, à sommeil égal. Votre charge actuelle reste dans ce que vous encaissez."
+            f"par point de strain, à sommeil égal. C'est une association mesurée sur vos données, et non "
+            f"la preuve que votre charge est bien tolérée : s'entraîner davantage les matins où l'on se "
+            f"réveille frais produit le même signe."
         )
-        tone = "success"
+        tone = "info"
     return Insight(
         "Ce qu'une journée chargée coûte au lendemain",
         body,

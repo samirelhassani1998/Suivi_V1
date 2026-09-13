@@ -8,6 +8,7 @@ import pytest
 
 from app.core.whoop_analytics import (
     _fr,
+    _significant_coefficient,
     _load_cost_insight,
     _observed_strain_contrast,
     ACUTE_LOAD_DAYS,
@@ -2036,3 +2037,71 @@ def test_load_cost_insight_keeps_its_conclusion_associative():
     assert "coûte donc" not in insight.body
     assert "association" in insight.body
     assert "s'accompagne de" in insight.body
+
+
+def test_coefficient_gate_corrects_for_testing_both_predictors():
+    """Deux coefficients acceptés chacun à 5 % laissent près de 10 % d'erreur.
+
+    Le seuil est divisé par le nombre de coefficients, comme il l'est déjà pour
+    les corrélations décalées.
+    """
+    fired = 0
+    trials = 250
+    for seed in range(trials):
+        rng = np.random.default_rng(seed)
+        days = 40
+        frame = pd.DataFrame(
+            {
+                "Date": pd.date_range("2026-01-01", periods=days, freq="D"),
+                "Sommeil (heures)": 7 + rng.normal(0, 0.8, days),
+                "Strain": np.clip(10 + rng.normal(0, 4, days), 0, 21),
+                "Récupération (%)": np.clip(60 + rng.normal(0, 15, days), 5, 99),
+            }
+        )
+        drivers = recovery_drivers(frame)
+        if not drivers["ready"]:
+            continue
+        if any(
+            _significant_coefficient(drivers, name) is not None
+            for name in drivers["coefficients"]
+        ):
+            fired += 1
+    # Sans correction, la mesure donne 8,2 % sur ces séries sans aucun lien.
+    assert fired / trials < 0.07
+
+
+def test_a_genuinely_significant_coefficient_survives_the_correction():
+    drivers = recovery_drivers(_lagged_recovery_frame())
+    assert _significant_coefficient(drivers, "Strain de la veille") is not None
+    assert _significant_coefficient(drivers, "Sommeil (heures)") is None
+
+
+def test_positive_load_branch_is_as_cautious_as_the_negative_one():
+    """Un coefficient positif n'établit pas que la charge est bien tolérée.
+
+    S'entraîner davantage les matins où l'on se réveille frais, la récupération
+    étant autocorrélée, produit exactement ce signe sans que la charge y soit
+    pour quoi que ce soit. La branche positive doit donc rester aussi prudente
+    que la négative.
+    """
+    days = 60
+    rng = np.random.default_rng(4)
+    strain = np.clip(10 + rng.normal(0, 4, days), 0, 21)
+    recovery = np.empty(days)
+    recovery[0] = 60.0
+    for index in range(1, days):
+        recovery[index] = 45.0 + 2.0 * strain[index - 1] + rng.normal(0, 2.0)
+    frame = pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-07-01", periods=days, freq="D"),
+            "Récupération (%)": np.clip(recovery, 5, 99),
+            "Strain": strain,
+            "Sommeil (heures)": 7.0 + rng.normal(0, 0.3, days),
+        }
+    )
+    insight = _load_cost_insight(frame)
+    assert insight is not None, "la branche positive doit se déclencher sur cette série"
+    assert "ne sont pas suivies" in insight.body
+    assert "reste dans ce que vous encaissez" not in insight.body
+    assert "association mesurée" in insight.body
+    assert insight.tone != "success"
