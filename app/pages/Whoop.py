@@ -53,6 +53,7 @@ from app.core.whoop_analytics import (
     sleep_architecture,
     sleep_debt_summary,
     sport_recovery_impact,
+    strain_tolerance,
     target_pace_feasibility,
     training_energy_share,
     strain_recovery_balance,
@@ -944,7 +945,7 @@ def _recovery_tab(daily: pd.DataFrame) -> None:
 
     section_header(
         "Vos bons jours contre vos mauvais",
-        "Ce que vous faisiez différemment le tiers des jours où votre récupération était la meilleure.",
+        "Ce qui précédait le tiers des jours où votre récupération était la meilleure.",
         "🔍",
     )
     contrast = contrast_best_worst_days(daily)
@@ -962,7 +963,16 @@ def _recovery_tab(daily: pd.DataFrame) -> None:
             use_container_width=True,
             hide_index=True,
         )
-        st.caption("Le facteur en tête est celui qui sépare le plus vos bons et vos mauvais jours.")
+        st.caption(
+            "Le facteur en tête est celui qui sépare le plus vos bons et vos mauvais jours. "
+            "L'écart normalisé rapporte l'écart à la dispersion : il permet de comparer des heures "
+            "de sommeil à des points de strain."
+        )
+        st.caption(
+            "⏱️ Votre score de récupération est calculé au réveil, à partir de la nuit écoulée. "
+            "Les facteurs comparés ici lui sont donc tous antérieurs — d'où le strain **de la veille** "
+            "et non celui du jour même, qui n'a pas encore eu lieu quand le score est établi."
+        )
 
 
 def _sleep_tab(daily: pd.DataFrame) -> None:
@@ -1173,6 +1183,60 @@ def _effort_tab(daily: pd.DataFrame, workouts: pd.DataFrame) -> None:
             f"Comparaison faite à partir de {MIN_SESSIONS_PER_SPORT} séances par sport. "
             "Un écart négatif indique une récupération plus basse que votre moyenne le lendemain."
         )
+    tolerance = strain_tolerance(daily)
+    if tolerance["ready"]:
+        section_header(
+            f"Votre plafond de charge : strain {format_fr_number(tolerance['threshold'], decimals=1)}",
+            "Journées rangées par tiers de charge, jugées sur la récupération du lendemain matin.",
+            "🧗",
+        )
+        cols = st.columns(3)
+        with cols[0]:
+            kpi_card(
+                "Après une journée calme",
+                f"{format_fr_number(tolerance['calm_recovery'], decimals=0)} %",
+            )
+        with cols[1]:
+            kpi_card(
+                "Après une journée chargée",
+                f"{format_fr_number(tolerance['heavy_recovery'], decimals=0)} %",
+            )
+        with cols[2]:
+            kpi_card(
+                "Écart",
+                f"{format_fr_number(tolerance['calm_recovery'] - tolerance['heavy_recovery'], decimals=0)} points",
+            )
+        st.dataframe(
+            _format_table(
+                tolerance["table"],
+                {
+                    "Jours": 0,
+                    "Strain moyen": 1,
+                    "Récupération du lendemain (%)": 0,
+                    "Journées rouges (%)": 0,
+                },
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(
+            f"Calculé sur {tolerance['pairs']} paires jour chargé → lendemain. WHOOP vous propose un "
+            "strain cible établi sur sa population de référence ; ce tableau-ci est établi sur vous. "
+            "Il décrit une association, pas une limite physiologique : une journée chargée suivie "
+            "d'une nuit courte pèse deux fois."
+        )
+    else:
+        section_header(
+            "Votre plafond de charge",
+            "À partir de quelle charge votre récupération du lendemain décroche.",
+            "🧗",
+        )
+        st.info(
+            f"Disponible à partir de {tolerance['required_pairs']} journées suivies d'un lendemain noté "
+            f"(actuellement {tolerance['pairs']})."
+        )
+        st.progress(min(1.0, tolerance["pairs"] / max(1, tolerance["required_pairs"])))
+
     _table_view(
         detailed.sort_values("Date", ascending=False),
         "Voir chaque séance",

@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from app.core.whoop_analytics import (
+    _fr,
     ACUTE_LOAD_DAYS,
     DEFAULT_CORRELATION_TARGET,
     KCAL_PER_KG,
@@ -27,6 +28,8 @@ from app.core.whoop_analytics import (
     lagged_correlations,
     last_days,
     personal_baseline,
+    recovery_drivers,
+    strain_tolerance,
     physiological_watch,
     previous_days,
     projected_goal_date,
@@ -1725,3 +1728,169 @@ def test_streak_insight_fires_only_on_a_lasting_red_run():
     card = next(insight for insight in generate_insights(lasting, limit=20) if insight.icon == "🔻")
     assert "zone rouge" in card.title
     assert card.tone == "warning"
+
+
+# ── Antériorité des facteurs de récupération ────────────────────────────────
+
+
+def _lagged_recovery_frame(days: int = 60, *, seed: int = 11) -> pd.DataFrame:
+    """Série où la récupération dépend uniquement du strain de la VEILLE.
+
+    Le strain alterne fort/faible d'un jour sur l'autre : le strain du même jour
+    et celui de la veille portent alors des signes opposés vis-à-vis de la
+    récupération, ce qui rend toute confusion entre les deux immédiatement
+    visible.
+    """
+    rng = np.random.default_rng(seed)
+    dates = pd.date_range("2026-04-01", periods=days, freq="D")
+    strain = np.where(np.arange(days) % 2 == 0, 16.0, 5.0) + rng.normal(0, 0.3, days)
+    recovery = np.empty(days)
+    recovery[0] = 65.0
+    for index in range(1, days):
+        recovery[index] = 70.0 - 2.5 * (strain[index - 1] - 10.0) + rng.normal(0, 1.5)
+    frame = pd.DataFrame(
+        {
+            "Date": dates,
+            "Récupération (%)": np.clip(recovery, 5, 99),
+            "Strain": strain,
+            "Sommeil (heures)": 7.2 + rng.normal(0, 0.3, days),
+            "Besoin de sommeil (heures)": np.full(days, 8.2),
+            "Calories (kcal)": 2400 + (strain - 10) * 100,
+        }
+    )
+    frame["Dette de sommeil (heures)"] = frame["Besoin de sommeil (heures)"] - frame["Sommeil (heures)"]
+    return frame
+
+
+def test_contrast_compares_previous_day_strain_not_same_day():
+    """Le score du matin précède l'effort du jour : le facteur doit être la veille.
+
+    Sur cette série, le strain du même jour est ÉLEVÉ les bons jours et celui de
+    la veille est BAS : confondre les deux inverse la conclusion affichée.
+    """
+    frame = _lagged_recovery_frame()
+    table = contrast_best_worst_days(frame)["table"]
+    factors = list(table["Facteur"])
+
+    assert "Strain de la veille" in factors
+    assert "Strain" not in factors, "le strain du même jour est postérieur au score du matin"
+
+    gap = float(table.loc[table["Facteur"] == "Strain de la veille", "Écart"].iloc[0])
+    assert gap < 0, "une veille chargée doit précéder une moins bonne récupération"
+
+    grid = daily_grid(frame)
+    same_day_gap = (
+        grid.loc[grid["Récupération (%)"] >= grid["Récupération (%)"].quantile(2 / 3), "Strain"].mean()
+        - grid.loc[grid["Récupération (%)"] <= grid["Récupération (%)"].quantile(1 / 3), "Strain"].mean()
+    )
+    assert same_day_gap > 0, "le scénario doit bien opposer les deux lectures"
+
+
+def test_contrast_insight_states_the_gap_in_correct_french():
+    """« soit moins de 2,5 » se lit « moins que 2,5 » : le complément suit la valeur."""
+    insights = generate_insights(_lagged_recovery_frame(), limit=12)
+    contrast = next((item for item in insights if item.icon == "🔍"), None)
+    assert contrast is not None
+    assert "de moins" in contrast.body or "de plus" in contrast.body
+    assert "soit moins de" not in contrast.body
+    assert "soit davantage de" not in contrast.body
+    # Le groupe nominal est articlé, et le verbe s'accorde à son nombre.
+    assert " vaut " in contrast.body or " valent " in contrast.body
+    assert "les calories brûlées la veille vaut" not in contrast.body
+    assert "le strain de la veille valent" not in contrast.body
+
+
+def test_recovery_drivers_reports_a_p_value_per_coefficient():
+    """Un prédicteur de bruit doit rester non significatif, le vrai doit ressortir."""
+    drivers = recovery_drivers(_lagged_recovery_frame())
+    assert drivers["ready"]
+    assert drivers["p_values"]["Strain de la veille"] < 0.01
+    assert drivers["p_values"]["Sommeil (heures)"] > 0.05
+    assert drivers["standard_errors"]["Strain de la veille"] > 0
+
+
+def test_sleep_driver_insight_stays_silent_on_a_non_significant_coefficient():
+    """Un R² porté par la charge n'autorise rien à affirmer sur le sommeil."""
+    frame = _lagged_recovery_frame()
+    drivers = recovery_drivers(frame)
+    assert drivers["p_values"]["Sommeil (heures)"] > 0.05
+    insights = generate_insights(frame, limit=12)
+    assert all(item.icon != "🔬" for item in insights)
+
+
+def test_strain_tolerance_orders_bands_and_reports_the_threshold():
+    tolerance = strain_tolerance(_lagged_recovery_frame())
+    assert tolerance["ready"]
+    table = tolerance["table"]
+    assert list(table["Charge de la veille"]) == ["Journées calmes", "Journées moyennes", "Journées chargées"]
+    assert table["Strain moyen"].is_monotonic_increasing
+    assert tolerance["heavy_recovery"] < tolerance["calm_recovery"]
+    assert np.isfinite(tolerance["threshold"])
+
+
+def test_strain_tolerance_refuses_a_series_too_short():
+    tolerance = strain_tolerance(_daily(10))
+    assert not tolerance["ready"]
+    assert tolerance["table"].empty
+    assert tolerance["required_pairs"] >= tolerance["pairs"]
+
+
+def test_load_insights_do_not_say_the_same_thing_twice():
+    """Le plafond et la pente décrivent un seul effet : une seule carte le porte."""
+    insights = generate_insights(_lagged_recovery_frame(), limit=12)
+    icons = [item.icon for item in insights]
+    assert "🧗" in icons
+    assert "⚡" not in icons
+
+
+def test_tolerance_insight_omits_an_empty_red_share():
+    frame = _lagged_recovery_frame()
+    tolerance = strain_tolerance(frame)
+    insight = next(item for item in generate_insights(frame, limit=12) if item.icon == "🧗")
+    if tolerance["heavy_red_share"] == 0:
+        assert "rouges" not in insight.body
+    else:
+        assert "rouges" in insight.body
+
+
+def test_sport_insight_does_not_state_the_negation_twice():
+    """« −6 points sous votre moyenne » dit littéralement six points au-dessus."""
+    days = 40
+    dates = pd.date_range("2026-05-01", periods=days, freq="D")
+    rng = np.random.default_rng(5)
+    # La boxe un jour sur deux, suivie d'un lendemain nettement dégradé.
+    boxing = np.arange(days) % 2 == 0
+    recovery = np.where(np.roll(boxing, 1), 45.0, 75.0) + rng.normal(0, 2, days)
+    daily = pd.DataFrame(
+        {
+            "Date": dates,
+            "Récupération (%)": np.clip(recovery, 5, 99),
+            "Strain": np.where(boxing, 15.0, 6.0),
+            "Sommeil (heures)": 7.0 + rng.normal(0, 0.2, days),
+        }
+    )
+    workouts = pd.DataFrame(
+        {
+            "Date": dates[boxing],
+            "Sport": "Boxing",
+            "Durée (min)": 60.0,
+            "Strain séance": 12.0,
+        }
+    )
+    insight = next(
+        (item for item in generate_insights(daily, workouts=workouts, limit=12) if item.icon == "🥊"),
+        None,
+    )
+    assert insight is not None
+    assert "sous votre moyenne" in insight.body
+    assert "−" not in insight.body.split("sous votre moyenne")[0].split("soit ")[-1]
+    assert "-" not in insight.body.split("sous votre moyenne")[0].split("soit ")[-1]
+
+
+def test_fr_uses_the_typographic_minus_even_without_an_explicit_sign():
+    """Deux graphies pour une même grandeur nuisent à la lecture d'un tableau."""
+    assert _fr(-6.0, 0) == "−6"
+    assert _fr(-1.25, 2) == "−1,25"
+    assert _fr(6.0, 0) == "6"
+    assert _fr(-6.0, 0, sign=True) == "−6"
+    assert _fr(6.0, 0, sign=True) == "+6"
