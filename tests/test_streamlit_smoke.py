@@ -10,6 +10,8 @@ from app.core.formatting import format_fr_kg
 from app.core.data_editing import has_unsaved_changes
 from streamlit.testing.v1 import AppTest
 
+from app.core.target_trajectory import compare_to_target_trajectory
+
 
 def _state(at: AppTest) -> None:
     df = pd.DataFrame(
@@ -29,7 +31,17 @@ def _state(at: AppTest) -> None:
     at.session_state["data_quality"] = {"source": "test", "raw_rows": 80, "valid_rows": 80, "invalid_rows": 0, "duplicate_dates": 0, "columns_kept": len(df.columns), "extra_columns": ["Extra Col", "Moment"]}
 
 
-def _active_trajectory_state(at: AppTest, *, offset_kg: float = 0.0) -> None:
+def _aligned_offset(dates: pd.DatetimeIndex, weights: list[float]) -> float:
+    """Écart à appliquer pour que la dernière mesure tombe sur la trajectoire.
+
+    Le calculer plutôt que le figer évite que ce test redevienne faux à la
+    prochaine évolution des paramètres de trajectoire cible.
+    """
+    reference = pd.DataFrame({"Date": dates, "Poids (Kgs)": weights})
+    return -float(compare_to_target_trajectory(reference)["gap_kg"])
+
+
+def _active_trajectory_state(at: AppTest, *, offset_kg: float | None = 0.0) -> None:
     dates = pd.date_range(
         "2026-09-03",
         periods=40,
@@ -40,7 +52,8 @@ def _active_trajectory_state(at: AppTest, *, offset_kg: float = 0.0) -> None:
         106.1 - index * 0.22
         for index in range(len(dates))
     ]
-    weights[-1] += offset_kg
+    # None demande explicitement une série alignée sur la trajectoire cible.
+    weights[-1] += _aligned_offset(dates, weights) if offset_kg is None else offset_kg
 
     df = pd.DataFrame(
         {
@@ -103,7 +116,7 @@ def test_dashboard_renders_active_target_trajectory_without_exception():
     ("offset_kg", "expected_status"),
     [
         (-2.0, "en avance"),
-        (0.0, "aligné"),
+        (None, "aligné"),
     ],
 )
 def test_dashboard_renders_active_target_trajectory_status_variants_without_exception(offset_kg, expected_status):
@@ -210,8 +223,8 @@ def test_settings_exposes_five_goals():
     date_labels = [d.label for d in at.date_input]
     assert "Début du zoom trajectoire" in date_labels
     assert "Fin du zoom trajectoire" in date_labels
-    assert at.session_state.get("zoom_target_start_date") == pd.Timestamp("2026-09-03")
-    assert at.session_state.get("zoom_target_end_date") == pd.Timestamp("2026-12-16")
+    assert at.session_state["zoom_target_start_date"] == pd.Timestamp("2026-09-03")
+    assert at.session_state["zoom_target_end_date"] == pd.Timestamp("2026-12-16")
 
 
 def test_dashboard_zoom_chart_uses_configured_period_and_handles_empty_data():
