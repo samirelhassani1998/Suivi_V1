@@ -8,6 +8,8 @@ import pytest
 
 from app.core.whoop_analytics import (
     ALPHA,
+    Insight,
+    deduplicate_load_insights,
     _fr,
     _significant_coefficient,
     _load_cost_insight,
@@ -1804,12 +1806,41 @@ def test_contrast_insight_states_the_gap_in_correct_french():
     assert "le strain de la veille valent" not in contrast.body
 
 
+def _realistic_lagged_frame(days: int = 80, *, seed: int = 17) -> pd.DataFrame:
+    """Charge variée — non alternée — dont la veille pèse sur la récupération.
+
+    `_lagged_recovery_frame` alterne strictement fort/faible pour opposer le
+    strain du jour à celui de la veille. Cette alternance est un cas limite pour
+    un test de permutation par blocs : rebattre des blocs ne détruit pas un
+    motif de période deux. Les effectifs statistiques se mesurent donc ici, sur
+    une charge qui ressemble à celle d'un vrai porteur.
+    """
+    rng = np.random.default_rng(seed)
+    strain = np.clip(10 + rng.normal(0, 4, days), 0, 21)
+    recovery = np.empty(days)
+    recovery[0] = 68.0
+    for index in range(1, days):
+        recovery[index] = 68.0 - 2.2 * (strain[index - 1] - 10.0) + rng.normal(0, 6.0)
+    frame = pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-04-01", periods=days, freq="D"),
+            "Récupération (%)": np.clip(recovery, 5, 99),
+            "Strain": strain,
+            "Sommeil (heures)": 7.2 + rng.normal(0, 0.8, days),
+            "Besoin de sommeil (heures)": np.full(days, 8.2),
+        }
+    )
+    frame["Dette de sommeil (heures)"] = frame["Besoin de sommeil (heures)"] - frame["Sommeil (heures)"]
+    return frame
+
+
 def test_recovery_drivers_reports_a_p_value_per_coefficient():
     """Un prédicteur de bruit doit rester non significatif, le vrai doit ressortir."""
-    drivers = recovery_drivers(_lagged_recovery_frame())
+    drivers = recovery_drivers(_realistic_lagged_frame())
     assert drivers["ready"]
-    assert drivers["p_values"]["Strain de la veille"] < 0.01
-    assert drivers["p_values"]["Sommeil (heures)"] > 0.05
+    assert _significant_coefficient(drivers, "Strain de la veille") is not None
+    assert _significant_coefficient(drivers, "Sommeil (heures)") is None
+    assert drivers["p_values"]["Sommeil (heures)"] > ALPHA
     assert drivers["standard_errors"]["Strain de la veille"] > 0
 
 
@@ -2169,3 +2200,84 @@ def test_load_insight_claims_no_sleep_adjustment_without_sleep_data():
     insight = _load_cost_insight(frame)
     assert insight is not None
     assert "à sommeil égal" not in insight.body
+
+
+def _ar1(days: int, rho: float, sd: float, rng) -> np.ndarray:
+    values = np.empty(days)
+    values[0] = rng.normal(0, sd)
+    for index in range(1, days):
+        values[index] = rho * values[index - 1] + rng.normal(0, sd * np.sqrt(1 - rho**2))
+    return values
+
+
+def test_serial_correlation_does_not_manufacture_significant_coefficients():
+    """Deux séries autocorrélées sans lien ne doivent pas produire de constat.
+
+    Avec les erreurs-types classiques, un coefficient ressortait « significatif »
+    dans 44 % de ces séries à rho = 0,8, pour 5 % attendus : la formule
+    s²(XᵀX)⁻¹ suppose des erreurs indépendantes, ce que la récupération n'est
+    pas. Bonferroni n'y changeait rien.
+    """
+    fired = 0
+    trials = 60
+    for seed in range(trials):
+        rng = np.random.default_rng(seed)
+        days = 50
+        frame = pd.DataFrame(
+            {
+                "Date": pd.date_range("2026-01-01", periods=days, freq="D"),
+                "Récupération (%)": np.clip(60 + _ar1(days, 0.8, 15, rng), 5, 99),
+                "Strain": np.clip(10 + _ar1(days, 0.8, 4, rng), 0, 21),
+                "Sommeil (heures)": 7 + _ar1(days, 0.8, 0.8, rng),
+            }
+        )
+        drivers = recovery_drivers(frame)
+        if not drivers["ready"]:
+            continue
+        if any(_significant_coefficient(drivers, name) is not None for name in drivers["coefficients"]):
+            fired += 1
+    assert fired / trials < 0.20, "le taux mesuré sans correction atteignait 44 %"
+
+
+def test_a_real_effect_survives_the_permutation_test():
+    """Un test qui ne détecte plus rien ne vaut pas mieux qu'un test faux."""
+    drivers = recovery_drivers(_realistic_lagged_frame())
+    coefficient = _significant_coefficient(drivers, "Strain de la veille")
+    assert coefficient is not None
+    assert coefficient < 0
+
+
+def test_drivers_verdict_is_stable_across_calls():
+    """Deux affichages de la même page ne doivent pas donner deux verdicts."""
+    frame = _realistic_lagged_frame()
+    first, second = recovery_drivers(frame), recovery_drivers(frame)
+    assert first["p_values"] == second["p_values"]
+
+
+def test_a_sparsely_covered_predictor_does_not_silence_the_model():
+    """Quelques nuits notées ne doivent pas faire taire l'analyse de la charge."""
+    frame = _realistic_lagged_frame()
+    sparse = frame.copy()
+    # Trois nuits seulement : le dropna conjoint réduisait le modèle à néant.
+    sparse.loc[sparse.index[3:], "Sommeil (heures)"] = np.nan
+    drivers = recovery_drivers(sparse)
+    assert drivers["ready"], "le modèle réduit à la charge reste estimable"
+    assert list(drivers["coefficients"]) == ["Strain de la veille"]
+    assert _load_cost_insight(sparse) is not None
+
+
+def test_contradictory_load_results_are_both_kept():
+    """Seuil brut et pente ajustée peuvent diverger : n'en cacher aucun.
+
+    La déduplication ne vaut que lorsque les deux modèles pointent dans le même
+    sens ; sinon elle masquerait une contradiction réelle.
+    """
+    threshold = Insight("seuil", "…", icon="🧗", priority=71)
+    same_way = Insight("pente", "…", tone="warning", icon="⚡", priority=72)
+    other_way = Insight("pente", "…", tone="info", icon="⚡", priority=72)
+
+    assert [item.icon for item in deduplicate_load_insights([threshold, same_way])] == ["🧗"]
+    kept = deduplicate_load_insights([threshold, other_way])
+    assert sorted(item.icon for item in kept) == sorted(["🧗", "⚡"])
+    # Sans le seuil, la pente reste affichée quel que soit son sens.
+    assert len(deduplicate_load_insights([same_way])) == 1

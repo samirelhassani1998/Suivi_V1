@@ -11,6 +11,8 @@ Toutes les fonctions sont pures et refusent explicitement de conclure sur un
 
 from __future__ import annotations
 
+import hashlib
+
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -540,6 +542,128 @@ def lagged_correlations(
     return ordered.reset_index(drop=True)[columns]
 
 
+PERMUTATION_RESAMPLES = 400
+PERMUTATION_SEED = 20260913
+
+
+def _dependence_block_length(values: np.ndarray, observations: int) -> int:
+    """Longueur de bloc déduite de l'autocorrélation au décalage 1.
+
+    Pour une dépendance d'ordre un, la mémoire de la série s'étend sur environ
+    ``1 / (1 - rho)`` jours ; on en prend le double pour que deux blocs voisins
+    soient à peu près indépendants. Le résultat est borné : trop long, il ne
+    resterait plus assez de blocs pour les rebattre.
+    """
+    centred = values - values.mean()
+    denominator = float(np.sum(centred**2))
+    if denominator <= 0 or observations < 4:
+        return max(2, int(round(observations ** (1.0 / 3.0))))
+    rho = float(np.sum(centred[1:] * centred[:-1]) / denominator)
+    rho = min(max(rho, 0.0), 0.95)
+    length = int(np.ceil(2.0 / (1.0 - rho)))
+    floor_length = max(2, int(round(observations ** (1.0 / 3.0))))
+    # Au moins quatre blocs, sinon les réarrangements possibles se comptent
+    # sur les doigts d'une main.
+    return int(min(max(length, floor_length), max(2, observations // 4)))
+
+
+def _block_permutation_p_values(
+    x: np.ndarray, y: np.ndarray, names: Sequence[str]
+) -> dict[str, float] | None:
+    """p-values obtenues en rebattant des blocs de jours consécutifs.
+
+    La formule usuelle ``s² (XᵀX)⁻¹`` suppose des erreurs indépendantes. La
+    récupération d'un jour ressemble pourtant à celle de la veille, et cette
+    dépendance sous-estime l'incertitude au point de rendre les p-values
+    inutilisables : sur des séries où charge et récupération n'ont aucun lien
+    mais sont chacune autocorrélées, la part de séries où un coefficient
+    ressortait « significatif » atteignait 44 % à rho = 0,8, pour 5 % attendus.
+    La correction de Bonferroni n'y pouvait rien — ce sont les erreurs-types
+    elles-mêmes qui étaient trop petites.
+
+    Deux estimateurs d'erreur-type ont été essayés et écartés sur mesure :
+    Newey-West dégradait le cas sans autocorrélation (9,8 % pour 5 % attendus)
+    sans redresser franchement les autres, et le bootstrap en blocs laissait
+    encore 26,5 % à rho = 0,8. Aucun ne corrige le fait que l'effectif
+    *effectif* d'une série autocorrélée est bien inférieur à son nombre de
+    jours.
+
+    L'hypothèse nulle est donc construite plutôt qu'approchée : les blocs de
+    jours consécutifs du prédicteur sont rebattus, ce qui conserve sa propre
+    autocorrélation et celle de la récupération tout en détruisant le lien
+    entre les deux. La p-value est la part des réarrangements produisant un
+    coefficient au moins aussi fort que l'observé.
+
+    Le tirage est déterministe : deux affichages de la même page ne doivent pas
+    donner deux verdicts différents.
+    """
+    observations, parameters = x.shape
+    if observations <= parameters + 1:
+        return None
+    try:
+        observed, *_ = np.linalg.lstsq(x, y, rcond=None)
+    except np.linalg.LinAlgError:
+        return None
+
+    # La longueur de bloc doit dépasser la portée de la dépendance, sans quoi
+    # le rebattage recrée des séries trop peu autocorrélées et le test reste
+    # optimiste : avec des blocs fixes d'environ quatre jours, le taux de
+    # fausses détections restait à 16,8 % pour rho = 0,8. La portée est donc
+    # estimée sur la récupération elle-même.
+    block = _dependence_block_length(y, observations)
+    starts = list(range(0, observations, block))
+    if len(starts) < 3:
+        return None
+    blocks = [np.arange(begin, min(begin + block, observations)) for begin in starts]
+
+    generator = np.random.default_rng(PERMUTATION_SEED)
+    results: dict[str, float] = {}
+    for position, name in enumerate(names):
+        column = position + 1
+        extreme = 0
+        drawn = 0
+        for _ in range(PERMUTATION_RESAMPLES):
+            order = generator.permutation(len(blocks))
+            index = np.concatenate([blocks[choice] for choice in order])[:observations]
+            shuffled = x.copy()
+            shuffled[:, column] = x[index, column]
+            try:
+                null_coefficients, *_ = np.linalg.lstsq(shuffled, y, rcond=None)
+            except np.linalg.LinAlgError:
+                continue
+            drawn += 1
+            if abs(null_coefficients[column]) >= abs(observed[column]):
+                extreme += 1
+        if drawn == 0:
+            return None
+        # Le +1 empêche une p-value nulle, qu'aucun nombre fini de tirages ne
+        # peut établir.
+        results[name] = (extreme + 1) / (drawn + 1)
+    return results
+
+
+_DRIVERS_CACHE: dict[tuple, dict[str, Any]] = {}
+_DRIVERS_CACHE_LIMIT = 8
+
+
+def _drivers_fingerprint(grid: pd.DataFrame, min_days: int) -> tuple | None:
+    """Empreinte du contenu servant de clé de cache.
+
+    Le test de permutation coûte quelques centaines de millisecondes, et la
+    page appelle la régression plusieurs fois par rendu — une fois par constat
+    qui s'en sert, plus le panneau. L'empreinte porte sur les valeurs, pas sur
+    l'identité de l'objet : des données modifiées produisent une autre clé.
+    """
+    columns = [name for name in ("Récupération (%)", "Sommeil (heures)", "Strain") if name in grid.columns]
+    if not columns:
+        return None
+    digest = hashlib.blake2b(digest_size=16)
+    for name in columns:
+        digest.update(name.encode("utf-8"))
+        digest.update(np.ascontiguousarray(grid[name].to_numpy(dtype=float)).tobytes())
+    return (int(len(grid)), tuple(columns), int(min_days), digest.hexdigest())
+
+
 def recovery_drivers(frame: pd.DataFrame | None, *, min_days: int = MIN_DAYS_REGRESSION) -> dict[str, Any]:
     """Régression de la récupération sur le sommeil et la charge de la veille.
 
@@ -551,6 +675,10 @@ def recovery_drivers(frame: pd.DataFrame | None, *, min_days: int = MIN_DAYS_REG
     if grid.empty or "Récupération (%)" not in grid.columns:
         return result
 
+    fingerprint = _drivers_fingerprint(grid, min_days)
+    if fingerprint is not None and fingerprint in _DRIVERS_CACHE:
+        return dict(_DRIVERS_CACHE[fingerprint])
+
     predictors: dict[str, pd.Series] = {}
     if "Sommeil (heures)" in grid.columns:
         predictors["Sommeil (heures)"] = grid["Sommeil (heures)"]
@@ -560,6 +688,18 @@ def recovery_drivers(frame: pd.DataFrame | None, *, min_days: int = MIN_DAYS_REG
         return result
 
     design = pd.DataFrame({"Récupération (%)": grid["Récupération (%)"], **predictors}).dropna()
+    # Un prédicteur renseigné sur quelques jours seulement emportait tout le
+    # modèle par le dropna conjoint : quelques nuits notées suffisaient à faire
+    # taire l'analyse de la charge, alors que l'absence totale de sommeil, elle,
+    # laissait tourner le modèle réduit. Le prédicteur le moins couvert est donc
+    # retiré tant qu'il coûte des observations sans lesquelles on refuserait.
+    while len(predictors) > 1 and len(design) < max(int(min_days), len(predictors) + 3):
+        sparsest = min(predictors, key=lambda name: int(predictors[name].notna().sum()))
+        reduced = {name: series for name, series in predictors.items() if name != sparsest}
+        candidate = pd.DataFrame({"Récupération (%)": grid["Récupération (%)"], **reduced}).dropna()
+        if len(candidate) <= len(design):
+            break
+        predictors, design = reduced, candidate
     result["days"] = int(len(design))
     # Il faut nettement plus d'observations que de paramètres pour que les
     # coefficients aient un sens ; sinon la régression interpole le bruit.
@@ -587,20 +727,19 @@ def recovery_drivers(frame: pd.DataFrame | None, *, min_days: int = MIN_DAYS_REG
     if degrees > 0 and residual >= 0:
         from scipy import stats
 
-        variance = residual / degrees
-        try:
-            covariance = variance * np.linalg.inv(x.T @ x)
-        except np.linalg.LinAlgError:
-            covariance = None
-        if covariance is not None:
-            for index, name in enumerate(predictors):
-                error = float(np.sqrt(abs(covariance[index + 1, index + 1])))
-                standard_errors[name] = error
-                if error > 0:
-                    statistic = abs(float(coefficients[index + 1])) / error
-                    p_values[name] = float(2.0 * stats.t.sf(statistic, degrees))
-                else:
-                    p_values[name] = float("nan")
+        permuted = _block_permutation_p_values(x, y, list(predictors))
+        if permuted is not None:
+            p_values.update(permuted)
+            # L'erreur-type reste utile pour situer l'ordre de grandeur, même
+            # si ce n'est plus elle qui décide de la significativité.
+            variance = residual / degrees
+            try:
+                covariance = variance * np.linalg.inv(x.T @ x)
+            except np.linalg.LinAlgError:
+                covariance = None
+            if covariance is not None:
+                for index, name in enumerate(predictors):
+                    standard_errors[name] = float(np.sqrt(abs(covariance[index + 1, index + 1])))
     result["standard_errors"] = standard_errors
     result["p_values"] = p_values
     result["observations"] = int(len(design))
@@ -615,6 +754,10 @@ def recovery_drivers(frame: pd.DataFrame | None, *, min_days: int = MIN_DAYS_REG
     result["r_squared"] = float(adjusted) if np.isfinite(adjusted) else float("nan")
     result["raw_r_squared"] = float(raw_r2) if np.isfinite(raw_r2) else float("nan")
     result["ready"] = True
+    if fingerprint is not None:
+        if len(_DRIVERS_CACHE) >= _DRIVERS_CACHE_LIMIT:
+            _DRIVERS_CACHE.pop(next(iter(_DRIVERS_CACHE)))
+        _DRIVERS_CACHE[fingerprint] = dict(result)
     return result
 
 
@@ -1320,6 +1463,22 @@ def _target_pace_insight(merged: pd.DataFrame | None, required_daily_kg: float |
     )
 
 
+def deduplicate_load_insights(found: Sequence[Insight]) -> list[Insight]:
+    """Ne fusionne le seuil et la pente que lorsqu'ils concordent.
+
+    Le seuil (comparaison brute par tiers) et la pente (régression ajustée du
+    sommeil) ne mesurent pas la même chose. Quand ils pointent dans le même
+    sens, les afficher tous deux occupe deux cartes voisines pour un seul
+    constat. Quand ils divergent — le sommeil peut être corrélé à la charge au
+    point d'inverser le signe une fois ajusté — en supprimer un cacherait une
+    contradiction réelle.
+    """
+    insights = list(found)
+    if not any(insight.icon == "🧗" for insight in insights):
+        return insights
+    return [insight for insight in insights if insight.icon != "⚡" or insight.tone != "warning"]
+
+
 def generate_insights(
     daily: pd.DataFrame | None,
     merged: pd.DataFrame | None = None,
@@ -1370,8 +1529,7 @@ def generate_insights(
     # même effet, l'un par son seuil, l'autre par sa pente : les afficher tous
     # deux occupe deux cartes voisines pour un seul constat. Le seuil l'emporte,
     # parce qu'il nomme un nombre sur lequel agir pendant la séance.
-    if any(insight.icon == "🧗" for insight in found):
-        found = [insight for insight in found if insight.icon != "⚡"]
+    found = deduplicate_load_insights(found)
     found.sort(key=lambda insight: insight.priority, reverse=True)
     kept = max(1, int(limit))
     shown = found[:kept]
