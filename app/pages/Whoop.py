@@ -1142,6 +1142,67 @@ def _effort_tab(daily: pd.DataFrame, workouts: pd.DataFrame) -> None:
                 hide_index=True,
             )
 
+    tolerance = strain_tolerance(daily)
+    if tolerance["declines"]:
+        heading = f"Au-dessus de {format_fr_number(tolerance['high_band_floor'], decimals=1)} de strain, le lendemain se paie"
+    else:
+        heading = "Charge de la veille et récupération du lendemain"
+    section_header(
+        heading,
+        "Journées rangées par tiers de charge, jugées sur la récupération du lendemain matin.",
+        "🧗",
+    )
+    if not tolerance["ready"]:
+        st.info(
+            f"Disponible à partir de {tolerance['required_pairs']} journées suivies d'un lendemain noté "
+            f"(actuellement {tolerance['pairs']})."
+        )
+        st.progress(min(1.0, tolerance["pairs"] / max(1, tolerance["required_pairs"])))
+    else:
+        cols = st.columns(3)
+        with cols[0]:
+            kpi_card("Après une journée calme", f"{format_fr_number(tolerance['calm_recovery'], decimals=0)} %")
+        with cols[1]:
+            kpi_card("Après une journée chargée", f"{format_fr_number(tolerance['heavy_recovery'], decimals=0)} %")
+        with cols[2]:
+            kpi_card(
+                "Écart",
+                f"{format_fr_number(tolerance['gap'], decimals=0)} points",
+                help_text=(
+                    f"Intervalle de confiance à 95 % : de {format_fr_number(tolerance['gap_low'], decimals=0)} "
+                    f"à {format_fr_number(tolerance['gap_high'], decimals=0)} points."
+                    if np.isfinite(tolerance["gap_low"]) and np.isfinite(tolerance["gap_high"])
+                    else "Intervalle non calculable sur cet effectif."
+                ),
+            )
+        st.dataframe(
+            _format_table(
+                tolerance["table"],
+                {"Jours": 0, "Strain moyen": 1, "Récupération du lendemain (%)": 0, "Journées rouges (%)": 0},
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        if tolerance["declines"]:
+            st.caption(
+                f"Calculé sur {tolerance['pairs']} paires jour chargé → lendemain. L'écart entre vos journées "
+                "calmes et vos journées chargées résiste à un test statistique : il ne s'explique pas par le "
+                "seul hasard d'échantillonnage."
+            )
+        else:
+            st.caption(
+                f"Calculé sur {tolerance['pairs']} paires jour chargé → lendemain. L'écart entre les tiers ne se "
+                "distingue pas du hasard : à ce stade, vos journées chargées ne se paient pas visiblement le "
+                "lendemain. Le tableau reste affiché pour ce qu'il montre, sans en tirer de seuil."
+            )
+        st.caption(
+            f"⚠️ La valeur de {format_fr_number(tolerance['high_band_floor'], decimals=1)} est le bord du tiers "
+            "le plus chargé de **vos** journées, pas un point de rupture physiologique : elle se déplacera si "
+            "vous vous mettez à vous entraîner davantage, à réponse identique. WHOOP vous propose un strain "
+            "cible établi sur sa population de référence ; ce tableau est établi sur vous. Il décrit une "
+            "association : une journée chargée suivie d'une nuit courte pèse deux fois."
+        )
+
     if workouts is None or workouts.empty:
         st.info("Aucune séance enregistrée sur la période choisie.")
         return
@@ -1183,60 +1244,6 @@ def _effort_tab(daily: pd.DataFrame, workouts: pd.DataFrame) -> None:
             f"Comparaison faite à partir de {MIN_SESSIONS_PER_SPORT} séances par sport. "
             "Un écart négatif indique une récupération plus basse que votre moyenne le lendemain."
         )
-    tolerance = strain_tolerance(daily)
-    if tolerance["ready"]:
-        section_header(
-            f"Votre plafond de charge : strain {format_fr_number(tolerance['threshold'], decimals=1)}",
-            "Journées rangées par tiers de charge, jugées sur la récupération du lendemain matin.",
-            "🧗",
-        )
-        cols = st.columns(3)
-        with cols[0]:
-            kpi_card(
-                "Après une journée calme",
-                f"{format_fr_number(tolerance['calm_recovery'], decimals=0)} %",
-            )
-        with cols[1]:
-            kpi_card(
-                "Après une journée chargée",
-                f"{format_fr_number(tolerance['heavy_recovery'], decimals=0)} %",
-            )
-        with cols[2]:
-            kpi_card(
-                "Écart",
-                f"{format_fr_number(tolerance['calm_recovery'] - tolerance['heavy_recovery'], decimals=0)} points",
-            )
-        st.dataframe(
-            _format_table(
-                tolerance["table"],
-                {
-                    "Jours": 0,
-                    "Strain moyen": 1,
-                    "Récupération du lendemain (%)": 0,
-                    "Journées rouges (%)": 0,
-                },
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-        st.caption(
-            f"Calculé sur {tolerance['pairs']} paires jour chargé → lendemain. WHOOP vous propose un "
-            "strain cible établi sur sa population de référence ; ce tableau-ci est établi sur vous. "
-            "Il décrit une association, pas une limite physiologique : une journée chargée suivie "
-            "d'une nuit courte pèse deux fois."
-        )
-    else:
-        section_header(
-            "Votre plafond de charge",
-            "À partir de quelle charge votre récupération du lendemain décroche.",
-            "🧗",
-        )
-        st.info(
-            f"Disponible à partir de {tolerance['required_pairs']} journées suivies d'un lendemain noté "
-            f"(actuellement {tolerance['pairs']})."
-        )
-        st.progress(min(1.0, tolerance["pairs"] / max(1, tolerance["required_pairs"])))
-
     _table_view(
         detailed.sort_values("Date", ascending=False),
         "Voir chaque séance",

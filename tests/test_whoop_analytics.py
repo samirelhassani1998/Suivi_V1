@@ -1825,7 +1825,9 @@ def test_strain_tolerance_orders_bands_and_reports_the_threshold():
     assert list(table["Charge de la veille"]) == ["Journées calmes", "Journées moyennes", "Journées chargées"]
     assert table["Strain moyen"].is_monotonic_increasing
     assert tolerance["heavy_recovery"] < tolerance["calm_recovery"]
-    assert np.isfinite(tolerance["threshold"])
+    assert np.isfinite(tolerance["high_band_floor"])
+    assert tolerance["declines"], "l'écart doit survivre au test statistique sur cette série"
+    assert tolerance["gap_low"] > 0, "l'intervalle de confiance doit exclure zéro"
 
 
 def test_strain_tolerance_refuses_a_series_too_short():
@@ -1894,3 +1896,58 @@ def test_fr_uses_the_typographic_minus_even_without_an_explicit_sign():
     assert _fr(6.0, 0) == "6"
     assert _fr(-6.0, 0, sign=True) == "−6"
     assert _fr(6.0, 0, sign=True) == "+6"
+
+
+def _independent_strain_frame(days: int = 26, *, seed: int = 0) -> pd.DataFrame:
+    """Strain et récupération totalement indépendants : aucun plafond à trouver."""
+    rng = np.random.default_rng(seed)
+    return pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-02-01", periods=days, freq="D"),
+            "Strain": np.clip(10 + rng.normal(0, 4, days), 0, 21),
+            "Récupération (%)": np.clip(60 + rng.normal(0, 15, days), 5, 99),
+        }
+    )
+
+
+def test_strain_tolerance_separates_having_data_from_measuring_a_decline():
+    """Trois bandes peuplées n'impliquent pas que les journées chargées coûtent."""
+    rates = []
+    for seed in range(120):
+        tolerance = strain_tolerance(_independent_strain_frame(seed=seed))
+        if not tolerance["ready"]:
+            continue
+        rates.append(tolerance["declines"])
+    assert rates, "le scénario doit produire des séries exploitables"
+    # Un écart brut de 3 points se déclenchait sur près d'un tiers de ces
+    # séries ; le test de Welch ramène le taux au voisinage de son alpha.
+    assert sum(rates) / len(rates) < 0.12
+
+
+def test_strain_tolerance_reports_a_confidence_interval_for_the_gap():
+    tolerance = strain_tolerance(_lagged_recovery_frame())
+    assert tolerance["ready"]
+    assert np.isfinite(tolerance["p_value"])
+    assert tolerance["gap_low"] <= tolerance["gap"] <= tolerance["gap_high"]
+
+
+def test_tolerance_insight_stays_silent_without_a_measured_decline():
+    """Sans déclin établi, aucun plafond personnel ne doit être annoncé."""
+    for seed in range(40):
+        frame = _independent_strain_frame(seed=seed)
+        if strain_tolerance(frame)["declines"]:
+            continue
+        assert all(item.icon != "🧗" for item in generate_insights(frame, limit=12))
+
+
+def test_high_band_floor_is_not_presented_as_an_estimated_breakpoint():
+    """Le bord du tiers haut suit la distribution de charge, pas la réponse.
+
+    Doubler la dispersion du strain sans toucher au lien strain → récupération
+    déplace la valeur : elle ne peut donc pas être présentée comme un point de
+    rupture appris sur la récupération.
+    """
+    base = _lagged_recovery_frame()
+    spread = base.copy()
+    spread["Strain"] = spread["Strain"].mean() + (spread["Strain"] - spread["Strain"].mean()) * 2.0
+    assert strain_tolerance(spread)["high_band_floor"] != strain_tolerance(base)["high_band_floor"]

@@ -1536,13 +1536,25 @@ def strain_tolerance(frame: pd.DataFrame | None, *, min_pairs: int = MIN_PAIRS_T
     columns = ["Charge de la veille", "Jours", "Strain moyen", "Récupération du lendemain (%)", "Journées rouges (%)"]
     result: dict[str, Any] = {
         "ready": False,
+        # Un déclin mesuré, distinct de « assez de données » : trois bandes
+        # peuplées n'impliquent pas que les journées chargées coûtent quoi que
+        # ce soit.
+        "declines": False,
         "pairs": 0,
         "required_pairs": int(min_pairs),
         "table": pd.DataFrame(columns=columns),
-        "threshold": float("nan"),
+        # Bord inférieur du tiers haut de VOTRE distribution de charge, et non
+        # un point de rupture estimé sur la récupération : il se déplace si vous
+        # vous mettez à vous entraîner davantage, à réponse physiologique
+        # inchangée. Le libellé affiché doit donc rester descriptif.
+        "high_band_floor": float("nan"),
         "heavy_recovery": float("nan"),
         "calm_recovery": float("nan"),
         "heavy_red_share": float("nan"),
+        "gap": float("nan"),
+        "gap_low": float("nan"),
+        "gap_high": float("nan"),
+        "p_value": float("nan"),
     }
     grid = daily_grid(frame)
     if grid.empty or "Strain" not in grid.columns or "Récupération (%)" not in grid.columns:
@@ -1585,15 +1597,47 @@ def strain_tolerance(frame: pd.DataFrame | None, *, min_pairs: int = MIN_PAIRS_T
         return result
 
     heavy, calm = rows[-1], rows[0]
+    calm_values = bands[0][1]["next_recovery"]
+    heavy_values = bands[-1][1]["next_recovery"]
+
+    # Au minimum d'effectif, chaque bande ne compte qu'une poignée de jours :
+    # un écart brut de quelques points y naît facilement du hasard. L'écart est
+    # donc testé (Welch, variances inégales) et assorti de son intervalle de
+    # confiance, plutôt que comparé à un seuil fixe.
+    gap = float(calm_values.mean() - heavy_values.mean())
+    gap_low = gap_high = p_value = float("nan")
+    if len(calm_values) >= 2 and len(heavy_values) >= 2:
+        from scipy import stats
+
+        variance_calm = float(calm_values.var(ddof=1))
+        variance_heavy = float(heavy_values.var(ddof=1))
+        error = float(np.sqrt(variance_calm / len(calm_values) + variance_heavy / len(heavy_values)))
+        if np.isfinite(error) and error > 0:
+            numerator = (variance_calm / len(calm_values) + variance_heavy / len(heavy_values)) ** 2
+            denominator = (variance_calm / len(calm_values)) ** 2 / (len(calm_values) - 1) + (
+                variance_heavy / len(heavy_values)
+            ) ** 2 / (len(heavy_values) - 1)
+            degrees = numerator / denominator if denominator > 0 else float("nan")
+            if np.isfinite(degrees) and degrees > 0:
+                p_value = float(2.0 * stats.t.sf(abs(gap) / error, degrees))
+                margin = float(stats.t.ppf(1.0 - ALPHA / 2.0, degrees)) * error
+                gap_low, gap_high = gap - margin, gap + margin
+
     result.update(
         {
             "ready": True,
+            "declines": bool(gap > 0 and np.isfinite(p_value) and p_value <= ALPHA),
             "table": pd.DataFrame(rows)[columns],
-            "threshold": round(high, 1),
+            "high_band_floor": round(high, 1),
             "heavy_recovery": heavy["Récupération du lendemain (%)"],
             "calm_recovery": calm["Récupération du lendemain (%)"],
             "heavy_red_share": heavy["Journées rouges (%)"],
             "heavy_days": heavy["Jours"],
+            "calm_days": calm["Jours"],
+            "gap": round(gap, 1),
+            "gap_low": round(gap_low, 1) if np.isfinite(gap_low) else float("nan"),
+            "gap_high": round(gap_high, 1) if np.isfinite(gap_high) else float("nan"),
+            "p_value": p_value,
         }
     )
     return result
@@ -1601,19 +1645,26 @@ def strain_tolerance(frame: pd.DataFrame | None, *, min_pairs: int = MIN_PAIRS_T
 
 def _tolerance_insight(daily: pd.DataFrame | None) -> Insight | None:
     tolerance = strain_tolerance(daily)
-    if not tolerance["ready"]:
+    # « declines » exige que l'écart survive à un test de Welch. Un écart brut
+    # de trois points suffisait auparavant : mesuré sur des séries sans aucun
+    # lien entre charge et récupération, il se déclenchait dans 31,8 % des cas,
+    # contre 2,8 % avec le test.
+    if not tolerance["declines"]:
         return None
-    gap = tolerance["calm_recovery"] - tolerance["heavy_recovery"]
-    # Sous trois points d'écart, les deux tiers se valent : annoncer un plafond
-    # personnel reviendrait à habiller du bruit en seuil.
-    if not np.isfinite(gap) or gap < 3.0:
-        return None
+    gap = tolerance["gap"]
+    low, high = tolerance["gap_low"], tolerance["gap_high"]
+    interval = (
+        f" L'écart est estimé entre {_fr(low, 0)} et {_fr(high, 0)} points."
+        if np.isfinite(low) and np.isfinite(high)
+        else ""
+    )
     return Insight(
-        f"Votre plafond de charge se situe vers {_fr(tolerance['threshold'])}",
-        f"Après vos {tolerance['heavy_days']} journées les plus chargées (strain ≥ "
-        f"{_fr(tolerance['threshold'])}), votre récupération du lendemain tombe à "
-        f"{_fr(tolerance['heavy_recovery'], 0)} % en moyenne, contre {_fr(tolerance['calm_recovery'], 0)} % "
-        f"après vos journées calmes — soit {_fr(gap, 0)} points d'écart."
+        "Vos journées les plus chargées se paient le lendemain",
+        f"Au-dessus de {_fr(tolerance['high_band_floor'])} de strain — le tiers le plus chargé de vos "
+        f"journées — votre récupération du lendemain tombe à {_fr(tolerance['heavy_recovery'], 0)} % en "
+        f"moyenne sur {tolerance['heavy_days']} jours, contre {_fr(tolerance['calm_recovery'], 0)} % après "
+        f"vos {tolerance['calm_days']} journées les plus calmes, soit {_fr(gap, 0)} points d'écart."
+        + interval
         # Annoncer « rouges 0 % du temps » occupe une phrase pour ne rien
         # apprendre : la mention n'a de sens que si le cas s'est produit.
         + (

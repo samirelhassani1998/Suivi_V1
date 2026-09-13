@@ -875,3 +875,24 @@ def test_whoop_page_reports_what_training_really_costs():
     rendered = " ".join(str(m.value) for m in at.markdown)
     assert "Ce que pèsent vraiment vos séances" in rendered
     assert "Part de l'entraînement" in [metric.label for metric in at.metric]
+
+
+def test_whoop_effort_tab_shows_load_tolerance_without_any_recorded_workout():
+    """WHOOP mesure un strain continu même sans séance enregistrée.
+
+    Le panneau de tolérance à la charge ne dépend que des données
+    quotidiennes ; placé après le retour anticipé « aucune séance », il
+    devenait inatteignable pour un porteur qui ne logue aucun entraînement.
+    """
+    at = AppTest.from_file("app/pages/Whoop.py", default_timeout=30)
+    _state(at)
+    _whoop_connected_state(at)
+    _whoop_rich_state(at, whoop_days=45)
+    at.session_state["whoop_workouts"] = pd.DataFrame()
+    at.run()
+
+    assert not at.exception
+    rendered = " ".join(str(element.value) for element in at.markdown)
+    assert "récupération du lendemain matin" in rendered, (
+        "le panneau de charge doit précéder le retour anticipé sur les séances"
+    )
