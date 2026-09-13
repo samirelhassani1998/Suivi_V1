@@ -31,7 +31,9 @@ def test_normalize_datetime_series_distinguishes_iso_and_french_dates():
     assert parse("2026-01-11") == pd.Timestamp("2026-01-11")
     assert parse("11/01/2026") == pd.Timestamp("2026-01-11")
     assert parse("01/11/2026") == pd.Timestamp("2026-11-01")
-    assert parse("2026-11-01T12:30:00Z") == pd.Timestamp("2026-11-01 12:30:00")
+    assert parse("2026-11-01T12:30:00Z") == pd.Timestamp("2026-11-01")
+    kept = normalize_datetime_series(["2026-11-01T12:30:00Z"], dayfirst=True, normalize_day=False).iloc[0]
+    assert kept == pd.Timestamp("2026-11-01 12:30:00")
     assert parse(pd.Timestamp("2026-01-11")) == pd.Timestamp("2026-01-11")
     aware = parse(pd.Timestamp("2026-01-11 01:00", tz="Europe/Paris"))
     assert aware == pd.Timestamp("2026-01-11 00:00")
@@ -51,7 +53,7 @@ def test_truncate_projection_cases():
     assert truncate_projection_at_floor(["2026-01-01"], [79]).values == [80.0]
     assert truncate_projection_at_floor(["2026-01-01", "2026-01-02"], [79, 82]).values == [80.0]
     r = truncate_projection_at_floor(["2026-01-03", "2026-01-01", "2026-01-02"], [83, 82, 79])
-    assert r.dates[-1] == pd.Timestamp("2026-01-02")
+    assert r.dates[-1] == pd.Timestamp("2026-01-01 16:00")
     r = truncate_projection_at_floor(["2026-01-01", "2026-01-01", "2026-01-02", "2026-01-03"], [82, np.nan, 81, 79])
     assert r.values[-1] == 80.0
     assert truncate_projection_at_floor([], []).values == []
