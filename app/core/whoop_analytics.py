@@ -1127,8 +1127,10 @@ def _drivers_insight(daily: pd.DataFrame | None) -> Insight | None:
     return Insight(
         "Ce qu'une heure de sommeil vous rapporte",
         f"Sur vos {drivers['days']} jours de données, chaque heure de sommeil supplémentaire "
-        f"s'accompagne de {_fr(coefficient, 1, sign=True)} {_plural(round(coefficient), 'point')} de récupération, "
-        f"à charge d'entraînement égale.",
+        f"s'accompagne de {_fr(coefficient, 1, sign=True)} {_plural(round(coefficient), 'point')} de récupération"
+        # Le modèle n'inclut la charge que si le bracelet a renvoyé des cycles.
+        # Annoncer « à charge égale » sans l'avoir ajustée serait faux.
+        + (", à charge d'entraînement égale." if "Strain de la veille" in drivers["coefficients"] else "."),
         tone="success" if coefficient > 0 else "info",
         icon="🔬",
         priority=70,
@@ -1165,7 +1167,8 @@ def _load_cost_insight(daily: pd.DataFrame | None) -> Insight | None:
         body = (
             f"Sur vos {drivers['days']} jours de données, chaque point de strain supplémentaire "
             f"s'accompagne de {_fr(abs(coefficient))} {_plural(round(abs(coefficient)) or 1, 'point')} "
-            f"de récupération en moins le lendemain matin, à sommeil égal."
+            f"de récupération en moins le lendemain matin"
+            + (", à sommeil égal." if "Sommeil (heures)" in drivers["coefficients"] else ".")
         )
         # L'exemple chiffré était figé à cinq points de strain. Chez qui varie
         # moins que cela, il extrapole hors de la plage observée et présente le
@@ -1195,7 +1198,9 @@ def _load_cost_insight(daily: pd.DataFrame | None) -> Insight | None:
         body = (
             f"Sur vos {drivers['days']} jours de données, vos journées chargées ne sont pas suivies "
             f"d'une récupération dégradée : le lien mesuré est de {_fr(coefficient, 1, sign=True)} point "
-            f"par point de strain, à sommeil égal. C'est une association mesurée sur vos données, et non "
+            f"par point de strain"
+            + (", à sommeil égal." if "Sommeil (heures)" in drivers["coefficients"] else ".")
+            + " C'est une association mesurée sur vos données, et non "
             f"la preuve que votre charge est bien tolérée : s'entraîner davantage les matins où l'on se "
             f"réveille frais produit le même signe."
         )
@@ -1583,6 +1588,10 @@ def strain_tolerance(frame: pd.DataFrame | None, *, min_pairs: int = MIN_PAIRS_T
         # peuplées n'impliquent pas que les journées chargées coûtent quoi que
         # ce soit.
         "declines": False,
+        # La significativité ne dit rien du SENS : un écart inverse peut être
+        # parfaitement établi. Les confondre fait annoncer « indistinguable
+        # du hasard » sur un résultat mesuré à p = 10⁻¹³.
+        "significant": False,
         "pairs": 0,
         "required_pairs": int(min_pairs),
         # Pourquoi l'analyse ne s'affiche pas : « effectif » se comble avec le
@@ -1691,6 +1700,7 @@ def strain_tolerance(frame: pd.DataFrame | None, *, min_pairs: int = MIN_PAIRS_T
     result.update(
         {
             "ready": True,
+            "significant": bool(np.isfinite(p_value) and p_value <= ALPHA),
             "declines": bool(gap > 0 and np.isfinite(p_value) and p_value <= ALPHA),
             "table": pd.DataFrame(rows)[columns],
             "high_band_floor": round(high, 1),

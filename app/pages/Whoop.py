@@ -1145,6 +1145,10 @@ def _effort_tab(daily: pd.DataFrame, workouts: pd.DataFrame) -> None:
     tolerance = strain_tolerance(daily)
     if tolerance["declines"]:
         heading = f"Au-dessus de {format_fr_number(tolerance['high_band_floor'], decimals=1)} de strain, le lendemain se paie"
+    elif tolerance["significant"]:
+        # Écart établi, mais en sens inverse : vos journées chargées sont
+        # suivies d'une MEILLEURE récupération.
+        heading = "Vos journées chargées sont suivies d'une meilleure récupération"
     else:
         heading = "Charge de la veille et récupération du lendemain"
     section_header(
@@ -1197,6 +1201,15 @@ def _effort_tab(daily: pd.DataFrame, workouts: pd.DataFrame) -> None:
                 f"Calculé sur {tolerance['pairs']} paires jour chargé → lendemain. L'écart entre vos journées "
                 "calmes et vos journées chargées résiste à un test statistique : il ne s'explique pas par le "
                 "seul hasard d'échantillonnage."
+            )
+        elif tolerance["significant"]:
+            # Un écart inverse peut être parfaitement établi : le déclarer
+            # « indistinguable du hasard » contredirait sa propre p-value.
+            st.caption(
+                f"Calculé sur {tolerance['pairs']} paires jour chargé → lendemain. L'écart est statistiquement "
+                "établi, mais dans l'autre sens : vos journées les plus chargées sont suivies d'une meilleure "
+                "récupération. Cela se produit notamment lorsqu'on s'entraîne davantage les jours où l'on se "
+                "sent déjà en forme — la charge suit alors la récupération plutôt que l'inverse."
             )
         elif tolerance["inference"] == "indisponible":
             # Conclure « indistinguable du hasard » sur un test qui n'a pas pu

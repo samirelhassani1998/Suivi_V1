@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from app.core.whoop_analytics import (
+    ALPHA,
     _fr,
     _significant_coefficient,
     _load_cost_insight,
@@ -2105,3 +2106,66 @@ def test_positive_load_branch_is_as_cautious_as_the_negative_one():
     assert "reste dans ce que vous encaissez" not in insight.body
     assert "association mesurée" in insight.body
     assert insight.tone != "success"
+
+
+def _reverse_association_frame(days: int = 60, *, seed: int = 2) -> pd.DataFrame:
+    """Les journées chargées sont suivies d'une MEILLEURE récupération."""
+    rng = np.random.default_rng(seed)
+    strain = np.clip(10 + rng.normal(0, 4, days), 0, 21)
+    recovery = np.empty(days)
+    recovery[0] = 60.0
+    for index in range(1, days):
+        recovery[index] = 45.0 + 2.0 * strain[index - 1] + rng.normal(0, 3.0)
+    return pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-01-01", periods=days, freq="D"),
+            "Strain": strain,
+            "Récupération (%)": np.clip(recovery, 5, 99),
+        }
+    )
+
+
+def test_a_significant_reverse_association_is_not_called_chance():
+    """Un écart inverse peut être parfaitement établi : p ≈ 10⁻¹³ ici."""
+    tolerance = strain_tolerance(_reverse_association_frame())
+    assert tolerance["gap"] < 0, "les journées chargées précèdent une meilleure récupération"
+    assert tolerance["p_value"] <= ALPHA
+    assert tolerance["significant"], "la significativité ne dépend pas du sens de l'effet"
+    assert not tolerance["declines"], "mais il ne s'agit pas d'un déclin"
+    assert tolerance["inference"] == "testée"
+
+
+def test_significance_and_decline_agree_on_a_genuine_decline():
+    tolerance = strain_tolerance(_lagged_recovery_frame())
+    assert tolerance["declines"]
+    assert tolerance["significant"], "un déclin établi est aussi significatif"
+
+
+def test_sleep_insight_claims_no_load_adjustment_without_load_data():
+    """Le modèle n'ajuste la charge que si le bracelet a renvoyé des cycles."""
+    days = 60
+    rng = np.random.default_rng(9)
+    sleep = 6.0 + rng.normal(0, 1.0, days)
+    frame = pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-08-01", periods=days, freq="D"),
+            "Sommeil (heures)": sleep,
+            "Récupération (%)": np.clip(20 + sleep * 6.0 + rng.normal(0, 3, days), 5, 99),
+        }
+    )
+    drivers = recovery_drivers(frame)
+    assert list(drivers["coefficients"]) == ["Sommeil (heures)"], "aucune charge n'est ajustée"
+    insight = next((item for item in generate_insights(frame, limit=12) if item.icon == "🔬"), None)
+    assert insight is not None
+    assert "à charge d'entraînement égale" not in insight.body
+
+
+def test_load_insight_claims_no_sleep_adjustment_without_sleep_data():
+    frame = _lagged_recovery_frame().drop(
+        columns=["Sommeil (heures)", "Besoin de sommeil (heures)", "Dette de sommeil (heures)"]
+    )
+    drivers = recovery_drivers(frame)
+    assert list(drivers["coefficients"]) == ["Strain de la veille"]
+    insight = _load_cost_insight(frame)
+    assert insight is not None
+    assert "à sommeil égal" not in insight.body
