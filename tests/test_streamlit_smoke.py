@@ -809,3 +809,56 @@ def test_whoop_page_exports_the_journal():
 
     assert not at.exception
     assert "Exporter le journal (CSV)" in [button.label for button in at.get("download_button")]
+
+
+def test_whoop_page_states_where_the_weight_is_going_before_anything_else():
+    """Une prise de poids ne doit pas rester invisible derrière un constat sur le sommeil."""
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at, whoop_days=45)
+    weights = at.session_state["working_data"].copy()
+    # Profil de prise de poids réelle sur la période.
+    weights["Poids (Kgs)"] = [100.0 + index * 0.06 for index in range(len(weights))]
+    for key in ("working_data", "source_data", "raw_data"):
+        at.session_state[key] = weights.copy()
+    at.run(timeout=30)
+
+    assert not at.exception
+    rendered = " ".join(str(m.value) for m in at.markdown)
+    assert "Votre poids augmente" in rendered
+    assert "kg par semaine" in rendered
+
+
+def test_whoop_page_projects_the_arrival_against_the_deadline():
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at, whoop_days=45)
+    at.run(timeout=30)
+
+    assert not at.exception
+    rendered = " ".join(str(m.value) for m in at.markdown)
+    assert "Au rythme actuel" in rendered
+
+
+def test_whoop_page_shows_the_recovery_streaks():
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at, whoop_days=45)
+    at.run(timeout=30)
+
+    assert not at.exception
+    labels = [metric.label for metric in at.metric]
+    assert "Série en cours" in labels
+    assert "Plus longue série rouge" in labels
+
+
+def test_whoop_page_reports_what_training_really_costs():
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at, whoop_days=45)
+    at.run(timeout=30)
+
+    assert not at.exception
+    rendered = " ".join(str(m.value) for m in at.markdown)
+    assert "Ce que pèsent vraiment vos séances" in rendered
+    assert "Part de l'entraînement" in [metric.label for metric in at.metric]

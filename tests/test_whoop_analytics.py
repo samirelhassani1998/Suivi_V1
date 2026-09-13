@@ -29,7 +29,9 @@ from app.core.whoop_analytics import (
     personal_baseline,
     physiological_watch,
     previous_days,
+    projected_goal_date,
     recovery_drivers,
+    recovery_streaks,
     recovery_zones,
     rolling_trend,
     sleep_architecture,
@@ -37,6 +39,7 @@ from app.core.whoop_analytics import (
     sport_recovery_impact,
     strain_recovery_balance,
     target_pace_feasibility,
+    training_energy_share,
     training_load,
     weekday_profile,
     weekly_rollup,
@@ -912,13 +915,18 @@ def test_target_pace_feasibility_refuses_a_nonsensical_target(bad_target):
     assert not np.isfinite(feasibility["implied_intake"])
 
 
-def test_generate_insights_surfaces_the_goal_in_calories_first():
-    """C'est le constat le plus structurant : il doit arriver en tête."""
+def test_measured_facts_outrank_the_derived_goal_arithmetic():
+    """L'apport que suppose l'objectif découle des paramètres de la cible et ne
+    bouge presque pas d'un jour sur l'autre : le laisser en tête chaque jour le
+    transformait en bruit, devant des faits réellement mesurés."""
     insights = generate_insights(_daily(20), _burn_frame(), None, required_daily_kg=0.251)
+    icons = [insight.icon for insight in insights]
 
-    assert insights
-    assert "kcal/jour" in insights[0].title
-    assert insights[0].icon == "🎯"
+    goal = next(insight for insight in insights if insight.icon == "🎯")
+    assert "kcal/jour" in goal.title
+    # La direction mesurée du poids arrive avant l'arithmétique de l'objectif.
+    assert "⚖️" in icons
+    assert icons.index("⚖️") < icons.index("🎯")
 
 
 def test_goal_insight_points_to_a_professional_when_the_intake_is_low():
@@ -1502,3 +1510,218 @@ def test_architecture_insight_presents_the_range_as_a_reference_not_a_target():
 
     assert "pas des objectifs" in insight.body or "pas un objectif" in insight.body
     assert "population" in insight.body
+
+
+# ── Où va le poids : le fait que l'application doit énoncer en premier ───────
+
+
+def _weight_frame(days: int = 40, *, kg_per_day: float = -0.08, noise: float = 0.15, seed: int = 4) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    dates = pd.date_range("2026-08-05", periods=days, freq="D")
+    return pd.DataFrame(
+        {
+            "Date": dates,
+            "Poids (Kgs)": 104 + np.arange(days) * kg_per_day + rng.normal(0, noise, days),
+            "Calories (kcal)": [2900.0] * days,
+            "Récupération (%)": [55.0] * days,
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("kg_per_day", "expected_title"),
+    [(-0.08, "Votre poids baisse"), (0.06, "Votre poids augmente"), (0.0, "Votre poids stagne")],
+)
+def test_insights_state_where_the_weight_is_going(kg_per_day, expected_title):
+    """Une prise de deux kilos restait invisible derrière un constat sur le lundi."""
+    insights = generate_insights(_daily(40), _weight_frame(kg_per_day=kg_per_day))
+
+    card = next(insight for insight in insights if insight.icon == "⚖️")
+    assert card.title == expected_title
+    assert "kg par semaine" in card.body
+
+
+def test_each_insight_family_owns_a_distinct_icon():
+    """Deux cartes partageant une icône ne se distinguent plus d'un coup d'œil :
+    la flèche descendante désignait à la fois le poids et la récupération."""
+    insights = generate_insights(_daily(40), _weight_frame(kg_per_day=-0.08), limit=20)
+    icons = [insight.icon for insight in insights]
+
+    assert len(icons) == len(set(icons)), f"icônes répétées : {icons}"
+
+
+def test_weight_direction_outranks_every_derived_estimate():
+    insights = generate_insights(_daily(40), _weight_frame(kg_per_day=0.06))
+    icons = [insight.icon for insight in insights]
+
+    assert icons.index("⚖️") < icons.index("🔥")
+
+
+def test_weight_direction_stays_silent_without_enough_weighings():
+    frame = _weight_frame(days=5)
+    assert not [insight for insight in generate_insights(_daily(20), frame) if insight.icon == "⚖️"]
+
+
+def test_weight_direction_flags_a_scattered_trend_as_indicative():
+    noisy = generate_insights(_daily(40), _weight_frame(noise=2.0))
+    card = next(insight for insight in noisy if insight.icon == "⚖️")
+    assert "indicatif" in card.body
+
+
+# ── Projection vers la cible ─────────────────────────────────────────────────
+
+
+def test_projected_goal_date_extrapolates_the_measured_pace():
+    projection = projected_goal_date(_weight_frame(kg_per_day=-0.1, noise=0.05), target_weight=80.0)
+
+    assert projection["ready"]
+    # 100 kg à la dernière pesée, 0,1 kg/jour : environ 200 jours.
+    assert projection["days"] == pytest.approx(200, rel=0.15)
+    assert projection["date"] > pd.Timestamp("2026-09-13")
+
+
+def test_projected_goal_date_refuses_when_the_weight_rises():
+    projection = projected_goal_date(_weight_frame(kg_per_day=0.05), target_weight=80.0)
+
+    assert not projection["ready"]
+    assert projection["reason"] == "le poids ne va pas vers la cible"
+
+
+def test_projected_goal_date_refuses_an_unreliable_trend():
+    """Une droite qui n'explique rien ne peut pas fixer d'échéance."""
+    projection = projected_goal_date(_weight_frame(kg_per_day=-0.01, noise=4.0), target_weight=80.0)
+
+    assert not projection["ready"]
+    assert projection["reason"] in ("tendance trop irrégulière", "échéance au-delà de dix ans")
+
+
+def test_projected_goal_date_needs_a_minimum_history():
+    projection = projected_goal_date(_weight_frame(days=8), target_weight=80.0)
+    assert not projection["ready"]
+    assert projection["reason"] == "historique trop court"
+
+
+def test_target_progress_insight_compares_the_projection_to_the_deadline():
+    """Être en avance aujourd'hui ne dit rien de la date d'arrivée."""
+    status = {"status": "en avance", "gap_kg": -3.5}
+    insights = generate_insights(
+        _daily(40),
+        _weight_frame(kg_per_day=-0.1, noise=0.05),
+        target_status=status,
+        target_weight=80.0,
+        target_date=pd.Timestamp("2026-12-16"),
+    )
+
+    card = next(insight for insight in insights if insight.icon == "🧭")
+    assert "en avance" in card.title
+    assert "après l'échéance visée" in card.body
+
+
+def test_target_progress_insight_says_when_the_goal_is_out_of_reach():
+    status = {"status": "en retard", "gap_kg": 2.7}
+    insights = generate_insights(
+        _daily(40), _weight_frame(kg_per_day=0.05), target_status=status, target_weight=80.0
+    )
+
+    card = next(insight for insight in insights if insight.icon == "🧭")
+    assert card.tone == "warning"
+    assert "ne serait jamais atteinte" in card.body
+
+
+def test_target_progress_insight_absent_without_a_trajectory():
+    assert not [insight for insight in generate_insights(_daily(40), _weight_frame()) if insight.icon == "🧭"]
+
+
+# ── Un avertissement de santé ne se fait jamais tronquer ─────────────────────
+
+
+def test_a_concordant_health_warning_survives_the_display_limit():
+    """Masquer une alerte parce que six autres cartes se sont déclenchées serait
+    le pire comportement possible de cette liste."""
+    frame = _vitals_frame(40)
+    last = frame.index[-1]
+    frame.loc[last, ["FC repos (bpm)", "HRV (ms)", "Fréquence respiratoire (resp/min)", "Température peau (°C)"]] = [
+        64.0,
+        26.0,
+        17.2,
+        34.2,
+    ]
+    frame["Sommeil (heures)"] = 5.6
+    frame["Besoin de sommeil (heures)"] = 8.2
+    frame["Dette de sommeil (heures)"] = 2.6
+    frame["Récupération (%)"] = 45.0
+    frame["Strain"] = 6.0
+
+    insights = generate_insights(frame, limit=1)
+
+    assert any(insight.icon == "🩺" for insight in insights)
+    assert next(insight for insight in insights if insight.icon == "🩺").pinned
+
+
+def test_an_isolated_health_signal_is_not_pinned():
+    """Un signe isolé s'explique souvent par une soirée tardive : il ne mérite
+    pas de forcer sa place."""
+    frame = _vitals_frame(40)
+    frame.loc[frame.index[-1], "FC repos (bpm)"] = 63.0
+
+    watch_cards = [insight for insight in generate_insights(frame, limit=20) if insight.icon == "🩺"]
+    assert watch_cards and not watch_cards[0].pinned
+
+
+# ── Part de l'entraînement et séries ─────────────────────────────────────────
+
+
+def test_training_energy_share_uses_calories_which_actually_add_up():
+    """Le strain est une échelle logarithmique : seules les calories s'additionnent."""
+    daily = pd.DataFrame({"Date": pd.date_range("2026-09-01", periods=10, freq="D"), "Calories (kcal)": [3000.0] * 10})
+    workouts = pd.DataFrame(
+        {"Date": [pd.Timestamp("2026-09-02"), pd.Timestamp("2026-09-05")], "Calories séance (kcal)": [600.0, 900.0]}
+    )
+
+    share = training_energy_share(daily, workouts)
+
+    assert share["ready"]
+    assert share["mean_daily_burn"] == pytest.approx(3000.0)
+    # 1 500 kcal réparties sur dix jours, soit 150 par jour, soit 5 %.
+    assert share["mean_session_burn"] == pytest.approx(150.0)
+    assert share["share_pct"] == pytest.approx(5.0)
+    assert share["session_days"] == 2
+
+
+def test_training_energy_share_without_any_session_is_zero_not_missing():
+    daily = pd.DataFrame({"Date": pd.date_range("2026-09-01", periods=10, freq="D"), "Calories (kcal)": [3000.0] * 10})
+    share = training_energy_share(daily, pd.DataFrame())
+
+    assert share["ready"]
+    assert share["share_pct"] == pytest.approx(0.0)
+
+
+def test_training_energy_share_needs_a_minimum_history():
+    daily = pd.DataFrame({"Date": pd.date_range("2026-09-01", periods=3, freq="D"), "Calories (kcal)": [3000.0] * 3})
+    assert not training_energy_share(daily, pd.DataFrame())["ready"]
+
+
+def test_recovery_streaks_measure_how_long_a_state_lasts():
+    """Une moyenne hebdomadaire lisse une série de journées rouges."""
+    frame = pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-09-01", periods=14, freq="D"),
+            "Récupération (%)": [70, 75, 80, 25, 20, 30, 28, 60, 50, 71, 68, 72, 66, 80],
+        }
+    )
+
+    streaks = recovery_streaks(frame)
+
+    assert streaks["longest_red"] == 4
+    assert streaks["longest_green"] == 3
+    assert streaks["current_zone"] == "Vert"
+
+
+def test_streak_insight_fires_only_on_a_lasting_red_run():
+    short = pd.DataFrame({"Date": pd.date_range("2026-09-01", periods=6, freq="D"), "Récupération (%)": [70, 70, 70, 70, 20, 20]})
+    assert not [insight for insight in generate_insights(short, limit=20) if insight.icon == "🔻"]
+
+    lasting = pd.DataFrame({"Date": pd.date_range("2026-09-01", periods=6, freq="D"), "Récupération (%)": [70, 70, 20, 22, 25, 18]})
+    card = next(insight for insight in generate_insights(lasting, limit=20) if insight.icon == "🔻")
+    assert "zone rouge" in card.title
+    assert card.tone == "warning"

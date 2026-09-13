@@ -20,11 +20,13 @@ from app.core.date_labels import (
     format_week_label,
 )
 from app.core.formatting import MISSING_VALUE as MISSING_TEXT, format_fr_number
-from app.core.target_trajectory import required_daily_loss
+from app.core.business import FINAL_TARGET_WEIGHT_KG, TARGET_TRAJECTORY_END_DATE
+from app.core.target_trajectory import compare_to_target_trajectory, required_daily_loss
 from app.core.whoop_analytics import (
     KCAL_PER_KG,
     MIN_DAYS_BASELINE,
     MIN_DAYS_CORRELATION,
+    MIN_DAYS_PROJECTION,
     MIN_DAYS_TRAINING_LOAD,
     MIN_NIGHTS_VITALS,
     MIN_SESSIONS_PER_SPORT,
@@ -43,13 +45,16 @@ from app.core.whoop_analytics import (
     lagged_correlations,
     personal_baseline,
     physiological_watch,
+    projected_goal_date,
     recovery_drivers,
+    recovery_streaks,
     recovery_zones,
     rolling_trend,
     sleep_architecture,
     sleep_debt_summary,
     sport_recovery_impact,
     target_pace_feasibility,
+    training_energy_share,
     strain_recovery_balance,
     training_load,
     weekday_profile,
@@ -717,7 +722,19 @@ def _overview_tab(daily: pd.DataFrame, merged: pd.DataFrame, workouts: pd.DataFr
     _headline_panel(daily)
 
     section_header("Ce que disent vos données", "Constats classés par importance, chiffres à l'appui.", "🧠")
-    _render_insights(generate_insights(daily, merged, workouts, required_daily_kg=required_daily_loss()))
+    weights = get_filtered_or_working_data()
+    target_status = compare_to_target_trajectory(weights) if not weights.empty else None
+    _render_insights(
+        generate_insights(
+            daily,
+            merged,
+            workouts,
+            required_daily_kg=required_daily_loss(),
+            target_status=target_status,
+            target_weight=FINAL_TARGET_WEIGHT_KG,
+            target_date=TARGET_TRAJECTORY_END_DATE,
+        )
+    )
 
     with st.expander("Sur quoi reposent ces chiffres ?", expanded=False):
         coverage = coverage_report(daily)
@@ -845,6 +862,25 @@ def _recovery_tab(daily: pd.DataFrame) -> None:
         with cols[1]:
             _render_chart(zone_distribution_chart(zones["counts"]), "whoop-zones")
         _table_view(zones["counts"], "Voir la répartition chiffrée", {"Jours": 0, "Part (%)": 1})
+
+    streaks = recovery_streaks(daily)
+    if streaks["ready"]:
+        streak_cols = st.columns(3)
+        badge = {"Vert": "🟢", "Jaune": "🟡", "Rouge": "🔴"}.get(str(streaks["current_zone"]), "⚪")
+        with streak_cols[0]:
+            kpi_card(
+                "Série en cours",
+                f"{badge} {streaks['current_length']} j",
+                help_text=f"Journées consécutives en zone {str(streaks['current_zone']).lower()}.",
+            )
+        with streak_cols[1]:
+            kpi_card("Plus longue série verte", f"{streaks['longest_green']} j")
+        with streak_cols[2]:
+            kpi_card("Plus longue série rouge", f"{streaks['longest_red']} j")
+        st.caption(
+            "Une moyenne hebdomadaire lisse les séries ; leur durée dit si un état s'installe "
+            "ou s'il s'agit d'une journée isolée."
+        )
 
     _render_chart(
         series_chart(grid, ["Récupération (%)"], "Score de récupération quotidien", "%", trend=rolling_trend(daily, "Récupération (%)")),
@@ -1052,6 +1088,30 @@ def _effort_tab(daily: pd.DataFrame, workouts: pd.DataFrame) -> None:
     _render_chart(series_chart(grid, ["Strain"], "Charge quotidienne", "Strain", trend=rolling_trend(daily, "Strain")), "whoop-effort-strain")
     _render_chart(series_chart(grid, ["Calories (kcal)"], "Dépense énergétique quotidienne", "kcal", trend=rolling_trend(daily, "Calories (kcal)")), "whoop-effort-calories")
 
+    share = training_energy_share(daily, workouts)
+    if share["ready"]:
+        section_header(
+            "Ce que pèsent vraiment vos séances",
+            "Part de la dépense quotidienne attribuable aux entraînements — les calories s'additionnent, contrairement au strain.",
+            "🍽️",
+        )
+        share_cols = st.columns(3)
+        with share_cols[0]:
+            kpi_card("Dépense moyenne", f"{format_fr_number(share['mean_daily_burn'], decimals=0)} kcal/j")
+        with share_cols[1]:
+            kpi_card("Dont séances", f"{format_fr_number(share['mean_session_burn'], decimals=0)} kcal/j")
+        with share_cols[2]:
+            kpi_card(
+                "Part de l'entraînement",
+                f"{format_fr_number(share['share_pct'], decimals=0)} %",
+                help_text=f"Sur {share['days']} jour(s), dont {share['session_days']} avec au moins une séance.",
+            )
+        st.caption(
+            "Une part faible n'est pas un reproche : chez la plupart des gens, le métabolisme de "
+            "repos et l'activité ordinaire portent l'essentiel de la dépense. Le savoir évite "
+            "d'attendre d'une séance qu'elle compense un écart alimentaire."
+        )
+
     balance = strain_recovery_balance(daily)
     if not balance.empty:
         alerts = balance[balance["Type"] == "alerte"]
@@ -1117,6 +1177,76 @@ def _effort_tab(daily: pd.DataFrame, workouts: pd.DataFrame) -> None:
         detailed.sort_values("Date", ascending=False),
         "Voir chaque séance",
         {"Durée (min)": 0, "Strain séance": 1, "Calories séance (kcal)": 0, "FC moyenne (bpm)": 0, "FC max (bpm)": 0, "Distance (km)": 2},
+    )
+
+
+def _projection_panel(merged: pd.DataFrame) -> None:
+    """Où mène le rythme actuel, confronté à l'échéance visée.
+
+    Être en avance aujourd'hui ne dit rien de la date d'arrivée : c'est la
+    confrontation des deux qui rend l'information actionnable.
+    """
+    projection = projected_goal_date(merged, target_weight=FINAL_TARGET_WEIGHT_KG)
+    section_header(
+        "Au rythme actuel",
+        "Projection du rythme mesuré jusqu'à la cible, confrontée à l'échéance.",
+        "🧭",
+    )
+    if not projection["ready"]:
+        reasons = {
+            "historique trop court": f"Projection disponible à partir de {MIN_DAYS_PROJECTION} pesées croisées.",
+            "tendance trop irrégulière": "Les pesées sont trop dispersées autour de la tendance pour projeter une date.",
+            "le poids ne va pas vers la cible": "Au rythme actuel, la cible ne serait pas atteinte : le poids ne descend pas.",
+            "échéance au-delà de dix ans": "Le rythme actuel place l'arrivée au-delà de dix ans.",
+        }
+        st.info(reasons.get(projection["reason"], "Projection indisponible sur la période choisie."))
+        if np.isfinite(projection["slope_kg_per_week"]):
+            st.caption(f"Rythme mesuré : {format_fr_number(projection['slope_kg_per_week'], decimals=2, sign=True)} kg/semaine.")
+        return
+
+    deadline = pd.Timestamp(TARGET_TRAJECTORY_END_DATE)
+    projected = pd.Timestamp(projection["date"])
+    gap_days = int((projected - deadline.normalize()).days)
+
+    cols = st.columns(4)
+    with cols[0]:
+        kpi_card("Rythme mesuré", f"{format_fr_number(projection['slope_kg_per_week'], decimals=2, sign=True)} kg/sem")
+    with cols[1]:
+        kpi_card("Poids actuel", f"{format_fr_number(projection['current_weight'], decimals=1)} kg")
+    with cols[2]:
+        kpi_card(
+            f"Arrivée à {format_fr_number(FINAL_TARGET_WEIGHT_KG, decimals=0)} kg",
+            format_day_month(projected),
+            help_text=f"Soit dans {int(round(projection['days']))} jours, si le rythme se maintenait.",
+        )
+    with cols[3]:
+        st.metric(
+            "Face à l'échéance",
+            f"{gap_days:+d} j",
+            delta=f"{gap_days:+d} j",
+            delta_color="inverse",
+            help=f"Échéance visée : {format_long_date(deadline, with_weekday=False)}.",
+        )
+
+    if gap_days > 7:
+        insight_card(
+            "Le rythme actuel dépasse l'échéance",
+            f"La cible serait atteinte {gap_days} {'jours' if gap_days > 1 else 'jour'} après la date visée. "
+            "Allonger l'échéance ou accentuer le rythme sont les deux issues ; la première ne coûte rien à la santé.",
+            tone="warning",
+            icon="🧭",
+        )
+    elif gap_days < -7:
+        insight_card(
+            "Le rythme actuel devance l'échéance",
+            f"La cible serait atteinte {abs(gap_days)} {'jours' if abs(gap_days) > 1 else 'jour'} avant la date visée.",
+            tone="success",
+            icon="🧭",
+        )
+    st.caption(
+        "Extrapolation linéaire du rythme mesuré : elle répond à « et si cela continuait ainsi », "
+        "ce qui n'est pas une prédiction. Un palier, un changement d'alimentation ou une variation "
+        "d'hydratation la déplacent."
     )
 
 
@@ -1226,6 +1356,8 @@ def _weight_tab(daily: pd.DataFrame, merged: pd.DataFrame) -> None:
         f"{len(merged)} jour(s) couverts à la fois par une pesée et par une mesure WHOOP "
         f"({format_date_range(merged['Date'].min(), merged['Date'].max())})."
     )
+
+    _projection_panel(merged)
 
     _energy_balance_panel(merged, weights)
 

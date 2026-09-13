@@ -114,6 +114,9 @@ Au-delà de ce que restitue l'application WHOOP, l'onglet exploite la seule donn
 - **Dette de sommeil** : écart entre le besoin estimé par WHOOP et le sommeil obtenu, cumulé sur la semaine.
 - **Zones de récupération**, **synthèse hebdomadaire**, **profil par jour de semaine** et **régularité du coucher**.
 
+- **Où va votre poids, et quand la cible tomberait** : la tendance mesurée en kg/semaine, la position face à la trajectoire cible, et la date d'arrivée projetée **confrontée à l'échéance visée** — être en avance aujourd'hui ne dit rien de la date d'arrivée.
+- **Séries de journées** : le nombre de jours consécutifs dans la même zone de récupération, qu'aucune moyenne hebdomadaire ne fait ressortir.
+- **Ce que pèsent vraiment vos séances** : part de la dépense quotidienne attribuable aux entraînements. Les calories s'additionnent, contrairement au strain qui est une échelle logarithmique.
 - **Lecture narrative** : les constats sont rédigés en français, chiffres à l'appui, et classés par importance (montée de charge brutale, dette de sommeil, apport calorique estimé, creux récurrent le tel jour…). Chaque règle reste muette tant que son effectif minimal n'est pas atteint.
 - **Repère personnel** : la HRV et la fréquence au repos sont comparées à la médiane de vos 30 derniers jours plutôt qu'à une norme générale.
 - **Journal jour par jour** : une carte par journée, du plus récent au plus ancien, réunissant récupération et sa zone, sommeil et dette, charge, poids et **les séances du jour situées par leur heure de début**. Les courbes disent comment les choses évoluent ; elles ne disent jamais ce qui s'est passé mardi.
