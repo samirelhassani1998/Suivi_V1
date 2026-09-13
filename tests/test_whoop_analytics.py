@@ -2281,3 +2281,100 @@ def test_contradictory_load_results_are_both_kept():
     assert sorted(item.icon for item in kept) == sorted(["🧗", "⚡"])
     # Sans le seuil, la pente reste affichée quel que soit son sens.
     assert len(deduplicate_load_insights([same_way])) == 1
+
+
+def test_periodic_schedule_no_longer_hides_a_real_effect():
+    """Des blocs à origine fixe conservent la phase d'un entraînement régulier.
+
+    Sur une charge strictement alternée, réordonner des blocs de longueur paire
+    laissait l'alignement intact : l'effet réel survivait dans presque tous les
+    tirages nuls et la p-value frôlait le seuil (0,0200). Avec des origines
+    tirées au hasard, elle tombe au plancher.
+    """
+    drivers = recovery_drivers(_lagged_recovery_frame())
+    assert drivers["p_values"]["Strain de la veille"] < 0.01
+    assert _significant_coefficient(drivers, "Strain de la veille") is not None
+
+
+def test_blocks_do_not_straddle_calendar_gaps():
+    """Un vendredi et le mardi suivant ne forment pas une paire « de la veille ».
+
+    Le `dropna` tasse les jours retenus ; sans les dates, le test traiterait des
+    observations séparées de plusieurs jours comme consécutives.
+    """
+    from app.core.whoop_analytics import _consecutive_runs
+
+    dates = pd.to_datetime(
+        ["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-08", "2026-01-09"]
+    ).to_numpy(dtype="datetime64[ns]")
+    runs = _consecutive_runs(dates)
+    assert [list(run) for run in runs] == [[0, 1, 2], [3, 4]]
+    # Une série sans trou ne forme qu'une suite.
+    dense = pd.date_range("2026-01-01", periods=6, freq="D").to_numpy(dtype="datetime64[ns]")
+    assert len(_consecutive_runs(dense)) == 1
+
+
+def test_intermittent_history_still_produces_a_verdict():
+    """Un historique troué doit rester exploitable, sans dépendance inventée."""
+    rng = np.random.default_rng(11)
+    days = 90
+    frame = _realistic_lagged_frame(days=days, seed=11)
+    # Un jour sur trois manquant : le bracelet n'a pas été porté.
+    frame = frame[np.arange(days) % 3 != 2].reset_index(drop=True)
+    drivers = recovery_drivers(frame)
+    assert drivers["ready"]
+    assert all(np.isfinite(value) for value in drivers["p_values"].values())
+
+
+def test_predictor_removal_is_chosen_on_the_resulting_complete_cases():
+    """La couverture brute d'un prédicteur ne dit pas ce qu'il reste une fois aligné."""
+    days = 60
+    rng = np.random.default_rng(5)
+    strain = np.clip(10 + rng.normal(0, 4, days), 0, 21)
+    recovery = np.empty(days)
+    recovery[0] = 68.0
+    for index in range(1, days):
+        recovery[index] = 68.0 - 2.2 * (strain[index - 1] - 10.0) + rng.normal(0, 5.0)
+    frame = pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-02-01", periods=days, freq="D"),
+            "Récupération (%)": np.clip(recovery, 5, 99),
+            "Strain": strain,
+            "Sommeil (heures)": 7.0 + rng.normal(0, 0.6, days),
+        }
+    )
+    # Le sommeil est mieux couvert dans l'absolu, mais ne recouvre la
+    # récupération que sur une poignée de jours.
+    frame.loc[frame.index[10:], "Sommeil (heures)"] = np.nan
+    frame.loc[frame.index[:6], "Récupération (%)"] = np.nan
+
+    drivers = recovery_drivers(frame)
+    assert drivers["ready"], "retirer le sommeil laisse un modèle de charge estimable"
+    assert list(drivers["coefficients"]) == ["Strain de la veille"]
+
+
+def test_drivers_cache_survives_concurrent_readers():
+    """Un test d'appartenance puis une indexation laissent une fenêtre d'éviction."""
+    import threading
+
+    import app.core.whoop_analytics as module
+
+    module._DRIVERS_CACHE.clear()
+    frames = [_realistic_lagged_frame(days=40 + offset, seed=offset) for offset in range(6)]
+    errors: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            for _ in range(4):
+                for frame in frames:
+                    recovery_drivers(frame)
+        except BaseException as error:  # noqa: BLE001 - le test doit tout rapporter
+            errors.append(error)
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors, f"accès concurrent au cache : {errors[:2]}"
+    assert len(module._DRIVERS_CACHE) <= module._DRIVERS_CACHE_LIMIT

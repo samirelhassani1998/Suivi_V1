@@ -12,6 +12,7 @@ Toutes les fonctions sont pures et refusent explicitement de conclure sur un
 from __future__ import annotations
 
 import hashlib
+import threading
 
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
@@ -562,15 +563,90 @@ def _dependence_block_length(values: np.ndarray, observations: int) -> int:
     rho = min(max(rho, 0.0), 0.95)
     length = int(np.ceil(2.0 / (1.0 - rho)))
     floor_length = max(2, int(round(observations ** (1.0 / 3.0))))
-    # Au moins quatre blocs, sinon les réarrangements possibles se comptent
-    # sur les doigts d'une main.
     return int(min(max(length, floor_length), max(2, observations // 4)))
 
 
+def _consecutive_runs(dates: np.ndarray) -> list[np.ndarray]:
+    """Indices regroupés en suites de jours calendaires consécutifs.
+
+    Le ``dropna`` de la régression tasse les jours retenus : un vendredi et le
+    mardi suivant deviennent deux lignes voisines. Estimer une dépendance « de
+    la veille » ou construire un bloc à cheval sur ce trou reviendrait à
+    inventer une continuité que le bracelet n'a pas mesurée.
+    """
+    if len(dates) == 0:
+        return []
+    days = dates.astype("datetime64[D]").astype(np.int64)
+    breaks = np.flatnonzero(np.diff(days) != 1) + 1
+    return [run for run in np.split(np.arange(len(dates)), breaks) if len(run) > 0]
+
+
+def _dependence_from_runs(values: np.ndarray, runs: Sequence[np.ndarray]) -> float:
+    """Autocorrélation au décalage 1, calculée à l'intérieur des suites seules."""
+    centred = values - values.mean()
+    denominator = float(np.sum(centred**2))
+    if denominator <= 0:
+        return 0.0
+    numerator = 0.0
+    for run in runs:
+        if len(run) < 2:
+            continue
+        segment = centred[run]
+        numerator += float(np.sum(segment[1:] * segment[:-1]))
+    return min(max(numerator / denominator, 0.0), 0.95)
+
+
+def _residual_resampler(
+    runs: Sequence[np.ndarray], block: int, total: int
+) -> tuple[np.ndarray, int] | None:
+    """Prépare les origines de blocs admissibles, une fois pour toutes.
+
+    Tirer bloc par bloc dans une boucle Python coûtait près d'une seconde par
+    régression. Les origines possibles sont donc énumérées une seule fois, et
+    chaque tirage se réduit à une indexation vectorisée.
+    """
+    origins: list[int] = []
+    for run in runs:
+        if len(run) >= block:
+            origins.extend(int(run[position]) for position in range(len(run) - block + 1))
+    if not origins:
+        # Aucune suite de jours consécutifs n'atteint la longueur voulue : on
+        # se rabat sur la plus longue disponible.
+        longest = max(runs, key=len)
+        block = len(longest)
+        if block < 2:
+            return None
+        origins = [int(longest[0])]
+    return np.array(origins, dtype=np.int64), block
+
+
+def _resample_residuals(
+    residuals: np.ndarray,
+    origins: np.ndarray,
+    block: int,
+    total: int,
+    generator: np.random.Generator,
+) -> np.ndarray:
+    """Rééchantillonne les résidus par blocs à origine aléatoire.
+
+    Des blocs découpés à positions fixes partagent tous la même phase : pour un
+    prédicteur périodique — trois séances par semaine, un jour sur deux — les
+    réarranger conserve l'alignement au lieu de le détruire, et l'effet réel
+    survit dans presque tous les tirages nuls. Sur une série au strain alterné,
+    la p-value tombe de 0,0200 à 0,0025 une fois les origines tirées au hasard.
+    Aucun bloc n'enjambe un trou de calendrier : les origines admissibles sont
+    calculées à l'intérieur des suites de jours consécutifs.
+    """
+    count = int(np.ceil(total / block))
+    picks = origins[generator.integers(0, len(origins), size=count)]
+    index = (picks[:, None] + np.arange(block)[None, :]).ravel()[:total]
+    return residuals[index]
+
+
 def _block_permutation_p_values(
-    x: np.ndarray, y: np.ndarray, names: Sequence[str]
+    x: np.ndarray, y: np.ndarray, names: Sequence[str], dates: np.ndarray
 ) -> dict[str, float] | None:
-    """p-values obtenues en rebattant des blocs de jours consécutifs.
+    """p-values par la méthode de Freedman-Lane, sous dépendance temporelle.
 
     La formule usuelle ``s² (XᵀX)⁻¹`` suppose des erreurs indépendantes. La
     récupération d'un jour ressemble pourtant à celle de la veille, et cette
@@ -581,18 +657,18 @@ def _block_permutation_p_values(
     La correction de Bonferroni n'y pouvait rien — ce sont les erreurs-types
     elles-mêmes qui étaient trop petites.
 
-    Deux estimateurs d'erreur-type ont été essayés et écartés sur mesure :
-    Newey-West dégradait le cas sans autocorrélation (9,8 % pour 5 % attendus)
-    sans redresser franchement les autres, et le bootstrap en blocs laissait
-    encore 26,5 % à rho = 0,8. Aucun ne corrige le fait que l'effectif
+    Newey-West et le bootstrap en blocs ont été essayés puis écartés sur
+    mesure : le premier dégradait le cas sans autocorrélation, le second
+    laissait 26,5 % à rho = 0,8. Aucun ne répare le fait que l'effectif
     *effectif* d'une série autocorrélée est bien inférieur à son nombre de
     jours.
 
-    L'hypothèse nulle est donc construite plutôt qu'approchée : les blocs de
-    jours consécutifs du prédicteur sont rebattus, ce qui conserve sa propre
-    autocorrélation et celle de la récupération tout en détruisant le lien
-    entre les deux. La p-value est la part des réarrangements produisant un
-    coefficient au moins aussi fort que l'observé.
+    Rebattre la colonne du prédicteur, essayé ensuite, détruisait aussi sa
+    relation avec l'autre prédicteur : la loi obtenue n'était pas celle du
+    coefficient *à covariable retenue*, et la colinéarité y rendait les
+    p-values trop petites. Ce sont donc les résidus du modèle réduit qui sont
+    rééchantillonnés — la covariable conservée garde son rôle, et la structure
+    périodique du prédicteur n'est pas touchée.
 
     Le tirage est déterministe : deux affichages de la même page ne doivent pas
     donner deux verdicts différents.
@@ -605,30 +681,38 @@ def _block_permutation_p_values(
     except np.linalg.LinAlgError:
         return None
 
-    # La longueur de bloc doit dépasser la portée de la dépendance, sans quoi
-    # le rebattage recrée des séries trop peu autocorrélées et le test reste
-    # optimiste : avec des blocs fixes d'environ quatre jours, le taux de
-    # fausses détections restait à 16,8 % pour rho = 0,8. La portée est donc
-    # estimée sur la récupération elle-même.
-    block = _dependence_block_length(y, observations)
-    starts = list(range(0, observations, block))
-    if len(starts) < 3:
+    runs = _consecutive_runs(dates)
+    if not runs:
         return None
-    blocks = [np.arange(begin, min(begin + block, observations)) for begin in starts]
-
     generator = np.random.default_rng(PERMUTATION_SEED)
     results: dict[str, float] = {}
     for position, name in enumerate(names):
         column = position + 1
+        keep = [index for index in range(x.shape[1]) if index != column]
+        reduced = x[:, keep]
+        try:
+            reduced_coefficients, *_ = np.linalg.lstsq(reduced, y, rcond=None)
+        except np.linalg.LinAlgError:
+            return None
+        fitted = reduced @ reduced_coefficients
+        residuals = y - fitted
+        # Ce sont les résidus qui sont rééchantillonnés : c'est donc leur
+        # dépendance, et non celle de la récupération brute, qui fixe la
+        # longueur des blocs. Le facteur trois — plutôt que deux — laisse deux
+        # blocs voisins nettement moins liés, ce que la mesure confirme.
+        rho = _dependence_from_runs(residuals, runs)
+        block = int(min(max(int(np.ceil(3.0 / (1.0 - rho))), 2), max(2, observations // 3)))
+        prepared = _residual_resampler(runs, block, observations)
+        if prepared is None:
+            return None
+        origins, block = prepared
+
         extreme = 0
         drawn = 0
         for _ in range(PERMUTATION_RESAMPLES):
-            order = generator.permutation(len(blocks))
-            index = np.concatenate([blocks[choice] for choice in order])[:observations]
-            shuffled = x.copy()
-            shuffled[:, column] = x[index, column]
+            resampled = _resample_residuals(residuals, origins, block, observations, generator)
             try:
-                null_coefficients, *_ = np.linalg.lstsq(shuffled, y, rcond=None)
+                null_coefficients, *_ = np.linalg.lstsq(x, fitted + resampled, rcond=None)
             except np.linalg.LinAlgError:
                 continue
             drawn += 1
@@ -643,6 +727,7 @@ def _block_permutation_p_values(
 
 
 _DRIVERS_CACHE: dict[tuple, dict[str, Any]] = {}
+_DRIVERS_CACHE_LOCK = threading.Lock()
 _DRIVERS_CACHE_LIMIT = 8
 
 
@@ -676,8 +761,13 @@ def recovery_drivers(frame: pd.DataFrame | None, *, min_days: int = MIN_DAYS_REG
         return result
 
     fingerprint = _drivers_fingerprint(grid, min_days)
-    if fingerprint is not None and fingerprint in _DRIVERS_CACHE:
-        return dict(_DRIVERS_CACHE[fingerprint])
+    if fingerprint is not None:
+        # Un test d'appartenance suivi d'une indexation laisse une fenêtre
+        # pendant laquelle une autre exécution peut évincer la clé : la page
+        # tombait alors sur une KeyError. Une lecture unique n'a pas de fenêtre.
+        cached = _DRIVERS_CACHE.get(fingerprint)
+        if cached is not None:
+            return dict(cached)
 
     predictors: dict[str, pd.Series] = {}
     if "Sommeil (heures)" in grid.columns:
@@ -687,19 +777,32 @@ def recovery_drivers(frame: pd.DataFrame | None, *, min_days: int = MIN_DAYS_REG
     if not predictors:
         return result
 
-    design = pd.DataFrame({"Récupération (%)": grid["Récupération (%)"], **predictors}).dropna()
+    def _complete_cases(chosen: Mapping[str, pd.Series]) -> pd.DataFrame:
+        return pd.DataFrame(
+            {"Date": grid["Date"], "Récupération (%)": grid["Récupération (%)"], **chosen}
+        ).dropna()
+
+    design = _complete_cases(predictors)
     # Un prédicteur renseigné sur quelques jours seulement emportait tout le
     # modèle par le dropna conjoint : quelques nuits notées suffisaient à faire
     # taire l'analyse de la charge, alors que l'absence totale de sommeil, elle,
-    # laissait tourner le modèle réduit. Le prédicteur le moins couvert est donc
-    # retiré tant qu'il coûte des observations sans lesquelles on refuserait.
+    # laissait tourner le modèle réduit.
+    #
+    # Le candidat au retrait ne peut pas se choisir sur la couverture brute de
+    # chaque prédicteur : ce qui compte est le nombre de jours complets restants
+    # une fois la récupération alignée. Un prédicteur plus renseigné dans
+    # l'absolu peut recouvrir la récupération bien moins souvent. Chaque retrait
+    # possible est donc évalué sur son résultat.
     while len(predictors) > 1 and len(design) < max(int(min_days), len(predictors) + 3):
-        sparsest = min(predictors, key=lambda name: int(predictors[name].notna().sum()))
-        reduced = {name: series for name, series in predictors.items() if name != sparsest}
-        candidate = pd.DataFrame({"Récupération (%)": grid["Récupération (%)"], **reduced}).dropna()
-        if len(candidate) <= len(design):
+        options = []
+        for name in predictors:
+            remaining = {key: series for key, series in predictors.items() if key != name}
+            options.append((len(_complete_cases(remaining)), name, remaining))
+        best_count, _, best_predictors = max(options, key=lambda option: option[0])
+        if best_count <= len(design):
             break
-        predictors, design = reduced, candidate
+        predictors = best_predictors
+        design = _complete_cases(predictors)
     result["days"] = int(len(design))
     # Il faut nettement plus d'observations que de paramètres pour que les
     # coefficients aient un sens ; sinon la régression interpole le bruit.
@@ -727,7 +830,9 @@ def recovery_drivers(frame: pd.DataFrame | None, *, min_days: int = MIN_DAYS_REG
     if degrees > 0 and residual >= 0:
         from scipy import stats
 
-        permuted = _block_permutation_p_values(x, y, list(predictors))
+        permuted = _block_permutation_p_values(
+            x, y, list(predictors), design["Date"].to_numpy(dtype="datetime64[ns]")
+        )
         if permuted is not None:
             p_values.update(permuted)
             # L'erreur-type reste utile pour situer l'ordre de grandeur, même
@@ -755,9 +860,10 @@ def recovery_drivers(frame: pd.DataFrame | None, *, min_days: int = MIN_DAYS_REG
     result["raw_r_squared"] = float(raw_r2) if np.isfinite(raw_r2) else float("nan")
     result["ready"] = True
     if fingerprint is not None:
-        if len(_DRIVERS_CACHE) >= _DRIVERS_CACHE_LIMIT:
-            _DRIVERS_CACHE.pop(next(iter(_DRIVERS_CACHE)))
-        _DRIVERS_CACHE[fingerprint] = dict(result)
+        with _DRIVERS_CACHE_LOCK:
+            while len(_DRIVERS_CACHE) >= _DRIVERS_CACHE_LIMIT:
+                _DRIVERS_CACHE.pop(next(iter(_DRIVERS_CACHE)), None)
+            _DRIVERS_CACHE[fingerprint] = dict(result)
     return result
 
 
