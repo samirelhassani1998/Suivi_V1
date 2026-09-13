@@ -7,6 +7,11 @@ import pandas as pd
 import pytest
 
 from app.core.whoop_analytics import (
+    ALPHA,
+    _fr,
+    _significant_coefficient,
+    _load_cost_insight,
+    _observed_strain_contrast,
     ACUTE_LOAD_DAYS,
     DEFAULT_CORRELATION_TARGET,
     KCAL_PER_KG,
@@ -27,6 +32,8 @@ from app.core.whoop_analytics import (
     lagged_correlations,
     last_days,
     personal_baseline,
+    recovery_drivers,
+    strain_tolerance,
     physiological_watch,
     previous_days,
     projected_goal_date,
@@ -1725,3 +1732,440 @@ def test_streak_insight_fires_only_on_a_lasting_red_run():
     card = next(insight for insight in generate_insights(lasting, limit=20) if insight.icon == "🔻")
     assert "zone rouge" in card.title
     assert card.tone == "warning"
+
+
+# ── Antériorité des facteurs de récupération ────────────────────────────────
+
+
+def _lagged_recovery_frame(days: int = 60, *, seed: int = 11) -> pd.DataFrame:
+    """Série où la récupération dépend uniquement du strain de la VEILLE.
+
+    Le strain alterne fort/faible d'un jour sur l'autre : le strain du même jour
+    et celui de la veille portent alors des signes opposés vis-à-vis de la
+    récupération, ce qui rend toute confusion entre les deux immédiatement
+    visible.
+    """
+    rng = np.random.default_rng(seed)
+    dates = pd.date_range("2026-04-01", periods=days, freq="D")
+    strain = np.where(np.arange(days) % 2 == 0, 16.0, 5.0) + rng.normal(0, 0.3, days)
+    recovery = np.empty(days)
+    recovery[0] = 65.0
+    for index in range(1, days):
+        recovery[index] = 70.0 - 2.5 * (strain[index - 1] - 10.0) + rng.normal(0, 1.5)
+    frame = pd.DataFrame(
+        {
+            "Date": dates,
+            "Récupération (%)": np.clip(recovery, 5, 99),
+            "Strain": strain,
+            "Sommeil (heures)": 7.2 + rng.normal(0, 0.3, days),
+            "Besoin de sommeil (heures)": np.full(days, 8.2),
+            "Calories (kcal)": 2400 + (strain - 10) * 100,
+        }
+    )
+    frame["Dette de sommeil (heures)"] = frame["Besoin de sommeil (heures)"] - frame["Sommeil (heures)"]
+    return frame
+
+
+def test_contrast_compares_previous_day_strain_not_same_day():
+    """Le score du matin précède l'effort du jour : le facteur doit être la veille.
+
+    Sur cette série, le strain du même jour est ÉLEVÉ les bons jours et celui de
+    la veille est BAS : confondre les deux inverse la conclusion affichée.
+    """
+    frame = _lagged_recovery_frame()
+    table = contrast_best_worst_days(frame)["table"]
+    factors = list(table["Facteur"])
+
+    assert "Strain de la veille" in factors
+    assert "Strain" not in factors, "le strain du même jour est postérieur au score du matin"
+
+    gap = float(table.loc[table["Facteur"] == "Strain de la veille", "Écart"].iloc[0])
+    assert gap < 0, "une veille chargée doit précéder une moins bonne récupération"
+
+    grid = daily_grid(frame)
+    same_day_gap = (
+        grid.loc[grid["Récupération (%)"] >= grid["Récupération (%)"].quantile(2 / 3), "Strain"].mean()
+        - grid.loc[grid["Récupération (%)"] <= grid["Récupération (%)"].quantile(1 / 3), "Strain"].mean()
+    )
+    assert same_day_gap > 0, "le scénario doit bien opposer les deux lectures"
+
+
+def test_contrast_insight_states_the_gap_in_correct_french():
+    """« soit moins de 2,5 » se lit « moins que 2,5 » : le complément suit la valeur."""
+    insights = generate_insights(_lagged_recovery_frame(), limit=12)
+    contrast = next((item for item in insights if item.icon == "🔍"), None)
+    assert contrast is not None
+    assert "de moins" in contrast.body or "de plus" in contrast.body
+    assert "soit moins de" not in contrast.body
+    assert "soit davantage de" not in contrast.body
+    # Le groupe nominal est articlé, et le verbe s'accorde à son nombre.
+    assert " vaut " in contrast.body or " valent " in contrast.body
+    assert "les calories brûlées la veille vaut" not in contrast.body
+    assert "le strain de la veille valent" not in contrast.body
+
+
+def test_recovery_drivers_reports_a_p_value_per_coefficient():
+    """Un prédicteur de bruit doit rester non significatif, le vrai doit ressortir."""
+    drivers = recovery_drivers(_lagged_recovery_frame())
+    assert drivers["ready"]
+    assert drivers["p_values"]["Strain de la veille"] < 0.01
+    assert drivers["p_values"]["Sommeil (heures)"] > 0.05
+    assert drivers["standard_errors"]["Strain de la veille"] > 0
+
+
+def test_sleep_driver_insight_stays_silent_on_a_non_significant_coefficient():
+    """Un R² porté par la charge n'autorise rien à affirmer sur le sommeil."""
+    frame = _lagged_recovery_frame()
+    drivers = recovery_drivers(frame)
+    assert drivers["p_values"]["Sommeil (heures)"] > 0.05
+    insights = generate_insights(frame, limit=12)
+    assert all(item.icon != "🔬" for item in insights)
+
+
+def test_strain_tolerance_orders_bands_and_reports_the_threshold():
+    tolerance = strain_tolerance(_lagged_recovery_frame())
+    assert tolerance["ready"]
+    table = tolerance["table"]
+    assert list(table["Charge de la veille"]) == ["Journées calmes", "Journées moyennes", "Journées chargées"]
+    assert table["Strain moyen"].is_monotonic_increasing
+    assert tolerance["heavy_recovery"] < tolerance["calm_recovery"]
+    assert np.isfinite(tolerance["high_band_floor"])
+    assert tolerance["declines"], "l'écart doit survivre au test statistique sur cette série"
+    assert tolerance["gap_low"] > 0, "l'intervalle de confiance doit exclure zéro"
+
+
+def test_strain_tolerance_refuses_a_series_too_short():
+    tolerance = strain_tolerance(_daily(10))
+    assert not tolerance["ready"]
+    assert tolerance["table"].empty
+    assert tolerance["required_pairs"] >= tolerance["pairs"]
+
+
+def test_load_insights_do_not_say_the_same_thing_twice():
+    """Le plafond et la pente décrivent un seul effet : une seule carte le porte."""
+    insights = generate_insights(_lagged_recovery_frame(), limit=12)
+    icons = [item.icon for item in insights]
+    assert "🧗" in icons
+    assert "⚡" not in icons
+
+
+def test_tolerance_insight_omits_an_empty_red_share():
+    frame = _lagged_recovery_frame()
+    tolerance = strain_tolerance(frame)
+    insight = next(item for item in generate_insights(frame, limit=12) if item.icon == "🧗")
+    if tolerance["heavy_red_share"] == 0:
+        assert "rouges" not in insight.body
+    else:
+        assert "rouges" in insight.body
+
+
+def test_sport_insight_does_not_state_the_negation_twice():
+    """« −6 points sous votre moyenne » dit littéralement six points au-dessus."""
+    days = 40
+    dates = pd.date_range("2026-05-01", periods=days, freq="D")
+    rng = np.random.default_rng(5)
+    # La boxe un jour sur deux, suivie d'un lendemain nettement dégradé.
+    boxing = np.arange(days) % 2 == 0
+    recovery = np.where(np.roll(boxing, 1), 45.0, 75.0) + rng.normal(0, 2, days)
+    daily = pd.DataFrame(
+        {
+            "Date": dates,
+            "Récupération (%)": np.clip(recovery, 5, 99),
+            "Strain": np.where(boxing, 15.0, 6.0),
+            "Sommeil (heures)": 7.0 + rng.normal(0, 0.2, days),
+        }
+    )
+    workouts = pd.DataFrame(
+        {
+            "Date": dates[boxing],
+            "Sport": "Boxing",
+            "Durée (min)": 60.0,
+            "Strain séance": 12.0,
+        }
+    )
+    insight = next(
+        (item for item in generate_insights(daily, workouts=workouts, limit=12) if item.icon == "🥊"),
+        None,
+    )
+    assert insight is not None
+    assert "sous votre moyenne" in insight.body
+    assert "−" not in insight.body.split("sous votre moyenne")[0].split("soit ")[-1]
+    assert "-" not in insight.body.split("sous votre moyenne")[0].split("soit ")[-1]
+
+
+def test_fr_uses_the_typographic_minus_even_without_an_explicit_sign():
+    """Deux graphies pour une même grandeur nuisent à la lecture d'un tableau."""
+    assert _fr(-6.0, 0) == "−6"
+    assert _fr(-1.25, 2) == "−1,25"
+    assert _fr(6.0, 0) == "6"
+    assert _fr(-6.0, 0, sign=True) == "−6"
+    assert _fr(6.0, 0, sign=True) == "+6"
+
+
+def _independent_strain_frame(days: int = 26, *, seed: int = 0) -> pd.DataFrame:
+    """Strain et récupération totalement indépendants : aucun plafond à trouver."""
+    rng = np.random.default_rng(seed)
+    return pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-02-01", periods=days, freq="D"),
+            "Strain": np.clip(10 + rng.normal(0, 4, days), 0, 21),
+            "Récupération (%)": np.clip(60 + rng.normal(0, 15, days), 5, 99),
+        }
+    )
+
+
+def test_strain_tolerance_separates_having_data_from_measuring_a_decline():
+    """Trois bandes peuplées n'impliquent pas que les journées chargées coûtent."""
+    rates = []
+    for seed in range(120):
+        tolerance = strain_tolerance(_independent_strain_frame(seed=seed))
+        if not tolerance["ready"]:
+            continue
+        rates.append(tolerance["declines"])
+    assert rates, "le scénario doit produire des séries exploitables"
+    # Un écart brut de 3 points se déclenchait sur près d'un tiers de ces
+    # séries ; le test de Welch ramène le taux au voisinage de son alpha.
+    assert sum(rates) / len(rates) < 0.12
+
+
+def test_strain_tolerance_reports_a_confidence_interval_for_the_gap():
+    tolerance = strain_tolerance(_lagged_recovery_frame())
+    assert tolerance["ready"]
+    assert np.isfinite(tolerance["p_value"])
+    assert tolerance["gap_low"] <= tolerance["gap"] <= tolerance["gap_high"]
+
+
+def test_tolerance_insight_stays_silent_without_a_measured_decline():
+    """Sans déclin établi, aucun plafond personnel ne doit être annoncé."""
+    for seed in range(40):
+        frame = _independent_strain_frame(seed=seed)
+        if strain_tolerance(frame)["declines"]:
+            continue
+        assert all(item.icon != "🧗" for item in generate_insights(frame, limit=12))
+
+
+def test_high_band_floor_is_not_presented_as_an_estimated_breakpoint():
+    """Le bord du tiers haut suit la distribution de charge, pas la réponse.
+
+    Doubler la dispersion du strain sans toucher au lien strain → récupération
+    déplace la valeur : elle ne peut donc pas être présentée comme un point de
+    rupture appris sur la récupération.
+    """
+    base = _lagged_recovery_frame()
+    spread = base.copy()
+    spread["Strain"] = spread["Strain"].mean() + (spread["Strain"] - spread["Strain"].mean()) * 2.0
+    assert strain_tolerance(spread)["high_band_floor"] != strain_tolerance(base)["high_band_floor"]
+
+
+def _two_level_strain_frame(days: int = 40) -> pd.DataFrame:
+    """Effectif largement suffisant, mais une charge à deux niveaux seulement."""
+    rng = np.random.default_rng(0)
+    return pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-03-01", periods=days, freq="D"),
+            "Strain": np.where(np.arange(days) % 2 == 0, 5.0, 15.0),
+            "Récupération (%)": np.clip(60 + rng.normal(0, 12, days), 5, 99),
+        }
+    )
+
+
+def test_uniform_load_is_not_reported_as_a_missing_history():
+    """Réclamer « plus de jours » quand l'effectif est atteint est insatisfaisable."""
+    tolerance = strain_tolerance(_two_level_strain_frame())
+    assert not tolerance["ready"]
+    assert tolerance["pairs"] > tolerance["required_pairs"], "l'effectif est déjà dépassé"
+    assert tolerance["reason"] == "charge trop uniforme"
+
+
+def test_short_history_still_reports_an_effectif_reason():
+    tolerance = strain_tolerance(_daily(10))
+    assert not tolerance["ready"]
+    assert tolerance["reason"] == "effectif"
+
+
+def _constant_bands_frame(days: int = 33) -> pd.DataFrame:
+    """Bandes parfaitement séparées et chacune constante : variances nulles."""
+    strain = np.tile([3.0, 7.0, 11.0, 15.0, 19.0], days // 5 + 1)[:days]
+    low, high = np.quantile(strain, 1 / 3), np.quantile(strain, 2 / 3)
+    following = np.where(strain <= low, 80.0, np.where(strain >= high, 50.0, 65.0))
+    recovery = np.empty(days)
+    recovery[0] = 70.0
+    recovery[1:] = following[:-1]
+    return pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-06-01", periods=days, freq="D"),
+            "Strain": strain,
+            "Récupération (%)": recovery,
+        }
+    )
+
+
+def test_an_untestable_separation_is_not_called_indistinguishable_from_chance():
+    """Le test de Welch n'est pas défini à variance nulle : il faut le dire."""
+    tolerance = strain_tolerance(_constant_bands_frame())
+    assert tolerance["ready"]
+    assert tolerance["gap"] > 0, "les bandes sont pourtant parfaitement séparées"
+    assert tolerance["inference"] == "indisponible"
+    assert not tolerance["declines"], "aucune conclusion sans test praticable"
+
+
+def test_a_tested_gap_is_marked_as_tested():
+    tolerance = strain_tolerance(_lagged_recovery_frame())
+    assert tolerance["inference"] == "testée"
+    assert np.isfinite(tolerance["p_value"])
+
+
+def test_load_cost_insight_illustrates_with_an_observed_contrast():
+    """Un exemple figé à cinq points extrapole chez qui varie moins que cela."""
+    frame = _lagged_recovery_frame()
+    insight = next(
+        (item for item in generate_insights(frame, limit=12) if item.icon == "⚡"),
+        None,
+    )
+    if insight is None:  # supprimé au profit du seuil quand les deux se déclenchent
+        insight = _load_cost_insight(frame)
+    assert insight is not None
+    assert "5 points au-dessus de l'ordinaire" not in insight.body
+    # L'écart illustré ne dépasse pas la dispersion réellement mesurée.
+    contrast = _observed_strain_contrast(frame)
+    assert contrast is None or contrast <= frame["Strain"].max() - frame["Strain"].min()
+
+
+def test_load_cost_insight_keeps_its_conclusion_associative():
+    """« coûte donc » ferait d'une association mesurée un effet établi."""
+    insight = _load_cost_insight(_lagged_recovery_frame())
+    assert insight is not None
+    assert "coûte donc" not in insight.body
+    assert "association" in insight.body
+    assert "s'accompagne de" in insight.body
+
+
+def test_coefficient_gate_corrects_for_testing_both_predictors():
+    """Deux coefficients acceptés chacun à 5 % laissent près de 10 % d'erreur.
+
+    Le seuil est divisé par le nombre de coefficients, comme il l'est déjà pour
+    les corrélations décalées.
+    """
+    fired = 0
+    trials = 250
+    for seed in range(trials):
+        rng = np.random.default_rng(seed)
+        days = 40
+        frame = pd.DataFrame(
+            {
+                "Date": pd.date_range("2026-01-01", periods=days, freq="D"),
+                "Sommeil (heures)": 7 + rng.normal(0, 0.8, days),
+                "Strain": np.clip(10 + rng.normal(0, 4, days), 0, 21),
+                "Récupération (%)": np.clip(60 + rng.normal(0, 15, days), 5, 99),
+            }
+        )
+        drivers = recovery_drivers(frame)
+        if not drivers["ready"]:
+            continue
+        if any(
+            _significant_coefficient(drivers, name) is not None
+            for name in drivers["coefficients"]
+        ):
+            fired += 1
+    # Sans correction, la mesure donne 8,2 % sur ces séries sans aucun lien.
+    assert fired / trials < 0.07
+
+
+def test_a_genuinely_significant_coefficient_survives_the_correction():
+    drivers = recovery_drivers(_lagged_recovery_frame())
+    assert _significant_coefficient(drivers, "Strain de la veille") is not None
+    assert _significant_coefficient(drivers, "Sommeil (heures)") is None
+
+
+def test_positive_load_branch_is_as_cautious_as_the_negative_one():
+    """Un coefficient positif n'établit pas que la charge est bien tolérée.
+
+    S'entraîner davantage les matins où l'on se réveille frais, la récupération
+    étant autocorrélée, produit exactement ce signe sans que la charge y soit
+    pour quoi que ce soit. La branche positive doit donc rester aussi prudente
+    que la négative.
+    """
+    days = 60
+    rng = np.random.default_rng(4)
+    strain = np.clip(10 + rng.normal(0, 4, days), 0, 21)
+    recovery = np.empty(days)
+    recovery[0] = 60.0
+    for index in range(1, days):
+        recovery[index] = 45.0 + 2.0 * strain[index - 1] + rng.normal(0, 2.0)
+    frame = pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-07-01", periods=days, freq="D"),
+            "Récupération (%)": np.clip(recovery, 5, 99),
+            "Strain": strain,
+            "Sommeil (heures)": 7.0 + rng.normal(0, 0.3, days),
+        }
+    )
+    insight = _load_cost_insight(frame)
+    assert insight is not None, "la branche positive doit se déclencher sur cette série"
+    assert "ne sont pas suivies" in insight.body
+    assert "reste dans ce que vous encaissez" not in insight.body
+    assert "association mesurée" in insight.body
+    assert insight.tone != "success"
+
+
+def _reverse_association_frame(days: int = 60, *, seed: int = 2) -> pd.DataFrame:
+    """Les journées chargées sont suivies d'une MEILLEURE récupération."""
+    rng = np.random.default_rng(seed)
+    strain = np.clip(10 + rng.normal(0, 4, days), 0, 21)
+    recovery = np.empty(days)
+    recovery[0] = 60.0
+    for index in range(1, days):
+        recovery[index] = 45.0 + 2.0 * strain[index - 1] + rng.normal(0, 3.0)
+    return pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-01-01", periods=days, freq="D"),
+            "Strain": strain,
+            "Récupération (%)": np.clip(recovery, 5, 99),
+        }
+    )
+
+
+def test_a_significant_reverse_association_is_not_called_chance():
+    """Un écart inverse peut être parfaitement établi : p ≈ 10⁻¹³ ici."""
+    tolerance = strain_tolerance(_reverse_association_frame())
+    assert tolerance["gap"] < 0, "les journées chargées précèdent une meilleure récupération"
+    assert tolerance["p_value"] <= ALPHA
+    assert tolerance["significant"], "la significativité ne dépend pas du sens de l'effet"
+    assert not tolerance["declines"], "mais il ne s'agit pas d'un déclin"
+    assert tolerance["inference"] == "testée"
+
+
+def test_significance_and_decline_agree_on_a_genuine_decline():
+    tolerance = strain_tolerance(_lagged_recovery_frame())
+    assert tolerance["declines"]
+    assert tolerance["significant"], "un déclin établi est aussi significatif"
+
+
+def test_sleep_insight_claims_no_load_adjustment_without_load_data():
+    """Le modèle n'ajuste la charge que si le bracelet a renvoyé des cycles."""
+    days = 60
+    rng = np.random.default_rng(9)
+    sleep = 6.0 + rng.normal(0, 1.0, days)
+    frame = pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-08-01", periods=days, freq="D"),
+            "Sommeil (heures)": sleep,
+            "Récupération (%)": np.clip(20 + sleep * 6.0 + rng.normal(0, 3, days), 5, 99),
+        }
+    )
+    drivers = recovery_drivers(frame)
+    assert list(drivers["coefficients"]) == ["Sommeil (heures)"], "aucune charge n'est ajustée"
+    insight = next((item for item in generate_insights(frame, limit=12) if item.icon == "🔬"), None)
+    assert insight is not None
+    assert "à charge d'entraînement égale" not in insight.body
+
+
+def test_load_insight_claims_no_sleep_adjustment_without_sleep_data():
+    frame = _lagged_recovery_frame().drop(
+        columns=["Sommeil (heures)", "Besoin de sommeil (heures)", "Dette de sommeil (heures)"]
+    )
+    drivers = recovery_drivers(frame)
+    assert list(drivers["coefficients"]) == ["Strain de la veille"]
+    insight = _load_cost_insight(frame)
+    assert insight is not None
+    assert "à sommeil égal" not in insight.body

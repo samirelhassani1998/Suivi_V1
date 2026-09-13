@@ -576,6 +576,34 @@ def recovery_drivers(frame: pd.DataFrame | None, *, min_days: int = MIN_DAYS_REG
     residual = float(np.sum((y - predicted) ** 2))
     total = float(np.sum((y - y.mean()) ** 2))
     result["coefficients"] = {name: float(coefficients[index + 1]) for index, name in enumerate(predictors)}
+
+    # Un R² global faible n'interdit pas qu'un prédicteur porte un effet réel :
+    # la physiologie quotidienne est bruitée, et exiger 25 % de variance
+    # expliquée fait taire des coefficients pourtant nettement non nuls. Chaque
+    # coefficient reçoit donc son erreur-type et sa p-value, testés séparément.
+    degrees = len(design) - x.shape[1]
+    standard_errors: dict[str, float] = {}
+    p_values: dict[str, float] = {}
+    if degrees > 0 and residual >= 0:
+        from scipy import stats
+
+        variance = residual / degrees
+        try:
+            covariance = variance * np.linalg.inv(x.T @ x)
+        except np.linalg.LinAlgError:
+            covariance = None
+        if covariance is not None:
+            for index, name in enumerate(predictors):
+                error = float(np.sqrt(abs(covariance[index + 1, index + 1])))
+                standard_errors[name] = error
+                if error > 0:
+                    statistic = abs(float(coefficients[index + 1])) / error
+                    p_values[name] = float(2.0 * stats.t.sf(statistic, degrees))
+                else:
+                    p_values[name] = float("nan")
+    result["standard_errors"] = standard_errors
+    result["p_values"] = p_values
+    result["observations"] = int(len(design))
     raw_r2 = 1.0 - residual / total if total > 0 else float("nan")
     # Le R² brut augmente mécaniquement avec le nombre de variables : sur douze
     # observations, il dépasse souvent 0,2 sur des données sans aucun lien.
@@ -843,6 +871,12 @@ def _fr(value: float, decimals: int = 1, *, sign: bool = False) -> str:
     if sign:
         prefix = "+" if value > 0 else "−" if value < 0 else ""
         value = abs(value)
+    elif value < 0:
+        # Sans cette branche, un négatif passé sans ``sign`` sortait avec un
+        # trait d'union ASCII quand le reste de l'application affiche le signe
+        # moins typographique : deux graphies pour une même grandeur.
+        prefix = "−"
+        value = abs(value)
     return f"{prefix}{value:.{decimals}f}".replace(".", ",")
 
 
@@ -1058,22 +1092,153 @@ def _weekday_insight(daily: pd.DataFrame | None) -> Insight | None:
     )
 
 
+def _significant_coefficient(drivers: Mapping[str, Any], name: str) -> float | None:
+    """Coefficient d'un prédicteur, seulement s'il se distingue de zéro.
+
+    L'ancien garde-fou portait sur le R² de l'ensemble du modèle. Un R² élevé
+    grâce à un prédicteur n'autorise pourtant rien à affirmer sur un autre : un
+    coefficient du sommeil mesuré à p = 0,80 — donc indiscernable de zéro —
+    était présenté comme un fait dès que la charge, elle, expliquait assez de
+    variance. Chaque coefficient répond désormais de sa propre p-value.
+    """
+    if not drivers.get("ready"):
+        return None
+    coefficients = drivers.get("coefficients", {})
+    coefficient = coefficients.get(name)
+    p_value = drivers.get("p_values", {}).get(name)
+    if coefficient is None or p_value is None:
+        return None
+    # Les deux coefficients du modèle sont interrogés au cours d'un même appel à
+    # generate_insights. Les accepter chacun à 5 % laisse près de 10 % de chances
+    # qu'au moins un passe alors qu'aucun lien n'existe — 8,2 % mesurés sur
+    # 600 séries sans lien. Le seuil est donc divisé par le nombre de
+    # coefficients testés, comme il l'est déjà pour les corrélations décalées.
+    threshold = ALPHA / max(1, len(coefficients))
+    if not np.isfinite(coefficient) or not np.isfinite(p_value) or p_value > threshold:
+        return None
+    return float(coefficient)
+
+
 def _drivers_insight(daily: pd.DataFrame | None) -> Insight | None:
     drivers = recovery_drivers(daily)
-    if not drivers["ready"] or drivers["r_squared"] < 0.25:
-        return None
-    coefficient = drivers["coefficients"].get("Sommeil (heures)")
+    coefficient = _significant_coefficient(drivers, "Sommeil (heures)")
     if coefficient is None or abs(coefficient) < 1:
         return None
     return Insight(
         "Ce qu'une heure de sommeil vous rapporte",
         f"Sur vos {drivers['days']} jours de données, chaque heure de sommeil supplémentaire "
-        f"s'accompagne de {_fr(coefficient, 1, sign=True)} {_plural(round(coefficient), 'point')} de récupération. Le modèle "
-        f"explique {_fr(drivers['r_squared'] * 100, 0)} % des variations.",
+        f"s'accompagne de {_fr(coefficient, 1, sign=True)} {_plural(round(coefficient), 'point')} de récupération"
+        # Le modèle n'inclut la charge que si le bracelet a renvoyé des cycles.
+        # Annoncer « à charge égale » sans l'avoir ajustée serait faux.
+        + (", à charge d'entraînement égale." if "Strain de la veille" in drivers["coefficients"] else "."),
         tone="success" if coefficient > 0 else "info",
         icon="🔬",
         priority=70,
     )
+
+
+def _observed_strain_contrast(frame: pd.DataFrame | None) -> float | None:
+    """Écart de charge réellement observé, pour illustrer sans extrapoler."""
+    grid = daily_grid(frame)
+    if grid.empty or "Strain" not in grid.columns:
+        return None
+    values = grid["Strain"].dropna()
+    if len(values) < 4:
+        return None
+    spread = float(values.quantile(0.75) - values.quantile(0.25))
+    if not np.isfinite(spread) or spread < 1.0:
+        return None
+    return round(spread)
+
+
+def _load_cost_insight(daily: pd.DataFrame | None) -> Insight | None:
+    """Ce qu'une journée chargée coûte à la récupération du lendemain.
+
+    La régression estimait déjà ce coefficient sans jamais l'afficher, alors
+    qu'il porte la seule question d'arbitrage que pose l'entraînement : combien
+    me coûtera demain l'effort d'aujourd'hui. L'application WHOOP affiche le
+    strain et la récupération côte à côte, mais ne chiffre pas le lien.
+    """
+    drivers = recovery_drivers(daily)
+    coefficient = _significant_coefficient(drivers, "Strain de la veille")
+    if coefficient is None or abs(coefficient) < 0.3:
+        return None
+    if coefficient < 0:
+        body = (
+            f"Sur vos {drivers['days']} jours de données, chaque point de strain supplémentaire "
+            f"s'accompagne de {_fr(abs(coefficient))} {_plural(round(abs(coefficient)) or 1, 'point')} "
+            f"de récupération en moins le lendemain matin"
+            + (", à sommeil égal." if "Sommeil (heures)" in drivers["coefficients"] else ".")
+        )
+        # L'exemple chiffré était figé à cinq points de strain. Chez qui varie
+        # moins que cela, il extrapole hors de la plage observée et présente le
+        # résultat comme une prévision. L'écart illustré est donc repris de la
+        # dispersion réellement mesurée, et omis lorsqu'elle est trop faible.
+        contrast = _observed_strain_contrast(daily)
+        if contrast is not None:
+            body += (
+                f" Entre une journée ordinaire et une journée {_fr(contrast, 0)} points plus chargée — "
+                f"un écart courant chez vous — l'écart de récupération observé le lendemain est "
+                f"d'environ {_fr(abs(coefficient) * contrast, 0)} points."
+            )
+        # « coûte donc » transformerait une association en cause. Le strain peut
+        # accompagner un facteur non mesuré — maladie, jour de repos planifié,
+        # récupération de la veille — auquel l'écart serait en réalité imputable.
+        body += (
+            " Il s'agit d'une association mesurée sur vos données, pas d'un effet établi :"
+            " d'autres facteurs non mesurés varient avec la charge."
+        )
+        tone = "warning"
+    else:
+        # Conclure « votre charge reste dans ce que vous encaissez » ferait de
+        # cette branche une recommandation. Or si vous vous entraînez plus fort
+        # après une bonne nuit, et que la récupération est autocorrélée, un
+        # coefficient positif apparaît sans que la charge y soit pour rien. La
+        # branche positive reste donc aussi prudente que la négative.
+        body = (
+            f"Sur vos {drivers['days']} jours de données, vos journées chargées ne sont pas suivies "
+            f"d'une récupération dégradée : le lien mesuré est de {_fr(coefficient, 1, sign=True)} point "
+            f"par point de strain"
+            + (", à sommeil égal." if "Sommeil (heures)" in drivers["coefficients"] else ".")
+            + " C'est une association mesurée sur vos données, et non "
+            f"la preuve que votre charge est bien tolérée : s'entraîner davantage les matins où l'on se "
+            f"réveille frais produit le même signe."
+        )
+        tone = "info"
+    return Insight(
+        "Ce qu'une journée chargée coûte au lendemain",
+        body,
+        tone=tone,
+        icon="⚡",
+        priority=72,
+    )
+
+
+def _factor_unit(factor: str) -> str:
+    """Unité à afficher derrière la valeur d'un facteur de contraste."""
+    if "heures" in factor:
+        return "h"
+    if "coucher" in factor:
+        return "h"
+    if "kcal" in factor:
+        return "kcal"
+    if "%" in factor:
+        return "%"
+    return ""
+
+
+def _factor_phrase(factor: str) -> str:
+    """Groupe nominal articlé, utilisable tel quel en milieu de phrase."""
+    return _FACTOR_PHRASES.get(factor, factor.split(" (")[0].lower())
+
+
+def _factor_verb(factor: str) -> str:
+    """Accorde le verbe au nombre du groupe nominal.
+
+    « les calories brûlées la veille vaut » : un gabarit figé au singulier
+    produit une faute d'accord dès qu'un facteur pluriel arrive en tête.
+    """
+    return "valent" if _factor_phrase(factor).startswith("les ") else "vaut"
 
 
 def _contrast_insight(daily: pd.DataFrame | None) -> Insight | None:
@@ -1087,14 +1252,16 @@ def _contrast_insight(daily: pd.DataFrame | None) -> Insight | None:
     # facteur qui sépare le plus » lui donnerait un poids qu'il n'a pas.
     if not np.isfinite(effect) or abs(effect) < 0.5:
         return None
-    unit = "h" if "heures" in factor or "coucher" in factor else ""
-    direction = "davantage" if gap > 0 else "moins"
+    unit = _factor_unit(factor)
+    # « soit moins de 2,7 » se lit en français « moins que 2,7 », un tout autre
+    # sens que « 2,7 de moins ». Le complément se place donc après la valeur.
+    direction = "de plus" if gap > 0 else "de moins"
     return Insight(
-        f"Vos meilleurs jours : {factor.lower()}",
+        f"Vos meilleurs jours : {factor.split(' (')[0]}",
         f"Sur vos {contrast['best_days']} meilleurs jours de récupération, "
-        f"{factor.lower()} vaut {_fr(float(top['Meilleurs jours']))} {unit}".rstrip()
+        f"{_factor_phrase(factor)} {_factor_verb(factor)} {_fr(float(top['Meilleurs jours']))} {unit}".rstrip()
         + f" contre {_fr(float(top['Pires jours']))} {unit}".rstrip()
-        + f" sur les {contrast['worst_days']} pires, soit {direction} de {_fr(abs(gap))} {unit}".rstrip()
+        + f" sur les {contrast['worst_days']} pires, soit {_fr(abs(gap))} {unit} {direction}".replace("  ", " ")
         + ". C'est le facteur qui sépare le plus vos bons et vos mauvais jours.",
         tone="info",
         icon="🔍",
@@ -1114,7 +1281,9 @@ def _sport_insight(daily: pd.DataFrame | None, workouts: pd.DataFrame | None) ->
         f"{str(hardest['Sport']).capitalize()} pèse sur votre lendemain",
         f"Après vos {int(hardest['Séances'])} séances de {str(hardest['Sport']).lower()}, votre "
         f"récupération du lendemain atteint {_fr(float(hardest['Récupération du lendemain (%)']), 0)} %, "
-        f"soit {_fr(gap, 0)} points sous votre moyenne. Prévoir une journée plus légère ensuite "
+        # « soit −6 points sous votre moyenne » énonce deux fois la négation :
+        # littéralement six points AU-DESSUS. Le sens est porté par « sous ».
+        f"soit {_fr(abs(gap), 0)} points sous votre moyenne. Prévoir une journée plus légère ensuite "
         "est une piste, pas une prescription.",
         tone="warning",
         icon="🥊",
@@ -1182,6 +1351,8 @@ def generate_insights(
         _sleep_debt_insight(daily),
         _recovery_insight(daily),
         _drivers_insight(daily),
+        _load_cost_insight(daily),
+        _tolerance_insight(daily),
         _architecture_insight(daily),
         _correlation_insight(merged),
         _contrast_insight(daily),
@@ -1195,6 +1366,12 @@ def generate_insights(
     # répéter en cartes séparées ferait dire trois fois la même chose.
     if any(insight.icon == "🩺" for insight in found):
         found = [insight for insight in found if insight.icon != "🫀"]
+    # Le plafond de charge et le coût marginal d'un point de strain décrivent le
+    # même effet, l'un par son seuil, l'autre par sa pente : les afficher tous
+    # deux occupe deux cartes voisines pour un seul constat. Le seuil l'emporte,
+    # parce qu'il nomme un nombre sur lequel agir pendant la séance.
+    if any(insight.icon == "🧗" for insight in found):
+        found = [insight for insight in found if insight.icon != "⚡"]
     found.sort(key=lambda insight: insight.priority, reverse=True)
     kept = max(1, int(limit))
     shown = found[:kept]
@@ -1215,13 +1392,31 @@ MIN_DAYS_CONTRAST = 15
 MIN_SESSIONS_PER_SPORT = 3
 
 # Métriques susceptibles d'expliquer un écart de récupération.
-CONTRAST_METRICS: tuple[str, ...] = (
-    "Sommeil (heures)",
-    "Dette de sommeil (heures)",
-    "Heure de coucher",
-    "Strain",
-    "Perturbations sommeil",
+# Le score de récupération WHOOP est calculé au réveil, à partir de la nuit
+# écoulée : il est donc déjà fixé avant la première minute d'effort de la
+# journée. Comparer la récupération du matin au strain du même jour inverse la
+# flèche du temps — on mesure alors « je m'entraîne plus les jours où je me
+# réveille frais », que le lecteur interprète en « m'entraîner me fait
+# récupérer ». Chaque facteur porte donc son décalage explicite, et seuls des
+# antécédents figurent ici.
+#
+# (libellé du tableau, colonne source, décalage en jours, groupe nominal)
+# Le groupe nominal porte son article : recomposer « le »/« la »/« les » à
+# partir du libellé demanderait de deviner le genre de chaque intitulé.
+CONTRAST_FACTORS: tuple[tuple[str, str, int, str], ...] = (
+    ("Sommeil (heures)", "Sommeil (heures)", 0, "le sommeil"),
+    ("Dette de sommeil (heures)", "Dette de sommeil (heures)", 0, "la dette de sommeil"),
+    ("Heure de coucher", "Heure de coucher", 0, "l'heure de coucher"),
+    ("Perturbations sommeil", "Perturbations sommeil", 0, "les perturbations du sommeil"),
+    ("Régularité sommeil (%)", "Régularité sommeil (%)", 0, "la régularité du sommeil"),
+    ("Strain de la veille", "Strain", 1, "le strain de la veille"),
+    ("Calories de la veille (kcal)", "Calories (kcal)", 1, "les calories brûlées la veille"),
 )
+
+_FACTOR_PHRASES: dict[str, str] = {label: phrase for label, _, _, phrase in CONTRAST_FACTORS}
+
+# Conservé pour la compatibilité : la liste des colonnes réellement lues.
+CONTRAST_METRICS: tuple[str, ...] = tuple(dict.fromkeys(column for _, column, _, _ in CONTRAST_FACTORS))
 
 
 def contrast_best_worst_days(
@@ -1249,6 +1444,13 @@ def contrast_best_worst_days(
     if grid.empty or metric not in grid.columns:
         return result
 
+    # Les décalages sont appliqués sur la grille complète, avant tout filtrage :
+    # calculés après, ils prendraient « la ligne précédente » au lieu de « la
+    # veille », ce qui n'est pas la même chose dès qu'un jour manque.
+    for label, column, lag, _phrase in CONTRAST_FACTORS:
+        if column in grid.columns:
+            grid[label] = grid[column].shift(int(lag)) if lag else grid[column]
+
     scored = grid.dropna(subset=[metric])
     result["days"] = int(len(scored))
     if len(scored) < max(6, int(min_days)):
@@ -1265,8 +1467,8 @@ def contrast_best_worst_days(
         return result
 
     rows = []
-    for factor in CONTRAST_METRICS:
-        if factor not in scored.columns:
+    for factor, source, _lag, _phrase in CONTRAST_FACTORS:
+        if factor not in scored.columns or source not in grid.columns:
             continue
         best_values, worst_values = best[factor].dropna(), worst[factor].dropna()
         if len(best_values) < 3 or len(worst_values) < 3:
@@ -1365,6 +1567,191 @@ def sport_recovery_impact(
     if not rows:
         return pd.DataFrame(columns=columns)
     return pd.DataFrame(rows).sort_values("Écart à votre moyenne").reset_index(drop=True)[columns]
+
+
+MIN_PAIRS_TOLERANCE = 21
+
+
+def strain_tolerance(frame: pd.DataFrame | None, *, min_pairs: int = MIN_PAIRS_TOLERANCE) -> dict[str, Any]:
+    """À partir de quelle charge votre récupération du lendemain décroche.
+
+    WHOOP affiche un strain visé pour la journée en cours, calculé sur sa
+    population de référence. Il ne dit pas où se situe *votre* plafond : la
+    charge au-delà de laquelle vos propres lendemains virent au rouge. Les
+    journées sont donc rangées par tiers de charge, et chaque tiers est jugé
+    sur la récupération qu'il a effectivement produite le lendemain matin.
+    """
+    columns = ["Charge de la veille", "Jours", "Strain moyen", "Récupération du lendemain (%)", "Journées rouges (%)"]
+    result: dict[str, Any] = {
+        "ready": False,
+        # Un déclin mesuré, distinct de « assez de données » : trois bandes
+        # peuplées n'impliquent pas que les journées chargées coûtent quoi que
+        # ce soit.
+        "declines": False,
+        # La significativité ne dit rien du SENS : un écart inverse peut être
+        # parfaitement établi. Les confondre fait annoncer « indistinguable
+        # du hasard » sur un résultat mesuré à p = 10⁻¹³.
+        "significant": False,
+        "pairs": 0,
+        "required_pairs": int(min_pairs),
+        # Pourquoi l'analyse ne s'affiche pas : « effectif » se comble avec le
+        # temps, « charge trop uniforme » non.
+        "reason": "effectif",
+        "table": pd.DataFrame(columns=columns),
+        # Bord inférieur du tiers haut de VOTRE distribution de charge, et non
+        # un point de rupture estimé sur la récupération : il se déplace si vous
+        # vous mettez à vous entraîner davantage, à réponse physiologique
+        # inchangée. Le libellé affiché doit donc rester descriptif.
+        "high_band_floor": float("nan"),
+        "heavy_recovery": float("nan"),
+        "calm_recovery": float("nan"),
+        "heavy_red_share": float("nan"),
+        "gap": float("nan"),
+        "gap_low": float("nan"),
+        "gap_high": float("nan"),
+        "p_value": float("nan"),
+        "inference": "testée",
+    }
+    grid = daily_grid(frame)
+    if grid.empty or "Strain" not in grid.columns or "Récupération (%)" not in grid.columns:
+        return result
+
+    # La charge d'un jour se juge sur le matin suivant : c'est le seul moment où
+    # son effet est mesurable par un score de récupération.
+    paired = pd.DataFrame(
+        {"strain": grid["Strain"], "next_recovery": grid["Récupération (%)"].shift(-1)}
+    ).dropna()
+    result["pairs"] = int(len(paired))
+    if len(paired) < max(9, int(min_pairs)):
+        result["reason"] = "effectif"
+        return result
+
+    low = float(paired["strain"].quantile(1 / 3))
+    high = float(paired["strain"].quantile(2 / 3))
+    if not np.isfinite(low) or not np.isfinite(high) or high <= low:
+        # Assez de jours, mais une charge trop uniforme pour former trois tiers.
+        # Réclamer « plus de jours » serait une consigne qu'aucune journée
+        # supplémentaire de ce type ne pourrait satisfaire.
+        result["reason"] = "charge trop uniforme"
+        return result
+
+    red_ceiling = RECOVERY_ZONES[0][2]
+    bands = (
+        ("Journées calmes", paired[paired["strain"] <= low]),
+        ("Journées moyennes", paired[(paired["strain"] > low) & (paired["strain"] < high)]),
+        ("Journées chargées", paired[paired["strain"] >= high]),
+    )
+    rows = []
+    for label, band in bands:
+        if band.empty:
+            continue
+        rows.append(
+            {
+                "Charge de la veille": label,
+                "Jours": int(len(band)),
+                "Strain moyen": round(float(band["strain"].mean()), 1),
+                "Récupération du lendemain (%)": round(float(band["next_recovery"].mean()), 1),
+                "Journées rouges (%)": round(float((band["next_recovery"] < red_ceiling).mean() * 100), 1),
+            }
+        )
+    if len(rows) < 3:
+        # Les bornes de tiers peuvent coïncider au point de vider la bande
+        # centrale : là encore, c'est la diversité de la charge qui manque.
+        result["reason"] = "charge trop uniforme"
+        return result
+
+    heavy, calm = rows[-1], rows[0]
+    calm_values = bands[0][1]["next_recovery"]
+    heavy_values = bands[-1][1]["next_recovery"]
+
+    # Au minimum d'effectif, chaque bande ne compte qu'une poignée de jours :
+    # un écart brut de quelques points y naît facilement du hasard. L'écart est
+    # donc testé (Welch, variances inégales) et assorti de son intervalle de
+    # confiance, plutôt que comparé à un seuil fixe.
+    gap = float(calm_values.mean() - heavy_values.mean())
+    gap_low = gap_high = p_value = float("nan")
+    # Si les deux bandes sont chacune constantes, leurs variances sont nulles :
+    # le test de Welch n'est pas défini. Le dire, plutôt que de laisser l'écran
+    # conclure « ne se distingue pas du hasard » sur une séparation parfaite.
+    inference = "testée"
+    if len(calm_values) >= 2 and len(heavy_values) >= 2:
+        from scipy import stats
+
+        variance_calm = float(calm_values.var(ddof=1))
+        variance_heavy = float(heavy_values.var(ddof=1))
+        error = float(np.sqrt(variance_calm / len(calm_values) + variance_heavy / len(heavy_values)))
+        if np.isfinite(error) and error > 0:
+            numerator = (variance_calm / len(calm_values) + variance_heavy / len(heavy_values)) ** 2
+            denominator = (variance_calm / len(calm_values)) ** 2 / (len(calm_values) - 1) + (
+                variance_heavy / len(heavy_values)
+            ) ** 2 / (len(heavy_values) - 1)
+            degrees = numerator / denominator if denominator > 0 else float("nan")
+            if np.isfinite(degrees) and degrees > 0:
+                p_value = float(2.0 * stats.t.sf(abs(gap) / error, degrees))
+                margin = float(stats.t.ppf(1.0 - ALPHA / 2.0, degrees)) * error
+                gap_low, gap_high = gap - margin, gap + margin
+            else:
+                inference = "indisponible"
+        elif abs(gap) > 0:
+            inference = "indisponible"
+    else:
+        inference = "indisponible"
+
+    result.update(
+        {
+            "ready": True,
+            "significant": bool(np.isfinite(p_value) and p_value <= ALPHA),
+            "declines": bool(gap > 0 and np.isfinite(p_value) and p_value <= ALPHA),
+            "table": pd.DataFrame(rows)[columns],
+            "high_band_floor": round(high, 1),
+            "heavy_recovery": heavy["Récupération du lendemain (%)"],
+            "calm_recovery": calm["Récupération du lendemain (%)"],
+            "heavy_red_share": heavy["Journées rouges (%)"],
+            "heavy_days": heavy["Jours"],
+            "calm_days": calm["Jours"],
+            "gap": round(gap, 1),
+            "gap_low": round(gap_low, 1) if np.isfinite(gap_low) else float("nan"),
+            "gap_high": round(gap_high, 1) if np.isfinite(gap_high) else float("nan"),
+            "p_value": p_value,
+            "inference": inference,
+        }
+    )
+    return result
+
+
+def _tolerance_insight(daily: pd.DataFrame | None) -> Insight | None:
+    tolerance = strain_tolerance(daily)
+    # « declines » exige que l'écart survive à un test de Welch. Un écart brut
+    # de trois points suffisait auparavant : mesuré sur des séries sans aucun
+    # lien entre charge et récupération, il se déclenchait dans 31,8 % des cas,
+    # contre 2,8 % avec le test.
+    if not tolerance["declines"]:
+        return None
+    gap = tolerance["gap"]
+    low, high = tolerance["gap_low"], tolerance["gap_high"]
+    interval = (
+        f" L'écart est estimé entre {_fr(low, 0)} et {_fr(high, 0)} points."
+        if np.isfinite(low) and np.isfinite(high)
+        else ""
+    )
+    return Insight(
+        "Vos journées les plus chargées se paient le lendemain",
+        f"Au-dessus de {_fr(tolerance['high_band_floor'])} de strain — le tiers le plus chargé de vos "
+        f"journées — votre récupération du lendemain tombe à {_fr(tolerance['heavy_recovery'], 0)} % en "
+        f"moyenne sur {tolerance['heavy_days']} jours, contre {_fr(tolerance['calm_recovery'], 0)} % après "
+        f"vos {tolerance['calm_days']} journées les plus calmes, soit {_fr(gap, 0)} points d'écart."
+        + interval
+        # Annoncer « rouges 0 % du temps » occupe une phrase pour ne rien
+        # apprendre : la mention n'a de sens que si le cas s'est produit.
+        + (
+            f" Ces lendemains sont rouges {_fr(tolerance['heavy_red_share'], 0)} % du temps."
+            if np.isfinite(tolerance["heavy_red_share"]) and tolerance["heavy_red_share"] > 0
+            else ""
+        ),
+        tone="warning" if gap >= 8 else "info",
+        icon="🧗",
+        priority=71,
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────

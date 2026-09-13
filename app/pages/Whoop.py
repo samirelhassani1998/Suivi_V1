@@ -53,6 +53,7 @@ from app.core.whoop_analytics import (
     sleep_architecture,
     sleep_debt_summary,
     sport_recovery_impact,
+    strain_tolerance,
     target_pace_feasibility,
     training_energy_share,
     strain_recovery_balance,
@@ -944,7 +945,7 @@ def _recovery_tab(daily: pd.DataFrame) -> None:
 
     section_header(
         "Vos bons jours contre vos mauvais",
-        "Ce que vous faisiez différemment le tiers des jours où votre récupération était la meilleure.",
+        "Ce qui précédait le tiers des jours où votre récupération était la meilleure.",
         "🔍",
     )
     contrast = contrast_best_worst_days(daily)
@@ -962,7 +963,16 @@ def _recovery_tab(daily: pd.DataFrame) -> None:
             use_container_width=True,
             hide_index=True,
         )
-        st.caption("Le facteur en tête est celui qui sépare le plus vos bons et vos mauvais jours.")
+        st.caption(
+            "Le facteur en tête est celui qui sépare le plus vos bons et vos mauvais jours. "
+            "L'écart normalisé rapporte l'écart à la dispersion : il permet de comparer des heures "
+            "de sommeil à des points de strain."
+        )
+        st.caption(
+            "⏱️ Votre score de récupération est calculé au réveil, à partir de la nuit écoulée. "
+            "Les facteurs comparés ici lui sont donc tous antérieurs — d'où le strain **de la veille** "
+            "et non celui du jour même, qui n'a pas encore eu lieu quand le score est établi."
+        )
 
 
 def _sleep_tab(daily: pd.DataFrame) -> None:
@@ -1131,6 +1141,97 @@ def _effort_tab(daily: pd.DataFrame, workouts: pd.DataFrame) -> None:
                 use_container_width=True,
                 hide_index=True,
             )
+
+    tolerance = strain_tolerance(daily)
+    if tolerance["declines"]:
+        heading = f"Au-dessus de {format_fr_number(tolerance['high_band_floor'], decimals=1)} de strain, le lendemain se paie"
+    elif tolerance["significant"]:
+        # Écart établi, mais en sens inverse : vos journées chargées sont
+        # suivies d'une MEILLEURE récupération.
+        heading = "Vos journées chargées sont suivies d'une meilleure récupération"
+    else:
+        heading = "Charge de la veille et récupération du lendemain"
+    section_header(
+        heading,
+        "Journées rangées par tiers de charge, jugées sur la récupération du lendemain matin.",
+        "🧗",
+    )
+    if not tolerance["ready"]:
+        if tolerance["reason"] == "charge trop uniforme":
+            # Réclamer « plus de jours » alors que l'effectif est atteint donne
+            # une consigne qu'aucune journée de plus ne peut satisfaire.
+            st.info(
+                f"Vos {tolerance['pairs']} journées mesurées se ressemblent trop en charge pour être "
+                "rangées en trois tiers distincts. Cette comparaison s'ouvrira lorsque vos journées "
+                "seront plus contrastées — quelques séances intenses et quelques journées calmes."
+            )
+        else:
+            st.info(
+                f"Disponible à partir de {tolerance['required_pairs']} journées suivies d'un lendemain noté "
+                f"(actuellement {tolerance['pairs']})."
+            )
+            st.progress(min(1.0, tolerance["pairs"] / max(1, tolerance["required_pairs"])))
+    else:
+        cols = st.columns(3)
+        with cols[0]:
+            kpi_card("Après une journée calme", f"{format_fr_number(tolerance['calm_recovery'], decimals=0)} %")
+        with cols[1]:
+            kpi_card("Après une journée chargée", f"{format_fr_number(tolerance['heavy_recovery'], decimals=0)} %")
+        with cols[2]:
+            kpi_card(
+                "Écart",
+                f"{format_fr_number(tolerance['gap'], decimals=0)} points",
+                help_text=(
+                    f"Intervalle de confiance à 95 % : de {format_fr_number(tolerance['gap_low'], decimals=0)} "
+                    f"à {format_fr_number(tolerance['gap_high'], decimals=0)} points."
+                    if np.isfinite(tolerance["gap_low"]) and np.isfinite(tolerance["gap_high"])
+                    else "Intervalle non calculable sur cet effectif."
+                ),
+            )
+        st.dataframe(
+            _format_table(
+                tolerance["table"],
+                {"Jours": 0, "Strain moyen": 1, "Récupération du lendemain (%)": 0, "Journées rouges (%)": 0},
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        if tolerance["declines"]:
+            st.caption(
+                f"Calculé sur {tolerance['pairs']} paires jour chargé → lendemain. L'écart entre vos journées "
+                "calmes et vos journées chargées résiste à un test statistique : il ne s'explique pas par le "
+                "seul hasard d'échantillonnage."
+            )
+        elif tolerance["significant"]:
+            # Un écart inverse peut être parfaitement établi : le déclarer
+            # « indistinguable du hasard » contredirait sa propre p-value.
+            st.caption(
+                f"Calculé sur {tolerance['pairs']} paires jour chargé → lendemain. L'écart est statistiquement "
+                "établi, mais dans l'autre sens : vos journées les plus chargées sont suivies d'une meilleure "
+                "récupération. Cela se produit notamment lorsqu'on s'entraîne davantage les jours où l'on se "
+                "sent déjà en forme — la charge suit alors la récupération plutôt que l'inverse."
+            )
+        elif tolerance["inference"] == "indisponible":
+            # Conclure « indistinguable du hasard » sur un test qui n'a pas pu
+            # tourner ferait dire à l'absence de calcul ce qu'un calcul n'a pas dit.
+            st.caption(
+                f"Calculé sur {tolerance['pairs']} paires jour chargé → lendemain. Vos mesures ne permettent "
+                "pas de tester l'écart statistiquement sur cette période : le tableau est affiché tel quel, "
+                "sans conclusion sur sa solidité."
+            )
+        else:
+            st.caption(
+                f"Calculé sur {tolerance['pairs']} paires jour chargé → lendemain. L'écart entre les tiers ne se "
+                "distingue pas du hasard : à ce stade, vos journées chargées ne se paient pas visiblement le "
+                "lendemain. Le tableau reste affiché pour ce qu'il montre, sans en tirer de seuil."
+            )
+        st.caption(
+            f"⚠️ La valeur de {format_fr_number(tolerance['high_band_floor'], decimals=1)} est le bord du tiers "
+            "le plus chargé de **vos** journées, pas un point de rupture physiologique : elle se déplacera si "
+            "vous vous mettez à vous entraîner davantage, à réponse identique. WHOOP vous propose un strain "
+            "cible établi sur sa population de référence ; ce tableau est établi sur vous. Il décrit une "
+            "association : une journée chargée suivie d'une nuit courte pèse deux fois."
+        )
 
     if workouts is None or workouts.empty:
         st.info("Aucune séance enregistrée sur la période choisie.")
