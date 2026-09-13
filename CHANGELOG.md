@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-09-13 — Cohérence des constats et nouveaux indicateurs
+
+Passe de cohérence menée en générant les constats sur cinq profils d'utilisateur (perte régulière, surcharge, manque de sommeil, prise de poids, stagnation) puis en relisant les listes produites.
+
+Le défaut principal : **l'application ne disait pas où allait le poids.**
+- Sur un profil de prise de poids (+2,3 kg en 40 jours, 2,75 kg de retard sur la trajectoire), aucun des six constats affichés ne le mentionnait. La liste parlait de dette de sommeil, du creux du lundi et de l'apport estimé.
+- Deux règles sont ajoutées : `_weight_direction_insight` énonce la tendance en kg/semaine et qualifie sa fiabilité, `_target_progress_insight` situe le poids face à la trajectoire cible.
+- Nouvelle fonction `projected_goal_date` : date d'arrivée si le rythme actuel se maintenait, **confrontée à l'échéance visée**. Être en avance aujourd'hui ne dit rien de la date d'arrivée — dans un cas mesuré, « en avance » de 3,5 kg correspondait à une arrivée 109 jours après la date visée.
+- La carte « votre objectif suppose X kcal/jour » passe de la priorité 95 à 74 : ce chiffre découle des paramètres de la cible et bouge à peine d'un jour sur l'autre, il monopolisait la première place tous les jours.
+
+Autres correctifs de cohérence :
+- **Deux familles de constats partageaient les mêmes icônes** : la flèche descendante désignait à la fois une baisse de poids et une baisse de récupération. Le poids prend la balance, la charge d'entraînement l'haltère, et un test vérifie désormais que chaque famille possède une icône unique.
+- **Un avertissement de santé pouvait être masqué** par la limite d'affichage si six autres cartes se déclenchaient. Les constats peuvent désormais être épinglés ; seule la veille physiologique à plusieurs signaux concordants l'est, et elle survit à une limite d'un seul constat.
+
+Nouveaux indicateurs :
+- **Séries de journées** (`recovery_streaks`) : jours consécutifs dans la même zone, plus longue série verte et rouge. Une moyenne hebdomadaire lisse une succession de journées rouges ; sa durée dit si un état s'installe. Un constat se déclenche à partir de trois journées rouges consécutives.
+- **Part de l'entraînement dans la dépense** (`training_energy_share`) : les calories s'additionnent, contrairement au strain qui est une échelle logarithmique. Répond à une question que WHOOP ne pose pas — le sport pèse-t-il dans la dépense, ou est-ce le quotidien qui la porte ?
+
+Tests : 393 passés, 4 échecs préexistants inchangés. Relecture automatisée de 22 phrases générées sur trois profils : aucun gabarit de pluriel, aucune valeur non finie, aucun signe moins mal formé.
+
+
 ## 2026-09-12 — Lecture jour par jour et veille physiologique
 
 Lecture chronologique (demande explicite : voir les récupérations et les séances par date) :

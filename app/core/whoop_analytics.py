@@ -830,6 +830,9 @@ class Insight:
     tone: str = "info"
     icon: str = "💡"
     priority: int = 50
+    # Un constat épinglé survit à la coupure d'affichage : il est réservé aux
+    # avertissements qu'il serait fautif de masquer derrière une limite de place.
+    pinned: bool = False
 
 
 def _fr(value: float, decimals: int = 1, *, sign: bool = False) -> str:
@@ -963,7 +966,7 @@ def _training_load_insight(daily: pd.DataFrame | None) -> Insight | None:
         f"Rapport aigu/chronique de {_fr(ratio, 2)}, dans la plage généralement considérée "
         "comme soutenable (0,8 à 1,3).",
         tone="success",
-        icon="⚖️",
+        icon="🏋️",
         priority=30,
     )
 
@@ -1142,7 +1145,9 @@ def _target_pace_insight(merged: pd.DataFrame | None, required_daily_kg: float |
         f"un rythme {feasibility['verdict']}." + closing,
         tone=tone,
         icon="🎯",
-        priority=95,
+        # Volontairement sous les constats mesurés : ce chiffre découle des
+        # paramètres de l'objectif et bouge à peine d'un jour sur l'autre.
+        priority=74,
     )
 
 
@@ -1152,6 +1157,9 @@ def generate_insights(
     workouts: pd.DataFrame | None = None,
     *,
     required_daily_kg: float | None = None,
+    target_status: Mapping[str, Any] | None = None,
+    target_weight: float | None = None,
+    target_date: Any = None,
     limit: int = 6,
 ) -> list[Insight]:
     """Constats rédigés, classés par importance décroissante.
@@ -1162,9 +1170,15 @@ def generate_insights(
     candidates = [
         _coverage_insight(daily),
         _vitals_insight(daily),
+        # Où va le poids passe avant tout le reste : c'est la question que pose
+        # l'application. Sans ces deux règles, une prise de deux kilos pouvait
+        # rester invisible derrière un constat sur le sommeil du lundi.
+        _weight_direction_insight(merged),
+        _target_progress_insight(merged, target_status, target_weight=target_weight, target_date=target_date),
         _target_pace_insight(merged, required_daily_kg),
         _energy_insight(merged),
         _training_load_insight(daily),
+        _streak_insight(daily),
         _sleep_debt_insight(daily),
         _recovery_insight(daily),
         _drivers_insight(daily),
@@ -1182,7 +1196,15 @@ def generate_insights(
     if any(insight.icon == "🩺" for insight in found):
         found = [insight for insight in found if insight.icon != "🫀"]
     found.sort(key=lambda insight: insight.priority, reverse=True)
-    return found[: max(1, int(limit))]
+    kept = max(1, int(limit))
+    shown = found[:kept]
+    # Les constats épinglés absents de la coupure y sont réintégrés : masquer un
+    # avertissement de santé parce que six autres cartes se sont déclenchées
+    # serait le pire comportement possible de cette liste.
+    missing = [insight for insight in found[kept:] if insight.pinned]
+    if missing:
+        shown = sorted(shown + missing, key=lambda insight: insight.priority, reverse=True)
+    return shown
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1504,6 +1526,7 @@ def _vitals_insight(daily: pd.DataFrame | None) -> Insight | None:
         tone="warning" if several else "info",
         icon="🩺",
         priority=88 if several else 58,
+        pinned=several,
     )
 
 
@@ -1778,4 +1801,307 @@ def _architecture_insight(daily: pd.DataFrame | None) -> Insight | None:
         tone="info",
         icon="🌙",
         priority=50,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Où va le poids, et quand la cible serait atteinte
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Sous ce rythme hebdomadaire, la courbe ne se distingue pas du bruit de pesée.
+PLATEAU_KG_PER_WEEK = 0.1
+# Qualité minimale de l'ajustement avant d'extrapoler une date d'arrivée : une
+# droite qui n'explique rien ne peut pas fixer d'échéance.
+MIN_TREND_FIT = 0.3
+MIN_DAYS_PROJECTION = 14
+
+
+def projected_goal_date(
+    merged: pd.DataFrame | None,
+    *,
+    target_weight: float,
+    today: Any = None,
+) -> dict[str, Any]:
+    """Date d'arrivée à la cible si le rythme actuel se maintenait.
+
+    Une extrapolation linéaire n'est pas une prédiction : elle répond à « et si
+    ça continuait ainsi », ce qui suffit à situer un objectif comme proche ou
+    hors d'atteinte.
+    """
+    result = {
+        "ready": False,
+        "date": None,
+        "days": float("nan"),
+        "slope_kg_per_week": float("nan"),
+        "current_weight": float("nan"),
+        "target_weight": float(target_weight),
+        "fit": float("nan"),
+        "reason": "indisponible",
+    }
+    data = _clean_daily(merged)
+    if data.empty or "Poids (Kgs)" not in data.columns:
+        return result
+
+    weighed = data.dropna(subset=["Poids (Kgs)"])
+    if len(weighed) < MIN_DAYS_PROJECTION:
+        result["reason"] = "historique trop court"
+        return result
+
+    trend = weight_trend(weighed)
+    result["slope_kg_per_week"] = trend["slope_kg_per_week"]
+    result["fit"] = trend["r_squared"]
+    current = float(weighed["Poids (Kgs)"].iloc[-1])
+    result["current_weight"] = current
+
+    slope = trend["slope_kg_per_day"]
+    if not np.isfinite(slope) or not np.isfinite(trend["r_squared"]) or trend["r_squared"] < MIN_TREND_FIT:
+        result["reason"] = "tendance trop irrégulière"
+        return result
+
+    remaining = current - float(target_weight)
+    # Le signe de la pente doit aller vers la cible, sinon l'échéance n'existe pas.
+    if remaining <= 0:
+        result["reason"] = "cible atteinte"
+        result["ready"] = True
+        result["days"] = 0.0
+        result["date"] = pd.Timestamp(today).normalize() if today is not None else weighed["Date"].max()
+        return result
+    if slope >= 0:
+        result["reason"] = "le poids ne va pas vers la cible"
+        return result
+
+    days = remaining / abs(slope)
+    if days > 3650:
+        result["reason"] = "échéance au-delà de dix ans"
+        return result
+
+    reference = pd.Timestamp(today).normalize() if today is not None else weighed["Date"].max()
+    result.update({"ready": True, "days": float(days), "date": reference + pd.Timedelta(days=round(days)), "reason": "estimée"})
+    return result
+
+
+def _weight_direction_insight(merged: pd.DataFrame | None) -> Insight | None:
+    """Dit d'abord où va le poids : c'est la question que pose l'application.
+
+    Sans cette règle, une prise de poids de deux kilos pouvait passer inaperçue
+    derrière des constats sur le sommeil du lundi.
+    """
+    data = _clean_daily(merged)
+    if data.empty or "Poids (Kgs)" not in data.columns:
+        return None
+    weighed = data.dropna(subset=["Poids (Kgs)"])
+    if len(weighed) < 7:
+        return None
+
+    trend = weight_trend(weighed)
+    weekly = trend["slope_kg_per_week"]
+    if not np.isfinite(weekly):
+        return None
+
+    span = trend["span_days"]
+    reliability = (
+        "" if not np.isfinite(trend["r_squared"]) else
+        " La tendance est nette." if trend["r_squared"] >= 0.6 else
+        " Les pesées sont dispersées autour de cette tendance : le chiffre est indicatif."
+    )
+
+    if abs(weekly) < PLATEAU_KG_PER_WEEK:
+        return Insight(
+            "Votre poids stagne",
+            f"Sur {span} {_plural(span, 'jour')}, la tendance est de {_fr(weekly, 2, sign=True)} kg par semaine, "
+            f"soit un poids stable autour de {_fr(float(weighed['Poids (Kgs)'].iloc[-1]))} kg." + reliability,
+            tone="warning",
+            icon="⚖️",
+            priority=92,
+        )
+    gaining = weekly > 0
+    return Insight(
+        "Votre poids augmente" if gaining else "Votre poids baisse",
+        f"Sur {span} {_plural(span, 'jour')}, la tendance est de {_fr(weekly, 2, sign=True)} kg par semaine "
+        f"(actuellement {_fr(float(weighed['Poids (Kgs)'].iloc[-1]))} kg)." + reliability,
+        tone="warning" if gaining else "success",
+        # La balance désigne le poids sans ambiguïté : les flèches de tendance
+        # servent déjà à la récupération, et deux cartes partageant une icône
+        # ne se distinguent plus d'un coup d'œil.
+        icon="⚖️",
+        # Devance le bilan énergétique : ce dernier est une estimation dérivée
+        # de cette même pente, elle ne peut pas la précéder.
+        priority=94 if gaining else 91,
+    )
+
+
+def _target_progress_insight(
+    merged: pd.DataFrame | None,
+    target_status: Mapping[str, Any] | None,
+    *,
+    target_weight: float | None = None,
+    target_date: Any = None,
+) -> Insight | None:
+    """Situe le poids face à la trajectoire cible, et projette la date d'arrivée."""
+    if not target_status or not target_status.get("status"):
+        return None
+    gap = target_status.get("gap_kg")
+    status = str(target_status.get("status"))
+    if gap is None or not np.isfinite(float(gap)):
+        return None
+
+    projection = (
+        projected_goal_date(merged, target_weight=float(target_weight))
+        if target_weight is not None
+        else {"ready": False, "reason": "indisponible"}
+    )
+    if projection["ready"] and projection["date"] is not None:
+        projected = pd.Timestamp(projection["date"])
+        horizon = (
+            f" Au rythme actuel, la cible de {_fr(float(target_weight))} kg serait atteinte vers le "
+            f"{projected.strftime('%d/%m/%Y')}"
+        )
+        # Une date d'arrivée ne devient actionnable que confrontée à l'échéance.
+        deadline = pd.Timestamp(target_date) if target_date is not None else None
+        if deadline is not None and pd.notna(deadline):
+            gap_days = int((projected - deadline.normalize()).days)
+            if gap_days > 7:
+                horizon += f", soit {gap_days} {_plural(gap_days, 'jour')} après l'échéance visée."
+            elif gap_days < -7:
+                horizon += f", soit {abs(gap_days)} {_plural(abs(gap_days), 'jour')} avant l'échéance visée."
+            else:
+                horizon += ", soit à peu près à l'échéance visée."
+        else:
+            horizon += "."
+    elif projection.get("reason") == "le poids ne va pas vers la cible":
+        horizon = " Au rythme actuel, la cible ne serait jamais atteinte."
+    elif projection.get("reason") == "tendance trop irrégulière":
+        horizon = " Les pesées sont trop dispersées pour projeter une date d'arrivée."
+    else:
+        horizon = ""
+
+    behind = status == "en retard"
+    return Insight(
+        f"Trajectoire : {status}",
+        f"Vous êtes à {_fr(abs(float(gap)), 2)} kg "
+        + ("au-dessus" if float(gap) > 0 else "en dessous")
+        + " du poids prévu par votre trajectoire cible à cette date."
+        + horizon,
+        tone="warning" if behind else "success",
+        icon="🧭",
+        priority=93 if behind else 84,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Part de l'entraînement et séries de journées
+# ──────────────────────────────────────────────────────────────────────────────
+
+MIN_DAYS_TRAINING_SHARE = 7
+
+
+def training_energy_share(
+    daily: pd.DataFrame | None,
+    workouts: pd.DataFrame | None,
+    *,
+    min_days: int = MIN_DAYS_TRAINING_SHARE,
+) -> dict[str, Any]:
+    """Part de la dépense quotidienne attribuable aux séances.
+
+    Les calories s'additionnent, contrairement au strain qui est une échelle
+    logarithmique : cette part-là se calcule honnêtement. Elle répond à une
+    question que WHOOP ne pose pas — « mon sport pèse-t-il vraiment dans ma
+    dépense, ou est-ce mon quotidien qui la porte ? »
+    """
+    result = {
+        "ready": False,
+        "days": 0,
+        "required_days": int(min_days),
+        "mean_daily_burn": float("nan"),
+        "mean_session_burn": float("nan"),
+        "share_pct": float("nan"),
+        "session_days": 0,
+    }
+    grid = daily_grid(daily)
+    if grid.empty or "Calories (kcal)" not in grid.columns:
+        return result
+
+    burn = grid[["Date", "Calories (kcal)"]].dropna()
+    result["days"] = int(len(burn))
+    if len(burn) < max(3, int(min_days)):
+        return result
+    result["mean_daily_burn"] = float(burn["Calories (kcal)"].mean())
+
+    session_total = pd.Series(0.0, index=burn["Date"].to_numpy(), dtype=float)
+    if workouts is not None and not workouts.empty and "Calories séance (kcal)" in workouts.columns:
+        sessions = workouts.copy()
+        sessions["Date"] = pd.to_datetime(sessions["Date"], errors="coerce").dt.normalize()
+        sessions = sessions.dropna(subset=["Date", "Calories séance (kcal)"])
+        if not sessions.empty:
+            grouped = sessions.groupby("Date")["Calories séance (kcal)"].sum()
+            session_total = session_total.add(grouped.reindex(session_total.index).fillna(0.0), fill_value=0.0)
+            result["session_days"] = int((grouped > 0).sum())
+
+    result["mean_session_burn"] = float(session_total.mean())
+    if result["mean_daily_burn"] > 0:
+        result["share_pct"] = result["mean_session_burn"] / result["mean_daily_burn"] * 100.0
+        result["ready"] = True
+    return result
+
+
+def recovery_streaks(frame: pd.DataFrame | None) -> dict[str, Any]:
+    """Séries de journées consécutives dans la même zone de récupération.
+
+    Une succession de journées rouges ne se lit pas sur une moyenne ; elle se
+    lit sur la série, qui dit combien de temps l'état dure.
+    """
+    result = {
+        "ready": False,
+        "current_zone": None,
+        "current_length": 0,
+        "longest_green": 0,
+        "longest_red": 0,
+        "days": 0,
+    }
+    grid = daily_grid(frame)
+    if grid.empty or "Récupération (%)" not in grid.columns:
+        return result
+
+    scored = grid.dropna(subset=["Récupération (%)"])
+    result["days"] = int(len(scored))
+    if scored.empty:
+        return result
+
+    zones = [_zone_of(float(value)) for value in scored["Récupération (%)"]]
+    longest = {"Vert": 0, "Rouge": 0}
+    run_zone, run_length = None, 0
+    for zone in zones:
+        if zone == run_zone:
+            run_length += 1
+        else:
+            run_zone, run_length = zone, 1
+        if run_zone in longest:
+            longest[run_zone] = max(longest[run_zone], run_length)
+
+    result.update(
+        {
+            "ready": True,
+            "current_zone": run_zone,
+            "current_length": run_length,
+            "longest_green": longest["Vert"],
+            "longest_red": longest["Rouge"],
+        }
+    )
+    return result
+
+
+def _streak_insight(daily: pd.DataFrame | None) -> Insight | None:
+    """Signale une série de journées rouges, qu'aucune moyenne ne fait ressortir."""
+    streaks = recovery_streaks(daily)
+    if not streaks["ready"] or streaks["current_zone"] != "Rouge" or streaks["current_length"] < 3:
+        return None
+    length = streaks["current_length"]
+    return Insight(
+        f"{length} {_plural(length, 'journée')} de suite en zone rouge",
+        f"Votre récupération reste sous 34 % depuis {length} {_plural(length, 'jour')}. "
+        "Une moyenne hebdomadaire lisse ce genre de série ; la durée, elle, indique un état qui "
+        "s'installe plutôt qu'une mauvaise nuit isolée.",
+        tone="warning",
+        icon="🔻",
+        priority=87,
     )
