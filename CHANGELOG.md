@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-09-15 — Lectures par date, données API inexploitées et constats testés
+
+Passe menée en trois temps : audit multi-lentilles du code (calculs, cohérence, UI/UX et dates, données API, physiologie), mesure du taux de fausse alerte de chaque constat sur 300 séries sans aucun lien réel, puis correction.
+
+Lectures par date (demande explicite : les récupérations et les séances de boxe à leur date) :
+- **Onglet Récupération** : une barre par matin noté, colorée de sa zone WHOOP avec les seuils 34 / 67 en fond, puis un tableau daté du plus récent au plus ancien — score, zone en toutes lettres, HRV, FC repos, nuit précédente, strain de la veille et du jour. Quatorze lignes visibles, l'historique complet derrière un expander.
+- **Onglet Effort** : chaque séance à sa date, heure de début, sport en français, durée, strain, FC, calories, minutes en zones 4–5 et **la récupération du lendemain matin en face** (`session_log`) ; chronologie des séances colorée par sport ; répartition de l'intensité facile / modérée / dure par sport (`hr_zone_profile`). Une séance enregistrée à moins de 80 % est signalée.
+- Les dates de tableau portent leur jour de semaine (`format_short_date` : « mar. 8 sept. ») ; les booléens se lisent « oui / non ».
+- Bandes de référence WHOOP dessinées en fond des courbes de récupération (zones) et de strain (léger / modéré / élevé / maximal) ; l'empilement des stades de sommeil totalise désormais la nuit (léger et éveil ajoutés).
+
+Données de l'API v2 récupérées mais jetées, désormais lues (`app/core/whoop.py`) : `zone_durations` (six zones de FC en minutes), `percent_recorded`, `altitude_gain_meter`, sommeil léger, éveil, cycles de sommeil, besoin de base, drapeaux « Calibration » et « Cycle en cours ». Les siestes ne tiennent plus lieu de nuit ; les récupérations reçoivent le fuseau de leur cycle.
+
+Logique des calculs :
+- **Rapport aigu/chronique découplé** : la fenêtre chronique couvre les 21 jours qui précèdent la semaine aigüe au lieu des 28 jours qui la contiennent — couplées, les fenêtres bornent le rapport par construction (Windt & Gabbett, Br J Sports Med 2019). Les bornes calendaires des deux fenêtres sont affichées. Le strain du cycle en cours, provisoire, est écarté de la charge et des « occasions manquées ».
+- **Strain hebdomadaire** : moyenne et non somme — le strain est une échelle logarithmique, la page le disait elle-même deux sections plus loin.
+- **Dette de sommeil cumulée** calculée contre le besoin de base : le besoin affiché par WHOOP chaque soir contient déjà le rattrapage des nuits précédentes.
+- **Séries de journées rouges** comptées en jours calendaires consécutifs, plus en lignes mesurées.
+- Incohérence entre 1,3 et 1,5 : le panneau disait « montée en charge soutenue » pendant que la carte disait « charge maîtrisée, dans la plage 0,8 à 1,3 ».
+
+Constats testés plutôt que déclenchés sur un seuil brut — taux de fausse alerte mesurés sur des séries sans lien (avant → après) :
+- « Vos meilleurs jours : … » 70 % → 4 % (test de Welch par facteur, seuil divisé par le nombre de facteurs ; colonne « Écart établi »).
+- « Récupération en hausse / en baisse » 67 % → 6 % (Welch entre les deux semaines, seuil à 1 % pour compenser l'autocorrélation des nuits).
+- « HRV sous votre repère » 55 % → 7 % : remplacé par la **moyenne mobile de sept jours face à la plage habituelle** des trente jours précédents (`smoothed_baseline`, méthode de Buchheit 2014 ; plage de ± 0,75 écart-type, calibrée sur simulation), avec le nombre de jours consécutifs hors plage. Idem pour la FC repos.
+- « Creux récurrent le lundi » 31 % → 2 % (Welch contre les autres jours, Bonferroni sur les sept jours candidats).
+- « La boxe pèse sur votre lendemain » 10 % → 3 % ; deux séances du même jour ne comptent plus qu'un lendemain.
+- Puissance conservée : boxe à −15 points détectée dans 90 % des cas, sommeil explicatif dans 99 %.
+
+Cohérence et lisibilité : même pente de poids pour la carte « apport estimé » et le panneau ; bandeau 7 j / 7 j indépendant de la période choisie ; coefficients non établis signalés dans « Moteurs de la récupération » ; heure de coucher rendue en horloge dans le contraste ; verdict « tenable » pour un objectif qui laisse plus de 2 000 kcal ; année affichée sur une date d'arrivée de l'année suivante ; sigles HRV / FC conservés ; accords (« zone verte », pluriels) ; journal replié au-delà de trois semaines ; sports nommés en français.
+
+Tests : 487 passés, 0 échec (+52).
+
 ## 2026-09-13 — Cohérence des constats et nouveaux indicateurs
 
 Passe de cohérence menée en générant les constats sur cinq profils d'utilisateur (perte régulière, surcharge, manque de sommeil, prise de poids, stagnation) puis en relisant les listes produites.

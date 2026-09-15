@@ -14,6 +14,7 @@ from app.core.date_labels import (
     format_day_month,
     format_duration_minutes,
     format_long_date,
+    format_short_date,
     format_relative_day,
     format_week_label,
 )
@@ -33,6 +34,11 @@ REFERENCE = pd.Timestamp("2026-09-11")
 )
 def test_format_day_month_uses_french_abbreviations(value, expected):
     assert format_day_month(pd.Timestamp(value)) == expected
+
+
+def test_format_short_date_names_the_weekday_before_the_day():
+    assert format_short_date(pd.Timestamp("2026-09-08")) == "mar. 8 sept."
+    assert format_short_date(None) == "—"
 
 
 def test_format_long_date_spells_the_weekday_and_month():

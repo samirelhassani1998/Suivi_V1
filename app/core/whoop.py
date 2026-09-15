@@ -72,12 +72,16 @@ WHOOP_DAILY_METRICS: tuple[str, ...] = (
     "SpO2 (%)",
     "Sommeil (heures)",
     "Besoin de sommeil (heures)",
+    "Besoin de base (heures)",
     "Dette de sommeil (heures)",
     "Performance sommeil (%)",
     "Efficacité sommeil (%)",
     "Régularité sommeil (%)",
     "Sommeil profond (heures)",
     "Sommeil REM (heures)",
+    "Sommeil léger (heures)",
+    "Éveil (heures)",
+    "Cycles de sommeil",
     "Perturbations sommeil",
     "Fréquence respiratoire (resp/min)",
     "Heure de coucher",
@@ -574,12 +578,16 @@ SLEEP_COLUMNS = (
     "Date",
     "Sommeil (heures)",
     "Besoin de sommeil (heures)",
+    "Besoin de base (heures)",
     "Dette de sommeil (heures)",
     "Performance sommeil (%)",
     "Efficacité sommeil (%)",
     "Régularité sommeil (%)",
     "Sommeil profond (heures)",
     "Sommeil REM (heures)",
+    "Sommeil léger (heures)",
+    "Éveil (heures)",
+    "Cycles de sommeil",
     "Perturbations sommeil",
     "Fréquence respiratoire (resp/min)",
     "Heure de coucher",
@@ -643,6 +651,11 @@ def sleeps_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
         asleep_hours = asleep * MILLI_TO_HOURS if np.isfinite(asleep) else float("nan")
         needed_milli = _total_sleep_need_milli(score)
         needed_hours = needed_milli * MILLI_TO_HOURS if np.isfinite(needed_milli) else float("nan")
+        # Le besoin de base, sans le rattrapage de dette ni l'effort du jour :
+        # c'est contre lui qu'une dette se cumule sans se compter deux fois.
+        needed = score.get("sleep_needed") if isinstance(score.get("sleep_needed"), Mapping) else {}
+        base_milli = _number(needed.get("baseline_milli"))
+        base_hours = base_milli * MILLI_TO_HOURS if np.isfinite(base_milli) else float("nan")
         debt_hours = (
             needed_hours - asleep_hours
             if np.isfinite(needed_hours) and np.isfinite(asleep_hours)
@@ -653,6 +666,7 @@ def sleeps_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
                 "Date": date,
                 "Sommeil (heures)": asleep_hours,
                 "Besoin de sommeil (heures)": needed_hours,
+                "Besoin de base (heures)": base_hours,
                 "Dette de sommeil (heures)": debt_hours,
                 "Heure de coucher": _decimal_hour(record.get("start"), record.get("timezone_offset")),
                 # Signe vital nocturne renvoyé par WHOOP et jusqu'ici ignoré :
@@ -664,6 +678,12 @@ def sleeps_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
                 "Régularité sommeil (%)": _number(score.get("sleep_consistency_percentage")),
                 "Sommeil profond (heures)": _number(stages.get("total_slow_wave_sleep_time_milli")) * MILLI_TO_HOURS,
                 "Sommeil REM (heures)": _number(stages.get("total_rem_sleep_time_milli")) * MILLI_TO_HOURS,
+                # Sans le sommeil léger et l'éveil, l'empilement des stades ne
+                # totalisait jamais la nuit : le lecteur voyait « 3 h » de
+                # sommeil sur une nuit de 7 h sans qu'on lui dise où était le reste.
+                "Sommeil léger (heures)": _number(stages.get("total_light_sleep_time_milli")) * MILLI_TO_HOURS,
+                "Éveil (heures)": awake * MILLI_TO_HOURS if np.isfinite(awake) else float("nan"),
+                "Cycles de sommeil": _number(stages.get("sleep_cycle_count")),
                 "Perturbations sommeil": _number(stages.get("disturbance_count")),
                 "Sieste": bool(record.get("nap", False)),
             }
@@ -671,13 +691,18 @@ def sleeps_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     if not rows:
         return _empty_frame(SLEEP_COLUMNS)
     frame = pd.DataFrame(rows)
-    # Les siestes ne remplacent pas la nuit principale : on garde la plus longue par jour.
-    frame = frame.sort_values(["Date", "Sieste", "Sommeil (heures)"], ascending=[True, True, False], kind="mergesort")
+    # Une sieste n'est jamais « la nuit » : un jour où seule une sieste a été
+    # enregistrée affichait une heure de sommeil, sept heures de dette et un
+    # coucher à 14 h. Les siestes sont écartées ; la nuit la plus longue reste.
+    frame = frame[~frame["Sieste"].astype(bool)]
+    if frame.empty:
+        return _empty_frame(SLEEP_COLUMNS)
+    frame = frame.sort_values(["Date", "Sommeil (heures)"], ascending=[True, False], kind="mergesort")
     frame = frame.drop_duplicates(subset=["Date"], keep="first").reset_index(drop=True)
     return frame[list(SLEEP_COLUMNS)]
 
 
-CYCLE_COLUMNS = ("Date", "Strain", "Calories (kcal)", "FC moyenne (bpm)", "FC max (bpm)")
+CYCLE_COLUMNS = ("Date", "Strain", "Calories (kcal)", "FC moyenne (bpm)", "FC max (bpm)", "Cycle en cours")
 
 
 def cycles_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
@@ -697,6 +722,10 @@ def cycles_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
                 "Calories (kcal)": kilojoule * KJ_TO_KCAL if np.isfinite(kilojoule) else float("nan"),
                 "FC moyenne (bpm)": _number(score.get("average_heart_rate")),
                 "FC max (bpm)": _number(score.get("max_heart_rate")),
+                # Le cycle du jour n'a pas de fin tant que la nuit n'est pas
+                # venue : son strain est provisoire, et le compter comme une
+                # journée complète tire la charge de la semaine vers le bas.
+                "Cycle en cours": record.get("end") in (None, ""),
             }
         )
     if not rows:
@@ -706,7 +735,52 @@ def cycles_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     return frame[list(CYCLE_COLUMNS)]
 
 
-WORKOUT_COLUMNS = ("Date", "Début", "Sport", "Durée (min)", "Strain séance", "Calories séance (kcal)", "FC moyenne (bpm)", "FC max (bpm)", "Distance (km)")
+# Zones de fréquence cardiaque WHOOP, en pourcentage de la réserve de FC
+# (Karvonen) : zone 1 = 40–60 %, 2 = 60–70 %, 3 = 70–80 %, 4 = 80–90 %,
+# 5 = 90–100 % ; la zone 0 est tout ce qui se situe sous 40 %.
+HR_ZONE_COLUMNS: tuple[str, ...] = tuple(f"Zone {index} (min)" for index in range(6))
+_HR_ZONE_KEYS: tuple[str, ...] = (
+    "zone_zero_milli",
+    "zone_one_milli",
+    "zone_two_milli",
+    "zone_three_milli",
+    "zone_four_milli",
+    "zone_five_milli",
+)
+MILLI_TO_MINUTES = 1.0 / 60_000.0
+
+WORKOUT_COLUMNS = (
+    "Date",
+    "Début",
+    "Sport",
+    "Durée (min)",
+    "Strain séance",
+    "Calories séance (kcal)",
+    "FC moyenne (bpm)",
+    "FC max (bpm)",
+    "Distance (km)",
+    "Dénivelé (m)",
+    "Part enregistrée (%)",
+) + HR_ZONE_COLUMNS
+
+
+def _zone_minutes(score: Mapping[str, Any]) -> dict[str, float]:
+    """Minutes passées dans chaque zone de FC, quel que soit le nom de l'objet.
+
+    L'API v2 expose ``zone_durations`` ; la v1 exposait ``zone_duration``. Les
+    accepter tous deux évite qu'une séance perde ses zones selon la version
+    de l'enregistrement renvoyé.
+    """
+    zones = score.get("zone_durations")
+    if not isinstance(zones, Mapping):
+        zones = score.get("zone_duration")
+    if not isinstance(zones, Mapping):
+        return {column: float("nan") for column in HR_ZONE_COLUMNS}
+    minutes = {}
+    for column, key in zip(HR_ZONE_COLUMNS, _HR_ZONE_KEYS):
+        value = _number(zones.get(key))
+        minutes[column] = value * MILLI_TO_MINUTES if np.isfinite(value) else float("nan")
+    return minutes
 
 
 def workouts_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
@@ -741,12 +815,58 @@ def workouts_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
                 "FC moyenne (bpm)": _number(score.get("average_heart_rate")),
                 "FC max (bpm)": _number(score.get("max_heart_rate")),
                 "Distance (km)": distance / 1000.0 if np.isfinite(distance) else float("nan"),
+                "Dénivelé (m)": _number(score.get("altitude_gain_meter")),
+                # Une séance enregistrée à 40 % a un strain et des calories
+                # sous-estimés : sans cette colonne, rien ne distinguait une
+                # séance légère d'une séance mal captée.
+                "Part enregistrée (%)": _number(score.get("percent_recorded")),
+                **_zone_minutes(score),
             }
         )
     if not rows:
         return _empty_frame(WORKOUT_COLUMNS)
     frame = pd.DataFrame(rows).sort_values(["Date", "Début"], kind="mergesort").reset_index(drop=True)
     return frame[list(WORKOUT_COLUMNS)]
+
+
+# Intitulés WHOOP (anglais) les plus courants, rendus en français. Un sport
+# absent de la table garde son nom, espaces rétablis et initiale en capitale.
+SPORT_LABELS: dict[str, str] = {
+    "boxing": "Boxe",
+    "kickboxing": "Kickboxing",
+    "martial arts": "Arts martiaux",
+    "muay thai": "Muay-thaï",
+    "weightlifting": "Musculation",
+    "powerlifting": "Force athlétique",
+    "functional fitness": "Cross-training",
+    "hiit": "HIIT",
+    "running": "Course à pied",
+    "walking": "Marche",
+    "hiking": "Randonnée",
+    "cycling": "Vélo",
+    "spin": "Vélo en salle",
+    "swimming": "Natation",
+    "rowing": "Aviron",
+    "elliptical": "Elliptique",
+    "stairmaster": "Escalier",
+    "jump rope": "Corde à sauter",
+    "yoga": "Yoga",
+    "pilates": "Pilates",
+    "stretching": "Étirements",
+    "football": "Football",
+    "soccer": "Football",
+    "basketball": "Basket-ball",
+    "tennis": "Tennis",
+    "padel": "Padel",
+    "activity": "Activité",
+    "inconnu": "Inconnu",
+}
+
+
+def sport_label(name: Any) -> str:
+    """Nom de sport lisible : « boxing » devient « Boxe »."""
+    raw = str(name or "Inconnu").replace("_", " ").strip()
+    return SPORT_LABELS.get(raw.lower(), raw.capitalize())
 
 
 def build_daily_frame(
@@ -766,7 +886,12 @@ def build_daily_frame(
 
     merged["Date"] = pd.to_datetime(merged["Date"], errors="coerce")
     merged = merged.dropna(subset=["Date"]).sort_values("Date", kind="mergesort").reset_index(drop=True)
-    merged = merged.drop(columns=[column for column in ("Calibration", "Sieste") if column in merged.columns])
+    merged = merged.drop(columns=[column for column in ("Sieste",) if column in merged.columns])
+    # Les drapeaux « Calibration » et « Cycle en cours » restent dans la trame :
+    # les analyses doivent pouvoir écarter un score provisoire.
+    for flag in ("Calibration", "Cycle en cours"):
+        if flag in merged.columns:
+            merged[flag] = merged[flag].fillna(False).astype(bool)
     return merged
 
 
@@ -819,12 +944,35 @@ def merge_with_weight(weight_df: pd.DataFrame, whoop_daily: pd.DataFrame) -> pd.
     return merged[ordered]
 
 
+# Colonnes du cycle : provisoires tant que le cycle du jour n'est pas clos.
+CYCLE_METRICS: tuple[str, ...] = ("Strain", "Calories (kcal)", "FC moyenne (bpm)", "FC max (bpm)")
+
+
+def mask_in_progress_cycle(frame: pd.DataFrame) -> pd.DataFrame:
+    """Vide les métriques du cycle encore en cours, en gardant son strain à part.
+
+    Le cumul partiel d'une matinée n'est ni une journée de charge ni une
+    dépense quotidienne : compté tel quel, il tirait toutes les moyennes vers
+    le bas. La valeur provisoire reste lisible dans « Strain provisoire ».
+    """
+    if frame is None or frame.empty or "Cycle en cours" not in frame.columns:
+        return frame
+    data = frame.copy(deep=True)
+    in_progress = data["Cycle en cours"].fillna(False).astype(bool)
+    if "Strain" in data.columns:
+        data["Strain provisoire"] = pd.to_numeric(data["Strain"], errors="coerce").where(in_progress)
+    for column in CYCLE_METRICS:
+        if column in data.columns:
+            data[column] = pd.to_numeric(data[column], errors="coerce").where(~in_progress)
+    return data
+
+
 def summarise_daily(frame: pd.DataFrame, days: int = 7) -> dict[str, dict[str, float]]:
     """Moyennes récentes et écart par rapport à la période précédente."""
     summary: dict[str, dict[str, float]] = {}
     if frame is None or frame.empty:
         return summary
-    data = frame.copy(deep=True)
+    data = mask_in_progress_cycle(frame.copy(deep=True))
     data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
     data = data.dropna(subset=["Date"]).sort_values("Date", kind="mergesort")
     if data.empty:

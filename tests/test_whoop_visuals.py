@@ -12,9 +12,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app.core.whoop_analytics import calendar_matrix, indexed_series
+from app.core.whoop_analytics import calendar_matrix, hr_zone_profile, indexed_series, rolling_trend, session_log, smoothed_baseline
 from app.ui.whoop_visuals import (
+    RECOVERY_BANDS,
+    STRAIN_BANDS,
     SERIES_COLORS,
+    intensity_profile_chart,
+    recovery_bars_chart,
+    sessions_timeline_chart,
+    smoothed_baseline_chart,
     STATUS_CRITICAL,
     STATUS_GOOD,
     STATUS_WARNING,
@@ -245,3 +251,121 @@ def test_sparkline_carries_no_axes_legend_or_hover():
 def test_recovery_gauge_clamps_values_to_its_dial(value, expected):
     """Une valeur hors 0-100 dessinerait une aiguille hors du cadran."""
     assert _spec(recovery_gauge(value, "Vert"))["data"][0]["value"] == expected
+
+
+# ── Lecture par date et repères de fond ───────────────────────────────────────
+
+
+def test_recovery_bars_take_the_color_of_their_whoop_zone():
+    frame = pd.DataFrame(
+        {"Date": pd.date_range("2026-08-01", periods=3, freq="D"), "Récupération (%)": [20.0, 50.0, 80.0]}
+    )
+
+    figure = _spec(recovery_bars_chart(frame, trend=rolling_trend(frame, "Récupération (%)")))
+
+    bars = figure["data"][0]
+    assert bars["type"] == "bar"
+    assert bars["marker"]["color"] == [STATUS_CRITICAL, STATUS_WARNING, STATUS_GOOD]
+    # Les zones sont dessinées en fond, les seuils 34 et 67 matérialisés.
+    shapes = figure["layout"]["shapes"]
+    assert sorted((shape["y0"], shape["y1"]) for shape in shapes) == [(0.0, 34.0), (34.0, 67.0), (67.0, 100.0)]
+    # Chaque barre nomme sa date en toutes lettres au survol.
+    assert "août 2026" in bars["customdata"][0]
+
+
+def test_recovery_bars_return_none_without_scores():
+    assert recovery_bars_chart(pd.DataFrame({"Date": pd.date_range("2026-08-01", periods=2), "Récupération (%)": [np.nan, np.nan]})) is None
+
+
+def test_series_chart_draws_the_whoop_strain_levels_in_the_background():
+    frame = pd.DataFrame({"Date": pd.date_range("2026-08-01", periods=4, freq="D"), "Strain": [5.0, 12.0, 15.0, 19.0]})
+
+    figure = _spec(series_chart(frame, ["Strain"], "Charge", "Strain", bands=STRAIN_BANDS))
+
+    shapes = figure["layout"]["shapes"]
+    assert [shape["y1"] for shape in shapes] == [10.0, 14.0, 18.0, 21.0]
+    assert all(shape["layer"] == "below" for shape in shapes)
+    labels = [annotation["text"] for annotation in figure["layout"]["annotations"]]
+    assert labels == ["Léger", "Modéré", "Élevé", "Maximal"]
+
+
+def test_sleep_stages_stack_light_sleep_and_awake_time_on_top():
+    frame = pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-08-01", periods=2, freq="D"),
+            "Sommeil profond (heures)": [1.5, 1.4],
+            "Sommeil REM (heures)": [1.8, 1.7],
+            "Sommeil léger (heures)": [3.6, 3.9],
+            "Éveil (heures)": [0.4, 0.5],
+        }
+    )
+
+    figure = _spec(sleep_stages_chart(frame))
+
+    names = [trace["name"] for trace in figure["data"]]
+    # Du plus profond au plus léger, l'éveil en dernier : l'empilement se lit comme une nuit.
+    assert names == ["Sommeil profond", "Sommeil REM", "Sommeil léger", "Éveil"]
+    assert figure["layout"]["barmode"] == "stack"
+
+
+def test_smoothed_baseline_chart_shows_nights_smoothing_and_the_usual_range():
+    rng = np.random.default_rng(1)
+    frame = pd.DataFrame(
+        {"Date": pd.date_range("2026-07-01", periods=50, freq="D"), "HRV (ms)": np.exp(np.log(45) + rng.normal(0, 0.15, 50))}
+    )
+    trend = smoothed_baseline(frame, "HRV (ms)", log_scale=True)
+
+    figure = _spec(smoothed_baseline_chart(trend["series"], "HRV (ms)", "Variabilité cardiaque", "ms"))
+
+    modes = [trace["mode"] for trace in figure["data"]]
+    assert modes == ["markers", "lines"]
+    band = figure["layout"]["shapes"][0]
+    assert band["y0"] == pytest.approx(trend["low"])
+    assert band["y1"] == pytest.approx(trend["high"])
+    assert figure["layout"]["annotations"][0]["text"] == "Plage habituelle"
+
+
+def test_sessions_timeline_names_the_next_morning_in_its_hover():
+    dates = pd.date_range("2026-09-01", periods=3, freq="D")
+    daily = pd.DataFrame({"Date": dates, "Récupération (%)": [60.0, 30.0, 80.0]})
+    workouts = pd.DataFrame(
+        {
+            "Date": [dates[0], dates[1]],
+            "Début": [dates[0] + pd.Timedelta(hours=18), dates[1] + pd.Timedelta(hours=7)],
+            "Sport": ["boxing", "running"],
+            "Strain séance": [12.0, 8.0],
+        }
+    )
+
+    figure = _spec(sessions_timeline_chart(session_log(daily, workouts)))
+
+    names = [trace["name"] for trace in figure["data"]]
+    assert set(names) == {"Boxe", "Course à pied"}
+    boxing = next(trace for trace in figure["data"] if trace["name"] == "Boxe")
+    assert "Lendemain : 30 %" in boxing["customdata"][0]
+    assert "mardi 1 septembre 2026" in boxing["customdata"][0]
+
+
+def test_sessions_timeline_without_sessions_returns_none():
+    assert sessions_timeline_chart(pd.DataFrame()) is None
+
+
+def test_intensity_profile_stacks_to_one_hundred_percent_per_sport():
+    workouts = pd.DataFrame(
+        {
+            "Sport": ["boxing", "running"],
+            "Zone 0 (min)": [0.0, 10.0],
+            "Zone 1 (min)": [5.0, 20.0],
+            "Zone 2 (min)": [5.0, 20.0],
+            "Zone 3 (min)": [10.0, 5.0],
+            "Zone 4 (min)": [20.0, 0.0],
+            "Zone 5 (min)": [10.0, 0.0],
+        }
+    )
+
+    figure = _spec(intensity_profile_chart(hr_zone_profile(workouts, min_sessions=1)))
+
+    assert figure["layout"]["barmode"] == "stack"
+    assert figure["layout"]["xaxis"]["range"] == [0, 100]
+    totals = np.sum([trace["x"] for trace in figure["data"]], axis=0)
+    assert all(abs(total - 100.0) < 0.2 for total in totals)

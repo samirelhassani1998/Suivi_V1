@@ -437,6 +437,8 @@ def _whoop_rich_state(at: AppTest, *, whoop_days: int = 45) -> None:
             "Régularité sommeil (%)": [0.0] * whoop_days,
             "Sommeil profond (heures)": [1.1 + (i % 4) * 0.2 for i in range(whoop_days)],
             "Sommeil REM (heures)": [1.5 + (i % 3) * 0.2 for i in range(whoop_days)],
+            "Sommeil léger (heures)": [3.4 + (i % 5) * 0.1 for i in range(whoop_days)],
+            "Éveil (heures)": [0.3 + (i % 3) * 0.1 for i in range(whoop_days)],
             "Fréquence respiratoire (resp/min)": [14.4 + (i % 5) * 0.15 for i in range(whoop_days)],
             "Heure de coucher": [-1.5 + (i % 4) * 0.4 for i in range(whoop_days)],
             "Strain": [8 + (i % 8) for i in range(whoop_days)],
@@ -459,6 +461,13 @@ def _whoop_rich_state(at: AppTest, *, whoop_days: int = 45) -> None:
             "FC moyenne (bpm)": [142.0, 115.0],
             "FC max (bpm)": [185.0, 170.0],
             "Distance (km)": [float("nan"), float("nan")],
+            "Part enregistrée (%)": [100.0, 64.0],
+            "Zone 0 (min)": [1.0, 5.0],
+            "Zone 1 (min)": [4.0, 15.0],
+            "Zone 2 (min)": [8.0, 20.0],
+            "Zone 3 (min)": [12.0, 12.0],
+            "Zone 4 (min)": [13.0, 6.0],
+            "Zone 5 (min)": [5.0, 2.0],
         }
     )
     at.session_state["whoop_profile"] = {"first_name": "Test", "last_name": "Utilisateur"}
@@ -559,8 +568,8 @@ def test_whoop_page_formats_workout_tables_without_raw_precision():
     # Les décimales brutes de l'API ne sont plus affichées telles quelles.
     assert "43.4038" not in flattened
     assert "505.512" not in flattened
-    # Les noms de sport sont normalisés et les dates écrites en français.
-    assert "Boxing" in flattened
+    # Les noms de sport sont traduits et les dates écrites en français.
+    assert "Boxe" in flattened
     assert "2026-01-05 00:00:00" not in flattened
     assert any(month in flattened for month in ("janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."))
     # Une durée se lit en heures et minutes, pas en décimales de minute.
@@ -761,7 +770,7 @@ def test_whoop_page_renders_a_dated_journal_with_sessions_under_their_day():
     assert any(weekday in rendered for weekday in ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"))
     # La séance apparaît avec son heure de début, sous sa date.
     assert "18:30" in rendered
-    assert "Boxing" in rendered
+    assert "Boxe" in rendered
     assert pd.Timestamp(session_day).strftime("%d") in rendered
 
 
@@ -896,3 +905,79 @@ def test_whoop_effort_tab_shows_load_tolerance_without_any_recorded_workout():
     assert "récupération du lendemain matin" in rendered, (
         "le panneau de charge doit précéder le retour anticipé sur les séances"
     )
+
+
+def test_whoop_effort_tab_lists_each_session_by_date_with_the_next_morning():
+    """Ce que le lecteur demande : ses séances de boxe, à leur date, et ce qu'elles ont laissé."""
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at)
+    at.run(timeout=30)
+    assert not at.exception
+
+    effort = at.tabs[5]
+    rendered = " ".join(str(m.value) for m in effort.markdown)
+    assert "Vos séances, par date" in rendered
+    sessions = effort.dataframe[0].value
+    assert list(sessions.columns)[:3] == ["Date", "Début", "Sport"]
+    assert "Récupération du lendemain (%)" in sessions.columns
+    assert "Zones 4–5 (min)" in sessions.columns
+    # Du plus récent au plus ancien, jour de semaine en tête, heure de début seule.
+    dates = sessions["Date"].tolist()
+    assert dates[0].split(" ")[0] in {"lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim."}
+    assert sessions["Début"].tolist()[1] == "18:30"
+    assert set(sessions["Sport"]) == {"Boxe", "Musculation"}
+    # Une séance captée à 64 % est signalée plutôt que lue comme une séance légère.
+    captions = " ".join(str(c.value) for c in effort.caption)
+    assert "à moins de 80 %" in captions
+    # Les zones de FC alimentent la répartition d'intensité.
+    assert "Répartition de l'intensité" in rendered
+
+
+def test_whoop_recovery_tab_lists_each_morning_by_date_with_its_zone():
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at)
+    at.run(timeout=30)
+    assert not at.exception
+
+    recovery = at.tabs[3]
+    rendered = " ".join(str(m.value) for m in recovery.markdown)
+    assert rendered.index("Récupération, jour par jour") < rendered.index("Zones de récupération")
+    log = recovery.dataframe[0].value
+    assert list(log.columns) == ["Date", "Récupération (%)", "Zone", "HRV (ms)", "FC repos (bpm)", "Sommeil (heures)", "Strain de la veille", "Strain du jour"]
+    # Quatorze lignes visibles d'emblée, l'historique complet derrière un expander.
+    assert len(log) == 14
+    assert any("Voir toutes les journées notées" in expander.label for expander in recovery.expander)
+    assert log["Zone"].iloc[0] in {"🟢 Vert", "🟡 Jaune", "🔴 Rouge"}
+    # La colonne Date porte le jour de semaine.
+    assert log["Date"].iloc[0].split(" ")[0] in {"lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim."}
+    # HRV et FC repos lissées face à leur plage, avec un statut lisible.
+    labels = [metric.label for metric in recovery.metric]
+    assert "Plage habituelle" in labels
+    assert any("Moyenne des 7 derniers jours" == label for label in labels)
+
+
+def test_whoop_charts_carry_the_whoop_reference_bands_and_the_full_night():
+    at = AppTest.from_file("app/pages/Whoop.py")
+    _whoop_connected_state(at)
+    _whoop_rich_state(at)
+    at.run(timeout=30)
+    assert not at.exception
+
+    specs = [json.loads(chart.proto.spec) for chart in at.get("plotly_chart")]
+    band_labels = {
+        annotation.get("text")
+        for spec in specs
+        for annotation in spec.get("layout", {}).get("annotations", [])
+    }
+    # Niveaux de strain et zones de récupération dessinés en fond des courbes.
+    assert {"Léger", "Modéré", "Élevé", "Maximal"} <= band_labels
+    assert {"Rouge", "Jaune", "Vert"} <= band_labels
+    stage_names = {
+        trace.get("name")
+        for spec in specs
+        for trace in spec.get("data", [])
+        if trace.get("type") == "bar" and str(trace.get("name", "")).startswith(("Sommeil", "Éveil"))
+    }
+    assert stage_names == {"Sommeil profond", "Sommeil REM", "Sommeil léger", "Éveil"}

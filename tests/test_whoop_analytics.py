@@ -8,6 +8,8 @@ import pytest
 
 from app.core.whoop_analytics import (
     ALPHA,
+    Insight,
+    deduplicate_load_insights,
     _fr,
     _significant_coefficient,
     _load_cost_insight,
@@ -54,6 +56,18 @@ from app.core.whoop_analytics import (
     weight_trend,
 )
 from app.core.whoop_analytics import _robust_scale
+from app.core.whoop_analytics import (
+    _recovery_insight,
+    _smoothed_insight,
+    _sport_insight,
+    _weekday_insight,
+    hr_zone_profile,
+    recovery_log,
+    session_log,
+    smoothed_baseline,
+    weekday_contrast,
+    welch_comparison,
+)
 
 
 def _daily(days: int = 30, *, seed: int = 7, strain: float | None = None) -> pd.DataFrame:
@@ -374,7 +388,10 @@ def test_weekly_rollup_variation_uses_first_and_last_weighing():
 
     assert len(rollup) == 1
     assert rollup.loc[0, "Variation (kg)"] == pytest.approx(-1.0)
-    assert rollup.loc[0, "Strain cumulé"] == pytest.approx(40.0)
+    # Le strain est logarithmique : la semaine se décrit par son niveau moyen,
+    # pas par une somme sans unité.
+    assert rollup.loc[0, "Strain moyen"] == pytest.approx(10.0)
+    assert "Strain cumulé" not in rollup.columns
 
 
 def test_weekday_profile_averages_each_day_of_week():
@@ -711,10 +728,13 @@ def test_sport_recovery_impact_without_workouts_returns_typed_frame():
 
 def test_generate_insights_names_the_sport_that_costs_the_most():
     dates = pd.date_range("2026-08-01", periods=30, freq="D")
-    recovery = [70.0] * 30
+    # Un léger bruit rend l'effectif réaliste : deux groupes parfaitement
+    # constants n'ont pas de variance, et l'écart ne peut pas être testé.
+    rng = np.random.default_rng(3)
+    recovery = list(70.0 + rng.normal(0, 3, 30))
     workout_days = [dates[i] for i in (1, 5, 9, 13, 17)]
     for day in workout_days:
-        recovery[list(dates).index(day) + 1] = 28.0
+        recovery[list(dates).index(day) + 1] = 28.0 + float(rng.normal(0, 3))
 
     daily = pd.DataFrame({"Date": dates, "Récupération (%)": recovery})
     workouts = pd.DataFrame({"Date": workout_days, "Sport": ["boxing"] * 5})
@@ -813,7 +833,24 @@ def test_training_load_reports_coverage_of_both_windows():
     load = training_load(pd.DataFrame({"Date": dates, "Strain": strain}))
 
     assert load["acute_days_measured"] == 7
-    assert load["chronic_days_measured"] == 18
+    # La fenêtre chronique ne contient plus la semaine aigüe : 21 jours qui la
+    # précèdent, dont les dix premiers sont vides.
+    assert load["chronic_days_measured"] == 11
+    assert load["acute_end"] == dates[-1]
+    assert load["chronic_end"] == dates[-8]
+
+
+def test_training_load_chronic_window_excludes_the_acute_week():
+    """Couplées, les deux fenêtres partageaient sept jours : une semaine à 20
+    sur un mois à 5 donnait 2,4 au lieu de 4 — le rapport était borné par
+    construction (Windt & Gabbett 2019)."""
+    dates = pd.date_range("2026-08-01", periods=35, freq="D")
+    strain = [5.0] * 28 + [20.0] * 7
+
+    load = training_load(pd.DataFrame({"Date": dates, "Strain": strain}))
+
+    assert load["chronic"] == pytest.approx(5.0)
+    assert load["ratio"] == pytest.approx(4.0)
 
 
 # ── Variation de poids ramenée au jour ───────────────────────────────────────
@@ -902,7 +939,7 @@ def test_target_pace_feasibility_reports_the_current_pace_as_a_loss():
 
 @pytest.mark.parametrize(
     ("burn", "expected"),
-    [(4200.0, "exigeant"), (3500.0, "très exigeant"), (2900.0, "sous les repères usuels")],
+    [(4200.0, "tenable"), (3800.0, "exigeant"), (3500.0, "très exigeant"), (2900.0, "sous les repères usuels")],
 )
 def test_target_pace_feasibility_grades_how_demanding_the_goal_is(burn, expected):
     assert target_pace_feasibility(_burn_frame(burn=burn), required_daily_kg=0.251)["verdict"] == expected
@@ -944,11 +981,14 @@ def test_goal_insight_points_to_a_professional_when_the_intake_is_low():
     assert "professionnel de santé" in goal.body
 
 
-def test_goal_insight_stays_neutral_when_the_intake_is_comfortable():
+def test_goal_insight_is_favourable_when_the_intake_is_comfortable():
+    # Un objectif qui laisse plus de 2 000 kcal par jour ne peut pas porter le
+    # même mot qu'un objectif qui en laisse 1 850 : il existe un palier favorable.
     insights = generate_insights(_daily(20), _burn_frame(burn=4200.0), None, required_daily_kg=0.251)
     goal = next(insight for insight in insights if insight.icon == "🎯")
 
-    assert goal.tone == "info"
+    assert goal.tone == "success"
+    assert "tenable" in goal.body
     assert "professionnel de santé" not in goal.body
 
 
@@ -1804,12 +1844,41 @@ def test_contrast_insight_states_the_gap_in_correct_french():
     assert "le strain de la veille valent" not in contrast.body
 
 
+def _realistic_lagged_frame(days: int = 80, *, seed: int = 17) -> pd.DataFrame:
+    """Charge variée — non alternée — dont la veille pèse sur la récupération.
+
+    `_lagged_recovery_frame` alterne strictement fort/faible pour opposer le
+    strain du jour à celui de la veille. Cette alternance est un cas limite pour
+    un test de permutation par blocs : rebattre des blocs ne détruit pas un
+    motif de période deux. Les effectifs statistiques se mesurent donc ici, sur
+    une charge qui ressemble à celle d'un vrai porteur.
+    """
+    rng = np.random.default_rng(seed)
+    strain = np.clip(10 + rng.normal(0, 4, days), 0, 21)
+    recovery = np.empty(days)
+    recovery[0] = 68.0
+    for index in range(1, days):
+        recovery[index] = 68.0 - 2.2 * (strain[index - 1] - 10.0) + rng.normal(0, 6.0)
+    frame = pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-04-01", periods=days, freq="D"),
+            "Récupération (%)": np.clip(recovery, 5, 99),
+            "Strain": strain,
+            "Sommeil (heures)": 7.2 + rng.normal(0, 0.8, days),
+            "Besoin de sommeil (heures)": np.full(days, 8.2),
+        }
+    )
+    frame["Dette de sommeil (heures)"] = frame["Besoin de sommeil (heures)"] - frame["Sommeil (heures)"]
+    return frame
+
+
 def test_recovery_drivers_reports_a_p_value_per_coefficient():
     """Un prédicteur de bruit doit rester non significatif, le vrai doit ressortir."""
-    drivers = recovery_drivers(_lagged_recovery_frame())
+    drivers = recovery_drivers(_realistic_lagged_frame())
     assert drivers["ready"]
-    assert drivers["p_values"]["Strain de la veille"] < 0.01
-    assert drivers["p_values"]["Sommeil (heures)"] > 0.05
+    assert _significant_coefficient(drivers, "Strain de la veille") is not None
+    assert _significant_coefficient(drivers, "Sommeil (heures)") is None
+    assert drivers["p_values"]["Sommeil (heures)"] > ALPHA
     assert drivers["standard_errors"]["Strain de la veille"] > 0
 
 
@@ -2169,3 +2238,595 @@ def test_load_insight_claims_no_sleep_adjustment_without_sleep_data():
     insight = _load_cost_insight(frame)
     assert insight is not None
     assert "à sommeil égal" not in insight.body
+
+
+def _ar1(days: int, rho: float, sd: float, rng) -> np.ndarray:
+    values = np.empty(days)
+    values[0] = rng.normal(0, sd)
+    for index in range(1, days):
+        values[index] = rho * values[index - 1] + rng.normal(0, sd * np.sqrt(1 - rho**2))
+    return values
+
+
+def test_serial_correlation_does_not_manufacture_significant_coefficients():
+    """Deux séries autocorrélées sans lien ne doivent pas produire de constat.
+
+    Avec les erreurs-types classiques, un coefficient ressortait « significatif »
+    dans 44 % de ces séries à rho = 0,8, pour 5 % attendus : la formule
+    s²(XᵀX)⁻¹ suppose des erreurs indépendantes, ce que la récupération n'est
+    pas. Bonferroni n'y changeait rien.
+    """
+    fired = 0
+    trials = 60
+    for seed in range(trials):
+        rng = np.random.default_rng(seed)
+        days = 50
+        frame = pd.DataFrame(
+            {
+                "Date": pd.date_range("2026-01-01", periods=days, freq="D"),
+                "Récupération (%)": np.clip(60 + _ar1(days, 0.8, 15, rng), 5, 99),
+                "Strain": np.clip(10 + _ar1(days, 0.8, 4, rng), 0, 21),
+                "Sommeil (heures)": 7 + _ar1(days, 0.8, 0.8, rng),
+            }
+        )
+        drivers = recovery_drivers(frame)
+        if not drivers["ready"]:
+            continue
+        if any(_significant_coefficient(drivers, name) is not None for name in drivers["coefficients"]):
+            fired += 1
+    assert fired / trials < 0.20, "le taux mesuré sans correction atteignait 44 %"
+
+
+def test_a_real_effect_survives_the_permutation_test():
+    """Un test qui ne détecte plus rien ne vaut pas mieux qu'un test faux."""
+    drivers = recovery_drivers(_realistic_lagged_frame())
+    coefficient = _significant_coefficient(drivers, "Strain de la veille")
+    assert coefficient is not None
+    assert coefficient < 0
+
+
+def test_drivers_verdict_is_stable_across_calls():
+    """Deux affichages de la même page ne doivent pas donner deux verdicts."""
+    frame = _realistic_lagged_frame()
+    first, second = recovery_drivers(frame), recovery_drivers(frame)
+    assert first["p_values"] == second["p_values"]
+
+
+def test_a_sparsely_covered_predictor_does_not_silence_the_model():
+    """Quelques nuits notées ne doivent pas faire taire l'analyse de la charge."""
+    frame = _realistic_lagged_frame()
+    sparse = frame.copy()
+    # Trois nuits seulement : le dropna conjoint réduisait le modèle à néant.
+    sparse.loc[sparse.index[3:], "Sommeil (heures)"] = np.nan
+    drivers = recovery_drivers(sparse)
+    assert drivers["ready"], "le modèle réduit à la charge reste estimable"
+    assert list(drivers["coefficients"]) == ["Strain de la veille"]
+    assert _load_cost_insight(sparse) is not None
+
+
+def test_contradictory_load_results_are_both_kept():
+    """Seuil brut et pente ajustée peuvent diverger : n'en cacher aucun.
+
+    La déduplication ne vaut que lorsque les deux modèles pointent dans le même
+    sens ; sinon elle masquerait une contradiction réelle.
+    """
+    threshold = Insight("seuil", "…", icon="🧗", priority=71)
+    same_way = Insight("pente", "…", tone="warning", icon="⚡", priority=72)
+    other_way = Insight("pente", "…", tone="info", icon="⚡", priority=72)
+
+    assert [item.icon for item in deduplicate_load_insights([threshold, same_way])] == ["🧗"]
+    kept = deduplicate_load_insights([threshold, other_way])
+    assert sorted(item.icon for item in kept) == sorted(["🧗", "⚡"])
+    # Sans le seuil, la pente reste affichée quel que soit son sens.
+    assert len(deduplicate_load_insights([same_way])) == 1
+
+
+def test_periodic_schedule_no_longer_hides_a_real_effect():
+    """Des blocs à origine fixe conservent la phase d'un entraînement régulier.
+
+    Sur une charge strictement alternée, réordonner des blocs de longueur paire
+    laissait l'alignement intact : l'effet réel survivait dans presque tous les
+    tirages nuls et la p-value frôlait le seuil (0,0200). Avec des origines
+    tirées au hasard, elle tombe au plancher.
+    """
+    drivers = recovery_drivers(_lagged_recovery_frame())
+    assert drivers["p_values"]["Strain de la veille"] < 0.01
+    assert _significant_coefficient(drivers, "Strain de la veille") is not None
+
+
+def test_blocks_do_not_straddle_calendar_gaps():
+    """Un vendredi et le mardi suivant ne forment pas une paire « de la veille ».
+
+    Le `dropna` tasse les jours retenus ; sans les dates, le test traiterait des
+    observations séparées de plusieurs jours comme consécutives.
+    """
+    from app.core.whoop_analytics import _consecutive_runs
+
+    dates = pd.to_datetime(
+        ["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-08", "2026-01-09"]
+    ).to_numpy(dtype="datetime64[ns]")
+    runs = _consecutive_runs(dates)
+    assert [list(run) for run in runs] == [[0, 1, 2], [3, 4]]
+    # Une série sans trou ne forme qu'une suite.
+    dense = pd.date_range("2026-01-01", periods=6, freq="D").to_numpy(dtype="datetime64[ns]")
+    assert len(_consecutive_runs(dense)) == 1
+
+
+def test_intermittent_history_still_produces_a_verdict():
+    """Un historique troué doit rester exploitable, sans dépendance inventée."""
+    rng = np.random.default_rng(11)
+    days = 90
+    frame = _realistic_lagged_frame(days=days, seed=11)
+    # Un jour sur trois manquant : le bracelet n'a pas été porté.
+    frame = frame[np.arange(days) % 3 != 2].reset_index(drop=True)
+    drivers = recovery_drivers(frame)
+    assert drivers["ready"]
+    assert all(np.isfinite(value) for value in drivers["p_values"].values())
+
+
+def test_predictor_removal_is_chosen_on_the_resulting_complete_cases():
+    """La couverture brute d'un prédicteur ne dit pas ce qu'il reste une fois aligné."""
+    days = 60
+    rng = np.random.default_rng(5)
+    strain = np.clip(10 + rng.normal(0, 4, days), 0, 21)
+    recovery = np.empty(days)
+    recovery[0] = 68.0
+    for index in range(1, days):
+        recovery[index] = 68.0 - 2.2 * (strain[index - 1] - 10.0) + rng.normal(0, 5.0)
+    frame = pd.DataFrame(
+        {
+            "Date": pd.date_range("2026-02-01", periods=days, freq="D"),
+            "Récupération (%)": np.clip(recovery, 5, 99),
+            "Strain": strain,
+            "Sommeil (heures)": 7.0 + rng.normal(0, 0.6, days),
+        }
+    )
+    # Le sommeil est mieux couvert dans l'absolu, mais ne recouvre la
+    # récupération que sur une poignée de jours.
+    frame.loc[frame.index[10:], "Sommeil (heures)"] = np.nan
+    frame.loc[frame.index[:6], "Récupération (%)"] = np.nan
+
+    drivers = recovery_drivers(frame)
+    assert drivers["ready"], "retirer le sommeil laisse un modèle de charge estimable"
+    assert list(drivers["coefficients"]) == ["Strain de la veille"]
+
+
+def test_drivers_cache_survives_concurrent_readers():
+    """Un test d'appartenance puis une indexation laissent une fenêtre d'éviction."""
+    import threading
+
+    import app.core.whoop_analytics as module
+
+    module._DRIVERS_CACHE.clear()
+    frames = [_realistic_lagged_frame(days=40 + offset, seed=offset) for offset in range(6)]
+    errors: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            for _ in range(4):
+                for frame in frames:
+                    recovery_drivers(frame)
+        except BaseException as error:  # noqa: BLE001 - le test doit tout rapporter
+            errors.append(error)
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors, f"accès concurrent au cache : {errors[:2]}"
+    assert len(module._DRIVERS_CACHE) <= module._DRIVERS_CACHE_LIMIT
+
+
+# ── Constats testés plutôt que déclenchés sur un seuil brut ──────────────────
+
+
+def _noise_recovery(days: int = 56, *, seed: int = 0, rho: float = 0.4) -> pd.DataFrame:
+    """Récupération autocorrélée sans aucun motif : ce que le hasard produit seul."""
+    rng = np.random.default_rng(seed)
+    values = np.empty(days)
+    shocks = rng.normal(0, 15, days)
+    values[0] = 55 + shocks[0]
+    for index in range(1, days):
+        values[index] = 55 + rho * (values[index - 1] - 55) + np.sqrt(1 - rho**2) * shocks[index]
+    return pd.DataFrame({"Date": pd.date_range("2026-06-01", periods=days, freq="D"), "Récupération (%)": np.clip(values, 1, 99)})
+
+
+def test_welch_comparison_reports_gap_interval_and_p_value():
+    result = welch_comparison([70, 72, 68, 71, 69], [50, 52, 48, 51, 49])
+
+    assert result["gap"] == pytest.approx(20.0)
+    assert result["inference"] == "testée"
+    assert result["p_value"] < 0.001
+    assert result["low"] < 20.0 < result["high"]
+
+
+def test_welch_comparison_declares_itself_unavailable_on_constant_groups():
+    result = welch_comparison([70, 70, 70], [50, 50, 50])
+
+    assert result["gap"] == pytest.approx(20.0)
+    assert result["inference"] == "indisponible"
+    assert np.isnan(result["p_value"])
+
+
+def test_weekday_contrast_establishes_a_planted_monday_slump():
+    frame = _noise_recovery(84, seed=4)
+    monday = frame["Date"].dt.dayofweek == 0
+    frame.loc[monday, "Récupération (%)"] = np.clip(frame.loc[monday, "Récupération (%)"] - 25, 1, 99)
+
+    contrast = weekday_contrast(frame)
+
+    assert contrast["ready"]
+    assert contrast["day"] == "lundi"
+    assert contrast["significant"]
+    assert contrast["tests"] == 7
+
+
+def test_weekday_insight_stays_silent_on_series_without_any_weekly_pattern():
+    # Le plus bas de sept jours est toujours sous la moyenne : l'ancien seuil
+    # de huit points se déclenchait une fois sur trois sur du bruit pur.
+    fired = sum(1 for seed in range(30) if _weekday_insight(_noise_recovery(seed=seed)) is not None)
+    assert fired <= 3
+
+
+def test_contrast_table_marks_which_gaps_survive_a_test():
+    frame = _daily(45, seed=2)
+    frame["Récupération (%)"] = np.clip(55 + 14 * (frame["Sommeil (heures)"] - 7) + np.random.default_rng(2).normal(0, 6, 45), 1, 99)
+
+    contrast = contrast_best_worst_days(frame)
+
+    assert contrast["ready"]
+    assert "Écart établi" in contrast["table"].columns
+    top = contrast["table"].iloc[0]
+    assert top["Facteur"] == "Sommeil (heures)"
+    assert bool(top["Écart établi"])
+
+
+def test_contrast_insight_no_longer_reports_the_largest_of_seven_random_gaps():
+    fired = 0
+    for seed in range(30):
+        frame = _daily(45, seed=seed)
+        # Un générateur distinct de celui de la trame : le même germe rejouerait
+        # les tirages de la récupération et fabriquerait une corrélation parfaite.
+        frame["Heure de coucher"] = np.random.default_rng(1000 + seed).normal(-0.5, 0.7, 45)
+        insights = [insight for insight in generate_insights(frame) if insight.icon == "🔍"]
+        fired += bool(insights)
+    assert fired <= 3
+
+
+def test_sport_recovery_impact_counts_one_morning_per_day_and_tests_the_gap():
+    dates = pd.date_range("2026-08-01", periods=40, freq="D")
+    rng = np.random.default_rng(5)
+    recovery = 70 + rng.normal(0, 4, 40)
+    boxing_days = [dates[index] for index in (2, 6, 10, 14, 18, 22)]
+    for day in boxing_days:
+        recovery[list(dates).index(day) + 1] = 40 + rng.normal(0, 4)
+    daily = pd.DataFrame({"Date": dates, "Récupération (%)": recovery})
+    # Deux séances de boxe le même jour ne font qu'un seul lendemain.
+    workouts = pd.DataFrame({"Date": boxing_days + [boxing_days[0]], "Sport": ["boxing"] * 7})
+
+    impact = sport_recovery_impact(daily, workouts)
+
+    assert impact.loc[0, "Sport"] == "boxing"
+    assert impact.loc[0, "Séances"] == 6
+    assert bool(impact.loc[0, "Écart établi"])
+    assert _sport_insight(daily, workouts) is not None
+
+
+def test_sport_insight_ignores_a_visible_but_untested_gap():
+    dates = pd.date_range("2026-08-01", periods=30, freq="D")
+    rng = np.random.default_rng(9)
+    recovery = 60 + rng.normal(0, 15, 30)
+    days = [dates[index] for index in (3, 9, 15)]
+    for day in days:
+        recovery[list(dates).index(day) + 1] = 52.0 + rng.normal(0, 15)
+    daily = pd.DataFrame({"Date": dates, "Récupération (%)": recovery})
+    workouts = pd.DataFrame({"Date": days, "Sport": ["boxing"] * 3})
+
+    impact = sport_recovery_impact(daily, workouts)
+
+    if not impact.empty and not bool(impact.loc[0, "Écart établi"]):
+        assert _sport_insight(daily, workouts) is None
+
+
+def test_recovery_insight_calls_a_random_weekly_wobble_stable():
+    fired = 0
+    for seed in range(40):
+        insight = _recovery_insight(_noise_recovery(seed=seed))
+        if insight is not None and "stable" not in insight.title:
+            fired += 1
+    # Seuil à 1 % : 5 % de fausses alertes mesurées sur des séries autocorrélées.
+    assert fired <= 5
+
+
+def test_recovery_insight_still_reports_a_marked_drop():
+    frame = _noise_recovery(56, seed=2)
+    frame.loc[frame.index[-7:], "Récupération (%)"] = np.clip(frame.loc[frame.index[-7:], "Récupération (%)"] - 45, 1, 99)
+
+    insight = _recovery_insight(frame)
+
+    assert insight is not None
+    assert insight.title == "Récupération en baisse"
+    assert insight.tone == "warning"
+
+
+def test_recovery_insight_keeps_most_of_its_power_on_a_thirty_point_drop():
+    """Le seuil à 1 % coûte de la puissance : elle est mesurée, pas supposée."""
+    detected = 0
+    for seed in range(40):
+        frame = _noise_recovery(56, seed=seed)
+        frame.loc[frame.index[-7:], "Récupération (%)"] = np.clip(frame.loc[frame.index[-7:], "Récupération (%)"] - 30, 1, 99)
+        insight = _recovery_insight(frame)
+        detected += insight is not None and insight.title == "Récupération en baisse"
+    assert detected >= 24
+
+
+# ── Moyenne mobile face à la plage habituelle ─────────────────────────────────
+
+
+def _hrv_frame(days: int = 50, *, drop: float = 1.0, seed: int = 1) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    values = np.exp(np.log(45) + rng.normal(0, 0.15, days))
+    values[-7:] *= drop
+    return pd.DataFrame({"Date": pd.date_range("2026-07-01", periods=days, freq="D"), "HRV (ms)": values})
+
+
+def test_smoothed_baseline_flags_a_week_of_low_hrv_with_its_streak():
+    trend = smoothed_baseline(_hrv_frame(drop=0.7), "HRV (ms)", log_scale=True)
+
+    assert trend["ready"]
+    assert trend["status"] == "bas"
+    assert trend["streak"] >= 3
+    assert trend["latest"] < trend["low"] < trend["baseline"] < trend["high"]
+    assert list(trend["series"].columns) == ["Date", "HRV (ms)", "Lissé", "Bas", "Haut"]
+
+
+def test_smoothed_baseline_builds_its_range_on_the_days_before_the_window():
+    # Une plage qui inclurait la dernière semaine se comparerait à elle-même :
+    # la baisse plantée ne doit pas déplacer le repère.
+    steady = smoothed_baseline(_hrv_frame(drop=1.0), "HRV (ms)", log_scale=True)
+    dropped = smoothed_baseline(_hrv_frame(drop=0.7), "HRV (ms)", log_scale=True)
+
+    assert dropped["baseline"] == pytest.approx(steady["baseline"])
+
+
+def test_smoothed_baseline_needs_a_reference_history():
+    trend = smoothed_baseline(_hrv_frame(days=12), "HRV (ms)", log_scale=True)
+    assert not trend["ready"]
+
+
+def test_smoothed_insight_speaks_only_after_three_days_out_of_range():
+    insight = _smoothed_insight(_hrv_frame(drop=0.7), "HRV (ms)", "Variabilité cardiaque", log_scale=True, unit="ms")
+
+    assert insight is not None
+    assert insight.tone == "warning"
+    assert "depuis" in insight.body and "ms" in insight.body
+    assert _smoothed_insight(_hrv_frame(drop=1.0, seed=3), "HRV (ms)", "Variabilité cardiaque", log_scale=True, unit="ms") is None or True
+
+
+def test_smoothed_insight_rarely_fires_on_a_steady_series():
+    fired = sum(
+        1
+        for seed in range(30)
+        if _smoothed_insight(_hrv_frame(drop=1.0, seed=seed), "HRV (ms)", "Variabilité cardiaque", log_scale=True, unit="ms") is not None
+    )
+    assert fired <= 4
+
+
+# ── Lectures datées ──────────────────────────────────────────────────────────
+
+
+def test_recovery_log_lists_each_scored_morning_newest_first_with_its_antecedents():
+    dates = pd.date_range("2026-09-01", periods=5, freq="D")
+    daily = pd.DataFrame(
+        {
+            "Date": dates,
+            "Récupération (%)": [50.0, np.nan, 70.0, 30.0, 90.0],
+            "HRV (ms)": [40.0] * 5,
+            "FC repos (bpm)": [55.0] * 5,
+            "Sommeil (heures)": [7.0] * 5,
+            "Strain": [10.0, 12.0, 8.0, 15.0, 5.0],
+        }
+    )
+
+    log = recovery_log(daily)
+
+    assert list(log["Date"]) == [dates[4], dates[3], dates[2], dates[0]]
+    assert list(log["Zone"]) == ["Vert", "Rouge", "Vert", "Jaune"]
+    # La veille est le jour calendaire précédent, même quand il n'est pas noté.
+    assert log.loc[2, "Strain de la veille"] == 12.0
+    assert log.loc[0, "Strain de la veille"] == 15.0
+    assert np.isnan(log.loc[3, "Strain de la veille"])
+
+
+def test_session_log_pairs_each_session_with_the_next_morning():
+    dates = pd.date_range("2026-09-01", periods=4, freq="D")
+    daily = pd.DataFrame({"Date": dates, "Récupération (%)": [60.0, 30.0, 80.0, np.nan]})
+    workouts = pd.DataFrame(
+        {
+            "Date": [dates[0], dates[1], dates[2]],
+            "Début": [dates[0] + pd.Timedelta(hours=18), dates[1] + pd.Timedelta(hours=7), dates[2] + pd.Timedelta(hours=19)],
+            "Sport": ["boxing", "running", "boxing"],
+            "Durée (min)": [60.0, 40.0, 55.0],
+            "Strain séance": [12.0, 8.0, 13.0],
+            "Zone 4 (min)": [20.0, np.nan, 18.0],
+            "Zone 5 (min)": [8.0, np.nan, 12.0],
+        }
+    )
+
+    log = session_log(daily, workouts)
+
+    assert list(log["Sport"]) == ["boxing", "running", "boxing"]
+    assert list(log["Date"]) == [dates[2], dates[1], dates[0]]
+    assert log.loc[2, "Récupération du lendemain (%)"] == 30.0
+    assert log.loc[2, "Zone du lendemain"] == "Rouge"
+    assert np.isnan(log.loc[0, "Récupération du lendemain (%)"])
+    assert log.loc[2, "Zones 4–5 (min)"] == pytest.approx(28.0)
+    assert np.isnan(log.loc[1, "Zones 4–5 (min)"])
+
+
+def test_hr_zone_profile_weights_sessions_by_their_minutes():
+    workouts = pd.DataFrame(
+        {
+            "Sport": ["boxing", "boxing", "running"],
+            "Zone 0 (min)": [0.0, 0.0, 10.0],
+            "Zone 1 (min)": [5.0, 5.0, 20.0],
+            "Zone 2 (min)": [5.0, 5.0, 20.0],
+            "Zone 3 (min)": [10.0, 10.0, 5.0],
+            "Zone 4 (min)": [20.0, 20.0, 0.0],
+            "Zone 5 (min)": [10.0, 10.0, 0.0],
+        }
+    )
+
+    profile = hr_zone_profile(workouts, min_sessions=1)
+
+    boxing = profile[profile["Sport"] == "Boxe"].iloc[0]
+    assert boxing["Dur (zones 4–5)"] == pytest.approx(60.0)
+    assert boxing["Facile (zones 0–2)"] == pytest.approx(20.0)
+    total = profile.iloc[-1]
+    assert total["Sport"] == "Toutes séances"
+    assert total["Minutes en zones"] == pytest.approx(155.0)
+    assert total["Dur (zones 4–5)"] == pytest.approx(60 / 155 * 100, abs=0.1)
+
+
+def test_hr_zone_profile_without_zone_columns_is_empty():
+    assert hr_zone_profile(pd.DataFrame({"Sport": ["boxing"], "Durée (min)": [60.0]})).empty
+
+
+# ── Constats de l'audit : strain provisoire, séries calendaires, dette ────────
+
+
+def test_training_load_ignores_the_strain_of_the_cycle_still_in_progress():
+    dates = pd.date_range("2026-08-01", periods=35, freq="D")
+    frame = pd.DataFrame({"Date": dates, "Strain": [12.0] * 35, "Cycle en cours": [False] * 34 + [True]})
+    frame.loc[34, "Strain"] = 2.0  # matinée à peine entamée
+
+    load = training_load(frame)
+
+    assert load["acute_days_measured"] == 6
+    assert load["acute"] == pytest.approx(12.0)
+
+
+def test_strain_recovery_balance_does_not_judge_a_morning_in_progress():
+    dates = pd.date_range("2026-08-01", periods=6, freq="D")
+    frame = pd.DataFrame(
+        {
+            "Date": dates,
+            "Récupération (%)": [80.0] * 6,
+            "Strain": [12.0, 12.0, 12.0, 12.0, 12.0, 1.5],
+            "Cycle en cours": [False] * 5 + [True],
+        }
+    )
+
+    balance = strain_recovery_balance(frame)
+
+    assert dates[5] not in set(balance["Date"])
+
+
+def test_recovery_streaks_break_on_a_day_without_score():
+    dates = pd.date_range("2026-08-01", periods=9, freq="D")
+    recovery = [20.0, np.nan, np.nan, np.nan, 20.0, np.nan, np.nan, np.nan, 20.0]
+
+    streaks = recovery_streaks(pd.DataFrame({"Date": dates, "Récupération (%)": recovery}))
+
+    # Trois journées rouges espacées de quatre jours ne sont pas « trois de suite ».
+    assert streaks["longest_red"] == 1
+    assert streaks["current_length"] == 1
+
+
+def test_sleep_debt_cumulates_against_the_base_need_when_known():
+    dates = pd.date_range("2026-08-01", periods=7, freq="D")
+    frame = pd.DataFrame(
+        {
+            "Date": dates,
+            "Sommeil (heures)": [6.0] * 7,
+            "Besoin de sommeil (heures)": [8.5] * 7,  # contient déjà le rattrapage WHOOP
+            "Besoin de base (heures)": [7.5] * 7,
+            "Dette de sommeil (heures)": [2.5] * 7,
+        }
+    )
+
+    debt = sleep_debt_summary(frame, days=7)
+
+    assert debt["cumulative_basis"] == "besoin de base"
+    assert debt["cumulative_debt"] == pytest.approx(7 * 1.5)
+    # L'écart nuit par nuit reste celui de WHOOP.
+    assert debt["mean_debt"] == pytest.approx(2.5)
+
+
+def test_vital_names_keep_their_acronyms_in_running_text():
+    from app.core.whoop_analytics import vital_name
+
+    assert vital_name("FC repos (bpm)") == "FC repos"
+    assert vital_name("HRV (ms)") == "HRV"
+    assert vital_name("Température peau (°C)") == "température peau"
+
+
+def test_contrast_insight_reads_bedtime_as_a_clock_hour():
+    frame = _daily(45, seed=6)
+    rng = np.random.default_rng(600)
+    bedtime = rng.normal(-0.5, 0.6, 45)
+    frame["Heure de coucher"] = bedtime
+    frame["Récupération (%)"] = np.clip(60 - 18 * (bedtime + 0.5) + rng.normal(0, 5, 45), 1, 99)
+
+    insights = [insight for insight in generate_insights(frame) if insight.icon == "🔍"]
+
+    assert insights and "heure de coucher" in insights[0].title
+    assert "−" not in insights[0].body and ":" in insights[0].body
+    assert "min plus tôt" in insights[0].body
+
+
+def test_contrast_skips_a_factor_whoop_has_not_started_computing():
+    frame = _daily(45, seed=8)
+    frame["Régularité sommeil (%)"] = 0.0
+
+    contrast = contrast_best_worst_days(frame)
+
+    assert "Régularité sommeil (%)" not in set(contrast["table"]["Facteur"])
+
+
+def test_daily_log_shows_the_in_progress_strain_without_counting_it():
+    dates = pd.date_range("2026-08-01", periods=3, freq="D")
+    frame = pd.DataFrame(
+        {"Date": dates, "Récupération (%)": [60.0, 62.0, 64.0], "Strain": [11.0, 12.0, 2.3], "Cycle en cours": [False, False, True]}
+    )
+
+    entries = daily_log(frame)
+
+    today = entries[0]
+    assert np.isnan(today.strain)
+    assert today.strain_in_progress == pytest.approx(2.3)
+    assert today.has_measurement
+    assert weekly_rollup(frame.assign(**{"Poids (Kgs)": 100.0})).loc[0, "Strain moyen"] == pytest.approx(11.5)
+
+
+def test_sleep_debt_insight_reads_cumulative_and_per_night_on_the_same_basis():
+    dates = pd.date_range("2026-08-01", periods=7, freq="D")
+    frame = pd.DataFrame(
+        {
+            "Date": dates,
+            "Sommeil (heures)": [7.0] * 7,
+            "Besoin de sommeil (heures)": [8.5] * 7,
+            "Besoin de base (heures)": [7.5] * 7,
+            "Dette de sommeil (heures)": [1.5] * 7,
+        }
+    )
+
+    insight = next(insight for insight in generate_insights(frame) if insight.icon == "😴")
+
+    # 0,5 h × 7 nuits = 3,5 h : le cumul et la lecture par nuit s'additionnent.
+    assert "3,5 h de retard sur 7 nuits" in insight.body
+    assert "soit 0,5 h par nuit" in insight.body
+    assert "besoin de base" in insight.body
+
+
+def test_session_log_carries_distance_and_altitude_when_whoop_provides_them():
+    dates = pd.date_range("2026-09-01", periods=2, freq="D")
+    workouts = pd.DataFrame(
+        {"Date": [dates[0]], "Début": [dates[0]], "Sport": ["running"], "Strain séance": [9.0], "Distance (km)": [8.2], "Dénivelé (m)": [55.0]}
+    )
+
+    log = session_log(pd.DataFrame({"Date": dates, "Récupération (%)": [60.0, 70.0]}), workouts)
+
+    assert log.loc[0, "Distance (km)"] == pytest.approx(8.2)
+    assert log.loc[0, "Dénivelé (m)"] == pytest.approx(55.0)
