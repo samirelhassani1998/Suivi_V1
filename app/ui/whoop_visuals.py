@@ -18,6 +18,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from app.core.date_labels import format_clock_hour, format_day_month, format_long_date
+from app.core.whoop import sport_label
 
 # Palette catégorielle : ordre fixe, jamais recyclé ni réattribué au filtrage.
 SERIES_COLORS: tuple[str, ...] = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100")
@@ -39,6 +40,22 @@ GRID = "#e1e0d9"
 AXIS = "#c3c2b7"
 INK_MUTED = "#898781"
 INK_SECONDARY = "#52514e"
+
+# Bandes de référence publiées par WHOOP, dessinées en fond des courbes pour
+# que la lecture d'une valeur n'exige plus de se rappeler les seuils.
+RECOVERY_BANDS: tuple[tuple[float, float, str, str], ...] = (
+    (0.0, 34.0, "#fbe3e3", "Rouge"),
+    (34.0, 67.0, "#fdf1d6", "Jaune"),
+    (67.0, 100.0, "#dcf3dc", "Vert"),
+)
+# Échelle de strain : léger 0–9,9, modéré 10–13,9, élevé 14–17,9, maximal 18–21
+# (https://www.whoop.com/us/en/thelocker/how-does-whoop-strain-work-101/).
+STRAIN_BANDS: tuple[tuple[float, float, str, str], ...] = (
+    (0.0, 10.0, "#eef3f8", "Léger"),
+    (10.0, 14.0, "#e2ecf7", "Modéré"),
+    (14.0, 18.0, "#fdf1d6", "Élevé"),
+    (18.0, 21.0, "#fbe3e3", "Maximal"),
+)
 
 LINE_WIDTH = 2
 MARKER_SIZE = 8
@@ -114,6 +131,22 @@ def _calendar_axis(figure: go.Figure, dates: Any = None) -> go.Figure:
     return figure
 
 
+def _add_bands(figure: go.Figure, bands: Sequence[tuple[float, float, str, str]] | None) -> go.Figure:
+    """Bandes horizontales de référence, étiquetées à droite, sous les données."""
+    for low, high, color, label in bands or ():
+        figure.add_hrect(
+            y0=low,
+            y1=high,
+            fillcolor=color,
+            line_width=0,
+            layer="below",
+            annotation_text=label,
+            annotation_position="top right",
+            annotation_font=dict(size=10, color=INK_MUTED),
+        )
+    return figure
+
+
 def series_chart(
     grid: pd.DataFrame,
     metrics: Sequence[str],
@@ -122,17 +155,20 @@ def series_chart(
     *,
     trend: pd.DataFrame | None = None,
     height: int = CHART_HEIGHT,
+    bands: Sequence[tuple[float, float, str, str]] | None = None,
 ) -> go.Figure | None:
     """Courbes quotidiennes sur calendrier continu, avec tendance lissée optionnelle.
 
     Renvoie ``None`` quand aucune métrique n'est exploitable : la page décide
-    alors quoi afficher, plutôt que d'exposer un cadre vide.
+    alors quoi afficher, plutôt que d'exposer un cadre vide. ``bands`` dessine
+    des plages de référence en fond (zones de récupération, niveaux de strain).
     """
     usable = [metric for metric in metrics if metric in grid.columns and grid[metric].notna().any()]
     if not usable:
         return None
 
     figure = go.Figure()
+    _add_bands(figure, bands)
     for index, metric in enumerate(usable):
         figure.add_scatter(
             x=grid["Date"],
@@ -298,22 +334,36 @@ def indexed_comparison_chart(indexed: pd.DataFrame, metrics: Sequence[str], titl
     return _calendar_axis(_base_layout(figure, title, y_title="Base 100 au départ", show_legend=True), indexed["Date"])
 
 
+# Du plus profond au plus léger, l'éveil en dernier : l'empilement se lit de
+# bas en haut comme une nuit, et sa hauteur totale est le temps passé au lit.
+SLEEP_STAGE_ORDER: tuple[tuple[str, str], ...] = (
+    ("Sommeil profond (heures)", SERIES_COLORS[0]),
+    ("Sommeil REM (heures)", SERIES_COLORS[2]),
+    ("Sommeil léger (heures)", "#9ec3ec"),
+    ("Éveil (heures)", "#d9d8d0"),
+)
+
+
 def sleep_stages_chart(grid: pd.DataFrame) -> go.Figure | None:
-    """Stades de sommeil empilés, séparés par un filet de surface."""
-    stages = [stage for stage in ("Sommeil profond (heures)", "Sommeil REM (heures)") if stage in grid.columns and grid[stage].notna().any()]
+    """Stades de sommeil empilés, séparés par un filet de surface.
+
+    Sans le sommeil léger et l'éveil, l'empilement plafonnait à trois heures
+    sur une nuit de sept : le lecteur cherchait où était passé le reste.
+    """
+    stages = [(stage, color) for stage, color in SLEEP_STAGE_ORDER if stage in grid.columns and grid[stage].notna().any()]
     if not stages:
         return None
 
     figure = go.Figure()
-    for index, stage in enumerate(stages):
+    for stage, color in stages:
         figure.add_bar(
             x=grid["Date"],
             y=grid[stage],
-            name=stage,
-            marker=dict(color=SERIES_COLORS[index % len(SERIES_COLORS)], line=dict(width=2, color=SURFACE)),
-            hovertemplate=f"{stage} : %{{y:.2f}} h<extra></extra>",
+            name=stage.replace(" (heures)", ""),
+            marker=dict(color=color, line=dict(width=2, color=SURFACE)),
+            hovertemplate=f"{stage.replace(' (heures)', '')} : %{{y:.2f}} h<extra></extra>",
         )
-    figure = _base_layout(figure, "Répartition des stades de sommeil", y_title="Heures", show_legend=True)
+    figure = _base_layout(figure, "Composition de chaque nuit", y_title="Heures", show_legend=True)
     figure.update_layout(barmode="stack", bargap=0.35)
     return _calendar_axis(figure, grid["Date"])
 
@@ -396,4 +446,160 @@ def sparkline(values: Sequence[float], *, positive: bool = True) -> go.Figure:
         xaxis=dict(visible=False),
         yaxis=dict(visible=False),
     )
+    return figure
+
+
+def recovery_bars_chart(grid: pd.DataFrame, *, trend: pd.DataFrame | None = None) -> go.Figure | None:
+    """Une barre par matin noté, colorée de la zone WHOOP du score.
+
+    La courbe dit la forme ; la barre colorée dit le verdict de chaque jour
+    sans obliger à comparer une hauteur aux seuils. La tendance sur sept
+    jours reste en filigrane.
+    """
+    if "Récupération (%)" not in grid.columns or not grid["Récupération (%)"].notna().any():
+        return None
+    values = grid["Récupération (%)"]
+    # Les seuils des barres sont ceux des bandes de fond : une seule définition.
+    zones = [
+        next((label for low, high, _color, label in RECOVERY_BANDS if low <= value < high or (value == high == 100.0)), None)
+        if np.isfinite(value)
+        else None
+        for value in values
+    ]
+    figure = go.Figure()
+    _add_bands(figure, RECOVERY_BANDS)
+    figure.add_bar(
+        x=grid["Date"],
+        y=values,
+        name="Récupération",
+        marker=dict(color=[ZONE_COLORS.get(zone, SERIES_COLORS[0]) for zone in zones], line=dict(width=0)),
+        customdata=[format_long_date(date) for date in grid["Date"]],
+        hovertemplate="%{customdata}<br>Récupération : %{y:.0f} %<extra></extra>",
+    )
+    if trend is not None and not trend.empty:
+        trend_metric = [column for column in trend.columns if column != "Date"]
+        if trend_metric and trend[trend_metric[0]].notna().any():
+            figure.add_scatter(
+                x=trend["Date"],
+                y=trend[trend_metric[0]],
+                mode="lines",
+                name="Tendance 7 jours",
+                connectgaps=False,
+                line=dict(color=INK_SECONDARY, width=LINE_WIDTH, dash="dot"),
+                hovertemplate="Tendance 7 j : %{y:.0f} %<extra></extra>",
+            )
+    figure = _base_layout(figure, "Récupération, jour par jour", y_title="%", show_legend=len(figure.data) > 1)
+    figure.update_layout(bargap=0.25, hovermode="closest")
+    figure.update_yaxes(range=[0, 100])
+    return _calendar_axis(figure, grid["Date"])
+
+
+def smoothed_baseline_chart(series: pd.DataFrame, metric: str, title: str, unit: str) -> go.Figure | None:
+    """Valeurs quotidiennes en points, moyenne mobile en trait, plage habituelle en fond."""
+    if series is None or series.empty or metric not in series.columns or not series[metric].notna().any():
+        return None
+    figure = go.Figure()
+    low, high = series["Bas"].dropna(), series["Haut"].dropna()
+    if not low.empty and not high.empty:
+        figure.add_hrect(
+            y0=float(low.iloc[0]),
+            y1=float(high.iloc[0]),
+            fillcolor="#e8f1e8",
+            line_width=0,
+            layer="below",
+            annotation_text="Plage habituelle",
+            annotation_position="top left",
+            annotation_font=dict(size=10, color=INK_MUTED),
+        )
+    figure.add_scatter(
+        x=series["Date"],
+        y=series[metric],
+        mode="markers",
+        name="Chaque nuit",
+        # Des points isolés n'ont rien à relier ; la déclaration reste explicite
+        # pour que la règle « aucune série nommée ne comble un trou » se vérifie.
+        connectgaps=False,
+        marker=dict(size=MARKER_SIZE - 2, color=INK_MUTED, opacity=0.7),
+        hovertemplate=f"Nuit : %{{y:.0f}} {unit}<extra></extra>",
+    )
+    figure.add_scatter(
+        x=series["Date"],
+        y=series["Lissé"],
+        mode="lines",
+        name="Moyenne 7 jours",
+        connectgaps=False,
+        line=dict(color=SERIES_COLORS[0], width=LINE_WIDTH + 1),
+        hovertemplate=f"Moyenne 7 j : %{{y:.0f}} {unit}<extra></extra>",
+    )
+    return _calendar_axis(_base_layout(figure, title, y_title=unit, show_legend=True), series["Date"])
+
+
+def sessions_timeline_chart(sessions: pd.DataFrame) -> go.Figure | None:
+    """Chaque séance à sa date, hauteur = strain de la séance, couleur = sport.
+
+    Le survol donne la récupération du lendemain matin : l'effort et sa
+    conséquence se lisent au même endroit.
+    """
+    if sessions is None or sessions.empty or "Strain séance" not in sessions.columns:
+        return None
+    usable = sessions.dropna(subset=["Strain séance"])
+    if usable.empty:
+        return None
+    figure = go.Figure()
+    labelled = usable["Sport"].map(sport_label)
+    sports = list(dict.fromkeys(labelled))
+    for index, sport in enumerate(sports):
+        chunk = usable[labelled == sport]
+        following = chunk["Récupération du lendemain (%)"] if "Récupération du lendemain (%)" in chunk.columns else pd.Series(np.nan, index=chunk.index)
+        hover = [
+            f"{format_long_date(date)}<br>{sport} : strain {strain:.1f}"
+            + (f"<br>Lendemain : {value:.0f} %" if np.isfinite(value) else "<br>Lendemain : non noté")
+            for date, strain, value in zip(chunk["Date"], chunk["Strain séance"], following.fillna(np.nan))
+        ]
+        figure.add_bar(
+            x=chunk["Date"],
+            y=chunk["Strain séance"],
+            name=sport,
+            marker=dict(color=SERIES_COLORS[index % len(SERIES_COLORS)], line=dict(width=1, color=SURFACE)),
+            customdata=hover,
+            hovertemplate="%{customdata}<extra></extra>",
+        )
+    figure = _base_layout(figure, "Séances dans le temps", y_title="Strain de la séance", show_legend=True)
+    figure.update_layout(barmode="stack", bargap=0.3, hovermode="closest")
+    return _calendar_axis(figure, usable["Date"])
+
+
+INTENSITY_COLORS: tuple[str, ...] = ("#9ec3ec", "#eda100", "#d03b3b")
+
+
+def intensity_profile_chart(profile: pd.DataFrame) -> go.Figure | None:
+    """Barres horizontales à 100 % : part facile / modérée / dure, par sport."""
+    if profile is None or profile.empty or "Sport" not in profile.columns:
+        return None
+    bands = [column for column in profile.columns if column.startswith(("Facile", "Modéré", "Dur"))]
+    if not bands:
+        return None
+    figure = go.Figure()
+    labels = [sport_label(sport) if sport != "Toutes séances" else sport for sport in profile["Sport"]]
+    for index, band in enumerate(bands):
+        figure.add_bar(
+            y=labels,
+            x=profile[band],
+            name=band,
+            orientation="h",
+            marker=dict(color=INTENSITY_COLORS[index % len(INTENSITY_COLORS)], line=dict(width=1, color=SURFACE)),
+            text=[f"{value:.0f} %" if np.isfinite(value) and value >= 8 else "" for value in profile[band]],
+            textposition="inside",
+            hovertemplate=f"{band} : %{{x:.0f}} %<extra></extra>",
+        )
+    figure = _base_layout(
+        figure,
+        "Répartition de l'intensité, par sport",
+        y_title="",
+        height=max(220, 80 + 48 * len(labels)),
+        show_legend=True,
+    )
+    figure.update_layout(barmode="stack", bargap=0.35, hovermode="closest")
+    figure.update_xaxes(range=[0, 100], title="% du temps en zones", ticksuffix=" %")
+    figure.update_yaxes(autorange="reversed")
     return figure

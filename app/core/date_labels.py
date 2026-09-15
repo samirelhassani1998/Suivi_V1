@@ -51,6 +51,19 @@ def format_day_month(value: Any) -> str:
     return f"{stamp.day} {MONTHS_SHORT[stamp.month - 1]}"
 
 
+def format_short_date(value: Any) -> str:
+    """``mar. 9 sept.`` — la date d'une ligne de tableau, jour de semaine compris.
+
+    Un « 9 sept. » seul oblige à retrouver mentalement de quel jour il s'agit,
+    alors que c'est souvent le jour de la semaine qui explique la mesure : la
+    nuit du samedi, la séance du mardi.
+    """
+    stamp = _timestamp(value)
+    if stamp is None:
+        return MISSING_LABEL
+    return f"{WEEKDAYS_SHORT[stamp.dayofweek]} {format_day_month(stamp)}"
+
+
 def format_long_date(value: Any, *, with_weekday: bool = True) -> str:
     """``mercredi 3 septembre 2026`` — pour un titre ou une phrase."""
     stamp = _timestamp(value)

@@ -109,7 +109,10 @@ Au-delà de ce que restitue l'application WHOOP, l'onglet exploite la seule donn
 
 - **Bilan énergétique estimé** : la dépense quotidienne mesurée par WHOOP est combinée à la pente du poids (convertie à raison de 7 700 kcal par kilogramme) pour en déduire l'apport calorique moyen. Ni la balance ni le bracelet ne peuvent produire ce chiffre seuls.
 - **Corrélations décalées** : chaque métrique est confrontée à la variation de poids avec 0, 1 et 2 jours de décalage, un effort pesant rarement sur la balance le jour même.
-- **Charge d'entraînement aigüe/chronique** : la charge des 7 derniers jours rapportée à celle des 28 derniers, indicateur classique de gestion de charge que WHOOP n'affiche pas.
+- **Charge d'entraînement aigüe/chronique** : la charge des 7 derniers jours rapportée à celle des 21 jours qui les précèdent — fenêtres découplées, sans quoi le rapport est borné par construction ([Windt & Gabbett, 2019](https://bjsm.bmj.com/content/53/16/988)) —, indicateur classique de gestion de charge que WHOOP n'affiche pas. Il décrit la charge relative, il ne prédit pas la blessure.
+- **Lectures par date** : chaque matin noté (score, zone, HRV, FC repos, nuit précédente, strain de la veille) et chaque séance (sport, heure, durée, strain, zones de FC, **récupération du lendemain matin en face**), du plus récent au plus ancien, jour de semaine en tête.
+- **HRV et FC repos lissées** : la moyenne mobile de sept jours face à la plage habituelle des trente jours précédents, méthode recommandée pour la variabilité cardiaque ([Buchheit, 2014](https://doi.org/10.3389/fphys.2014.00073)) ; une nuit isolée ne fait pas une tendance.
+- **Zones de fréquence cardiaque** : part du temps facile / modéré / dur par sport, additionnée sur les séances de la période, à partir des `zone_durations` de l'API.
 - **Moteurs de la récupération** : régression du score de récupération sur le sommeil et la charge de la veille, qui chiffre ce que rapporte une heure de sommeil supplémentaire.
 - **Dette de sommeil** : écart entre le besoin estimé par WHOOP et le sommeil obtenu, cumulé sur la semaine.
 - **Zones de récupération**, **synthèse hebdomadaire**, **profil par jour de semaine** et **régularité du coucher**.

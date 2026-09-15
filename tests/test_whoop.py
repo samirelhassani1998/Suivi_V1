@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -31,6 +32,7 @@ from app.core.whoop import (
     recoveries_to_frame,
     refresh_access_token,
     sleeps_to_frame,
+    sport_label,
     summarise_daily,
     workouts_to_frame,
 )
@@ -93,7 +95,7 @@ def _sleep_record(start: str, end: str, *, nap: bool = False, in_bed_milli: int 
                 "total_in_bed_time_milli": in_bed_milli,
                 "total_awake_time_milli": awake_milli,
                 "total_no_data_time_milli": 0,
-                "total_light_sleep_time_milli": 14_400_000,
+                "total_light_sleep_time_milli": 16_200_000,
                 "total_slow_wave_sleep_time_milli": 5_400_000,
                 "total_rem_sleep_time_milli": 7_200_000,
                 "sleep_cycle_count": 4,
@@ -331,6 +333,77 @@ def test_workouts_to_frame_computes_duration_and_distance():
     assert frame.loc[0, "Distance (km)"] == pytest.approx(8.5)
 
 
+def _workout_record(start: str, end: str, sport: str = "boxing", **score) -> dict:
+    return {
+        "id": "44444444-4444-4444-4444-444444444444",
+        "user_id": 7,
+        "start": start,
+        "end": end,
+        "timezone_offset": "+02:00",
+        "sport_name": sport,
+        "score_state": "SCORED",
+        "score": {"strain": 12.3, "average_heart_rate": 150, "max_heart_rate": 186, "kilojoule": 2100.0, **score},
+    }
+
+
+def test_workouts_to_frame_reads_heart_rate_zones_in_minutes():
+    frame = workouts_to_frame([
+        _workout_record(
+            "2026-09-10T17:00:00.000Z",
+            "2026-09-10T18:00:00.000Z",
+            percent_recorded=92.0,
+            altitude_gain_meter=12.5,
+            zone_durations={
+                "zone_zero_milli": 60_000,
+                "zone_one_milli": 600_000,
+                "zone_two_milli": 1_200_000,
+                "zone_three_milli": 900_000,
+                "zone_four_milli": 600_000,
+                "zone_five_milli": 300_000,
+            },
+        )
+    ])
+
+    assert frame.loc[0, "Zone 0 (min)"] == pytest.approx(1.0)
+    assert frame.loc[0, "Zone 2 (min)"] == pytest.approx(20.0)
+    assert frame.loc[0, "Zone 5 (min)"] == pytest.approx(5.0)
+    assert frame.loc[0, "Part enregistrée (%)"] == 92.0
+    assert frame.loc[0, "Dénivelé (m)"] == 12.5
+
+
+def test_workouts_to_frame_accepts_the_v1_zone_object_name():
+    # L'API v1 nommait l'objet ``zone_duration`` : un enregistrement ancien ne
+    # doit pas perdre ses zones pour une lettre.
+    frame = workouts_to_frame([
+        _workout_record(
+            "2026-09-10T17:00:00.000Z",
+            "2026-09-10T18:00:00.000Z",
+            zone_duration={"zone_zero_milli": 0, "zone_one_milli": 0, "zone_two_milli": 0, "zone_three_milli": 0, "zone_four_milli": 1_800_000, "zone_five_milli": 0},
+        )
+    ])
+
+    assert frame.loc[0, "Zone 4 (min)"] == pytest.approx(30.0)
+
+
+def test_workouts_to_frame_leaves_zones_empty_when_whoop_omits_them():
+    frame = workouts_to_frame([_workout_record("2026-09-10T17:00:00.000Z", "2026-09-10T18:00:00.000Z")])
+
+    assert all(np.isnan(frame.loc[0, f"Zone {index} (min)"]) for index in range(6))
+    assert np.isnan(frame.loc[0, "Part enregistrée (%)"])
+
+
+def test_sleeps_to_frame_keeps_light_sleep_awake_time_and_cycles():
+    frame = sleeps_to_frame([_sleep_record("2026-09-09T22:00:00.000Z", "2026-09-10T06:30:00.000Z")])
+
+    assert frame.loc[0, "Sommeil léger (heures)"] == pytest.approx(4.5)
+    assert frame.loc[0, "Éveil (heures)"] == pytest.approx(0.5)
+    assert frame.loc[0, "Cycles de sommeil"] == 4
+    # Les stades additionnés à l'éveil doivent retomber sur le temps au lit :
+    # c'est la condition pour qu'un empilement totalise la nuit.
+    total = sum(frame.loc[0, column] for column in ("Sommeil léger (heures)", "Sommeil profond (heures)", "Sommeil REM (heures)", "Éveil (heures)"))
+    assert total == pytest.approx(8.5)
+
+
 def test_build_daily_frame_merges_sources_on_calendar_day():
     recovery = recoveries_to_frame([_recovery_record("2026-09-10T12:00:00.000Z", 62)])
     sleep = sleeps_to_frame([_sleep_record("2026-09-09T22:00:00.000Z", "2026-09-10T06:30:00.000Z")])
@@ -340,8 +413,35 @@ def test_build_daily_frame_merges_sources_on_calendar_day():
 
     assert len(daily) == 1
     assert {"Récupération (%)", "Sommeil (heures)", "Strain"} <= set(daily.columns)
-    # Les colonnes techniques ne polluent pas la vue journalière.
-    assert "Calibration" not in daily.columns and "Sieste" not in daily.columns
+    # La sieste n'est pas une métrique quotidienne ; les drapeaux « Calibration »
+    # et « Cycle en cours », eux, restent lisibles par les analyses.
+    assert "Sieste" not in daily.columns
+    assert bool(daily.loc[0, "Calibration"]) is False
+    # Le cycle de la fixture n'a pas de fin : il est encore en cours.
+    assert bool(daily.loc[0, "Cycle en cours"]) is True
+
+
+def test_cycles_to_frame_flags_the_cycle_still_in_progress():
+    closed = _cycle_record("2026-09-09T04:00:00.000Z", 11.0)
+    closed["end"] = "2026-09-10T04:00:00.000Z"
+    frame = cycles_to_frame([closed, _cycle_record("2026-09-10T04:00:00.000Z", 6.2)])
+
+    assert list(frame["Cycle en cours"]) == [False, True]
+
+
+def test_sleeps_to_frame_never_lets_a_lone_nap_stand_for_the_night():
+    frame = sleeps_to_frame([
+        _sleep_record("2026-09-10T12:00:00.000Z", "2026-09-10T13:00:00.000Z", nap=True, in_bed_milli=3_600_000, awake_milli=0),
+    ])
+
+    assert frame.empty
+
+
+def test_sport_label_speaks_french_and_keeps_unknown_sports_readable():
+    assert sport_label("boxing") == "Boxe"
+    assert sport_label("weightlifting") == "Musculation"
+    assert sport_label("ultimate_frisbee") == "Ultimate frisbee"
+    assert sport_label(None) == "Inconnu"
 
 
 def test_build_daily_frame_without_sources_returns_empty_typed_frame():
@@ -578,3 +678,15 @@ def test_weight_variation_is_also_expressed_per_day():
     assert merged.loc[1, "Jours depuis la pesée précédente"] == 10
     assert merged.loc[1, "Variation poids (kg/jour)"] == pytest.approx(-0.3)
     assert merged.loc[2, "Variation poids (kg/jour)"] == pytest.approx(-0.2)
+
+
+def test_summarise_daily_leaves_the_open_cycle_out_of_the_strain_average():
+    dates = pd.date_range("2026-09-01", periods=8, freq="D")
+    frame = pd.DataFrame(
+        {"Date": dates, "Strain": [12.0] * 7 + [1.0], "Calories (kcal)": [2800.0] * 7 + [300.0], "Cycle en cours": [False] * 7 + [True]}
+    )
+
+    summary = summarise_daily(frame, days=7)
+
+    assert summary["Strain"]["current"] == pytest.approx(12.0)
+    assert summary["Calories (kcal)"]["current"] == pytest.approx(2800.0)
