@@ -43,13 +43,13 @@ def _aligned_offset(dates: pd.DatetimeIndex, weights: list[float]) -> float:
 
 def _active_trajectory_state(at: AppTest, *, offset_kg: float | None = 0.0) -> None:
     dates = pd.date_range(
-        "2026-09-03",
+        "2026-09-20",
         periods=40,
         freq="D",
     )
 
     weights = [
-        106.1 - index * 0.22
+        106.1 - index * 0.3
         for index in range(len(dates))
     ]
     # None demande explicitement une série alignée sur la trajectoire cible.
@@ -156,12 +156,12 @@ def test_dashboard_renders_kpis_and_sections():
             if "Trajectoire cible vers 80 kg au 16/12/2026" in trace.get("name", "")
         )
     assert target_traces
-    trace = next(trace for trace in target_traces if trace["x"][0].startswith("2026-09-03"))
-    assert trace["x"][0].startswith("2026-09-03")
+    trace = next(trace for trace in target_traces if trace["x"][0].startswith("2026-09-20"))
+    assert trace["x"][0].startswith("2026-09-20")
     assert trace["y"][0] == 106.1
     assert trace["x"][-1].startswith("2026-12-16")
     assert trace["y"][-1] == 80.0
-    assert len(trace["x"]) == 105
+    assert len(trace["x"]) == 88
     assert all(not x.startswith("2026-12-17") for x in trace["x"])
     assert any("objectif" in str(c.value).lower() for c in at.caption)
 
@@ -223,7 +223,7 @@ def test_settings_exposes_five_goals():
     date_labels = [d.label for d in at.date_input]
     assert "Début du zoom trajectoire" in date_labels
     assert "Fin du zoom trajectoire" in date_labels
-    assert at.session_state["zoom_target_start_date"] == pd.Timestamp("2026-09-03")
+    assert at.session_state["zoom_target_start_date"] == pd.Timestamp("2026-09-20")
     assert at.session_state["zoom_target_end_date"] == pd.Timestamp("2026-12-16")
 
 
@@ -239,7 +239,7 @@ def test_dashboard_zoom_chart_uses_configured_period_and_handles_empty_data():
     assert len(plotly_elements) >= 2
     zoom_spec = json.loads(plotly_elements[1].proto.spec)
     xaxis = zoom_spec.get("layout", {}).get("xaxis", {})
-    assert xaxis.get("range", [])[0].startswith("2026-09-03")
+    assert xaxis.get("range", [])[0].startswith("2026-09-20")
     assert xaxis.get("range", [])[1].startswith("2026-12-16")
     measured_traces = [trace for trace in zoom_spec.get("data", []) if trace.get("name") == "Poids mesuré"]
     assert measured_traces == []
@@ -248,8 +248,8 @@ def test_dashboard_zoom_chart_uses_configured_period_and_handles_empty_data():
 def test_dashboard_zoom_chart_filters_measured_data_to_configured_period():
     at = AppTest.from_file("app/pages/Dashboard.py")
     _active_trajectory_state(at)
-    at.session_state["zoom_target_start_date"] = pd.Timestamp("2026-09-10")
-    at.session_state["zoom_target_end_date"] = pd.Timestamp("2026-09-15")
+    at.session_state["zoom_target_start_date"] = pd.Timestamp("2026-09-27")
+    at.session_state["zoom_target_end_date"] = pd.Timestamp("2026-10-02")
     at.run(timeout=15)
 
     assert not at.exception
@@ -257,16 +257,16 @@ def test_dashboard_zoom_chart_filters_measured_data_to_configured_period():
     assert len(plotly_elements) >= 2
     zoom_spec = json.loads(plotly_elements[1].proto.spec)
     measured_trace = next(trace for trace in zoom_spec.get("data", []) if trace.get("name") == "Poids mesuré")
-    assert measured_trace["x"][0].startswith("2026-09-10")
-    assert measured_trace["x"][-1].startswith("2026-09-15")
-    assert all("2026-09-03" not in x for x in measured_trace["x"])
+    assert measured_trace["x"][0].startswith("2026-09-27")
+    assert measured_trace["x"][-1].startswith("2026-10-02")
+    assert all("2026-09-20" not in x for x in measured_trace["x"])
 
 
 def test_dashboard_zoom_invalid_period_warns_without_exception():
     at = AppTest.from_file("app/pages/Dashboard.py")
     _active_trajectory_state(at)
     at.session_state["zoom_target_start_date"] = pd.Timestamp("2026-12-16")
-    at.session_state["zoom_target_end_date"] = pd.Timestamp("2026-09-03")
+    at.session_state["zoom_target_end_date"] = pd.Timestamp("2026-09-20")
     at.run(timeout=15)
 
     assert not at.exception
