@@ -104,7 +104,7 @@ Les modèles expérimentaux (régression sur variables dérivées, ML quantile, 
 ### Insights
 
 - effet du **jour de la semaine** sur les écarts à la tendance, testé par un test de Welch par jour avec correction de Bonferroni sur les sept jours candidats ;
-- **pesées atypiques** par z-score robuste ([Iglewicz & Hoaglin 1993](https://doi.org/10.2307/2290105)) des écarts à la tendance, seuil 3,5 : comparer à la médiane globale signalait à tort les extrêmes d'une perte régulière ;
+- **pesées atypiques** par z-score robuste ([Iglewicz & Hoaglin 1993, via le NIST e-Handbook](https://www.itl.nist.gov/div898/handbook/eda/section3/eda35h.htm)) des écarts à la tendance, seuil 3,5 : comparer à la médiane globale signalait à tort les extrêmes d'une perte régulière ;
 - distribution des fluctuations d'un jour à l'autre face au bruit habituel ;
 - phases du parcours, ruptures de tendance, meilleures et pires semaines, comparaisons périodiques, séries consécutives.
 
