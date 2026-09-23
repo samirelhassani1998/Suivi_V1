@@ -166,7 +166,9 @@ def apply_global_theme() -> None:
             min-height: 112px;
         }
         div[data-testid="stMetricLabel"] p {color: var(--suivi-muted); font-size: 0.88rem; font-weight: 700;}
-        div[data-testid="stMetricValue"] {font-size: clamp(1.25rem, 2.2vw, 1.75rem); font-weight: 800; color: var(--suivi-ink);}
+        div[data-testid="stMetricValue"] {font-size: clamp(1.15rem, 1.8vw, 1.55rem); font-weight: 800; color: var(--suivi-ink); line-height: 1.15;}
+        div[data-testid="stMetricValue"] > div {white-space: normal !important; overflow: visible !important; text-overflow: clip !important; word-break: normal;}
+        div[data-testid="stMetricLabel"] > div {white-space: normal !important; overflow: visible !important;}
         div[data-testid="stMetricDelta"] {font-size: 0.88rem; font-weight: 700;}
         div[data-testid="stTabs"] button {font-weight: 800; color: var(--suivi-muted);}
         div[data-testid="stTabs"] button[aria-selected="true"] {color: var(--suivi-blue);}

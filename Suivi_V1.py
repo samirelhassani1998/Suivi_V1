@@ -27,16 +27,19 @@ def load_remote_csv(url: str) -> pd.DataFrame:
 
 
 def _show_quality_message() -> None:
+    """Résumé compact de l'import dans la barre latérale ; le détail vit dans Journal."""
     q = st.session_state.get("data_quality", {})
     if not q:
         return
-    st.info(
-        f"Qualité données ({q.get('source', 'n/a')}): "
-        f"{q.get('raw_rows', 0)} lues, {q.get('valid_rows', 0)} valides conservées, "
-        f"{q.get('invalid_rows', 0)} invalides, {q.get('duplicate_dates', 0)} dates dupliquées, "
-        f"{q.get('columns_kept', 0)} colonnes conservées. "
-        f"Colonnes additionnelles: {', '.join(q.get('extra_columns', [])) or 'aucune'}."
+    valid = q.get("valid_rows", 0)
+    invalid = q.get("invalid_rows", 0)
+    duplicates = q.get("duplicate_dates", 0)
+    icon = "✅" if not invalid else "⚠️"
+    st.sidebar.caption(
+        f"{icon} {valid} mesure(s) valide(s) · {invalid} rejetée(s) · {duplicates} date(s) en double conservée(s). "
+        "Détail dans Journal."
     )
+
 
 def _load_from_source() -> None:
     data_url = st.secrets.get("data_url", DATA_URL)

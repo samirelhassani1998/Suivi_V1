@@ -19,23 +19,23 @@ L'application permet notamment de :
 
 Le tableau de bord synthétise l'état courant des mesures chargées en session :
 
-- indicateurs principaux ;
-- variation récente ;
-- tendance globale ;
-- écart à l'objectif ou à la trajectoire cible ;
+- **Vue rapide** : poids du jour, **poids de tendance** (régression locale robuste LOWESS sur 14 jours), **rythme sur 14 jours avec son intervalle de confiance à 95 %**, variation 30 jours et écart à la trajectoire cible ;
+- **Lecture rapide** : la pesée du jour est située par rapport au bruit quotidien habituel (± 1,96 σ des écarts à la tendance) : une pesée dans la bande n'est pas un changement de poids ;
 - score de fiabilité des tendances fondé sur la couverture et la régularité des mesures ;
-- graphiques d'évolution ;
-- moyennes mobiles ;
-- objectifs et paliers ;
-- analyses secondaires de progression, volatilité et distribution.
+- graphique d'évolution avec la tendance, sa **bande de bruit habituel**, les objectifs et la trajectoire cible, puis un zoom sur la période cible ;
+- indicateurs avancés : rythme de fond sur 28 jours, IMC avec le repère OMS, bruit quotidien, discipline, série en cours ;
+- onglet **Objectifs & paliers** : reste à perdre depuis la tendance et date indicative pour chaque palier quand la pente est établie ;
+- historique : vue hebdomadaire, moyennes mobiles, distribution des écarts à la tendance, IMC.
+
+Les deltas des indicateurs utilisent le signe ASCII attendu par Streamlit : une perte s'affiche désormais avec une flèche descendante verte, et non plus avec une flèche montante.
 
 ### Journal des mesures
 
 Le journal permet de gérer les données chargées dans la session Streamlit :
 
-- affichage tabulaire ;
-- édition des lignes ;
-- ajout ou suppression de mesures ;
+- **ajout rapide** d'une pesée en trois champs (date, poids, note) sans faire défiler l'éditeur ;
+- affichage tabulaire avec dates en jour/mois/année et poids à une décimale ;
+- édition des lignes, ajout ou suppression de mesures ;
 - validation des dates, valeurs, doublons et valeurs potentiellement aberrantes ;
 - filtrage par période ;
 - import CSV local ;
@@ -46,9 +46,15 @@ Le journal permet de gérer les données chargées dans la session Streamlit :
 
 Les variations sont calculées sur des fenêtres exprimées en jours calendaires. Cette approche tient compte de l'espacement réel entre les mesures et évite de confondre une fenêtre temporelle avec un simple nombre de lignes.
 
-### Moyennes mobiles
+### Poids de tendance, bruit et rythme
 
-L'application prend en charge des moyennes mobiles configurables afin de lisser les mesures et de rendre les tendances plus lisibles. Les paramètres de moyenne mobile peuvent être ajustés depuis les préférences de session.
+Une pesée quotidienne varie de plusieurs centaines de grammes sous l'effet de l'eau, du glycogène et du contenu digestif. Le module `app/core/trend.py` fournit trois lectures qui résistent à ce bruit :
+
+- un **poids de tendance** par régression locale robuste (LOWESS, [Cleveland 1979](https://doi.org/10.1080/01621459.1979.10481038)) sur une fenêtre de 14 jours calendaires, insensible à une pesée isolée ;
+- le **bruit quotidien** : écart-type robuste (MAD × 1,4826) des écarts à la tendance, et sa demi-largeur à 95 % ;
+- le **rythme en kg/semaine** par moindres carrés sur les jours calendaires, avec intervalle de confiance de Student et valeur p : une pente dont l'intervalle contient zéro est dite « que le hasard suffit à produire », jamais « en baisse ».
+
+Les moyennes mobiles restent disponibles en option d'affichage.
 
 ### Objectifs et paliers
 
@@ -87,11 +93,20 @@ Un moteur commun détecte les périodes de plateau ou de stagnation sur des fen�
 
 ### Projections simples
 
-Les projections simples extrapolent une tendance observée à partir des mesures disponibles. Elles restent indicatives et peuvent être limitées lorsque les données sont insuffisantes, irrégulières ou incohérentes avec l'objectif configuré.
+La page Prévisions ouvre sur la **projection selon vos mesures** : le poids de tendance prolongé au rythme des 28 derniers jours, avec un cône d'incertitude à 95 % qui combine l'erreur sur la pente (croissante avec l'horizon), l'erreur sur le niveau de la tendance et le bruit d'une pesée. La date d'arrivée à l'objectif est encadrée par les deux bornes de la pente et n'est projetée que si la pente descend de façon établie. La projection est bornée à l'objectif final.
 
-### Modèles avancés
+### Modèles avancés et leaderboard
 
-La page de prévisions inclut des modèles statistiques ou expérimentaux, notamment SARIMAX, Auto-ARIMA, ML quantile, analyses STL, ACF/PACF et comparaisons de baselines en backtest chronologique.
+Un **leaderboard walk-forward** réajuste chaque modèle sur le passé puis le juge sur la semaine de mesures suivante, sur plusieurs blocs chronologiques partagés (au moins 20 mesures d'apprentissage au premier bloc). Il compare la dernière valeur répétée, les moyennes mobiles, la tendance linéaire, la tendance robuste avec pente, SARIMAX et Auto-ARIMA. Chaque ligne porte la MAE, le **gain par rapport à la dernière valeur**, la **couverture empirique de l'intervalle à 95 %** et un verdict : un modèle qui ne bat pas « la dernière pesée répétée » est dit tel quel.
+
+Les modèles expérimentaux (régression sur variables dérivées, ML quantile, SARIMAX, Auto-ARIMA, STL, ACF/PACF, scénarios) restent disponibles ; les variables dérivées sont toutes **décalées d'au moins une mesure** afin qu'aucune ne contienne la cible du jour. Les ajustements coûteux sont mis en cache.
+
+### Insights
+
+- effet du **jour de la semaine** sur les écarts à la tendance, testé par un test de Welch par jour avec correction de Bonferroni sur les sept jours candidats ;
+- **pesées atypiques** par z-score robuste ([Iglewicz & Hoaglin 1993, via le NIST e-Handbook](https://www.itl.nist.gov/div898/handbook/eda/section3/eda35h.htm)) des écarts à la tendance, seuil 3,5 : comparer à la médiane globale signalait à tort les extrêmes d'une perte régulière ;
+- distribution des fluctuations d'un jour à l'autre face au bruit habituel ;
+- phases du parcours, ruptures de tendance, meilleures et pires semaines, comparaisons périodiques, séries consécutives.
 
 ### Import et export CSV
 
@@ -209,8 +224,10 @@ Suivi_V1/
 - `app/core/formatting.py` : formatage des dates, valeurs et nombres pour l'interface.
 - `app/core/date_labels.py` : libellés de dates en français (mois, jours, ancienneté relative, durées, plages, heures de coucher), indépendants de la locale système.
 - `app/core/weight_summary.py` : synthèse des mesures, variations calendaires, moyennes mobiles et indicateurs de suivi.
-- `app/core/analytics.py` : fonctions descriptives, tendances, phases, scénarios, scores et comparaisons temporelles.
-- `app/core/insights.py` : analyses de plateau, anomalies robustes, ETA et synthèses analytiques.
+- `app/core/trend.py` : poids de tendance LOWESS, bruit quotidien robuste, rythme avec intervalle de confiance, cône de projection, date d'arrivée encadrée, classes d'IMC de l'OMS.
+- `app/core/analytics.py` : fonctions descriptives, tendances, phases, scénarios, scores, effet du jour de la semaine testé et comparaisons temporelles.
+- `app/core/insights.py` : analyses de plateau, pesées atypiques sur les écarts à la tendance, ETA et synthèses analytiques.
+- `app/core/evaluation.py` : métriques, découpages walk-forward partagés et leaderboard des modèles avec gain face à la dernière valeur et couverture des intervalles.
 - `app/core/forecasting.py` : prévisions statistiques, modèles SARIMAX et modèles ML quantile.
 - `app/core/data.py` : chargement, nettoyage, validation, rapport qualité et résolution des doublons.
 - `app/core/session_state.py` : initialisation, lecture, écriture et réinitialisation des données en session Streamlit.
@@ -219,6 +236,7 @@ Suivi_V1/
 - `app/core/whoop_session.py` : glue Streamlit du flux OAuth : détection de l'URL publique de l'application, capture du retour de redirection sur n'importe quelle page et bascule vers l'onglet Whoop.
 - `app/pages/` : pages visibles de l'application : Dashboard, Journal, Prévisions, Insights, Whoop et Paramètres.
 - `app/ui/` : composants d'interface, cartes, graphiques et thème visuel.
+- `app/ui/charts.py` : style Plotly partagé par les pages poids (rôles de couleur fixes, axes de dates sans mois anglais, légende sous le graphique), aligné sur celui de l'onglet WHOOP.
 - `app/ui/whoop_visuals.py` : construction des figures Plotly de l'onglet WHOOP, sans dépendance à Streamlit, ce qui rend les règles de lisibilité vérifiables par des tests plutôt que par relecture visuelle.
 - `tests/` : tests automatisés couvrant les calculs, garde-fous, composants Streamlit et comportements métier.
 
@@ -252,6 +270,8 @@ source CSV distante ou fichier local
 - Les données source ne sont jamais dédupliquées silencieusement ; les vues analytiques appliquent leur propre règle documentée.
 - Les tendances et projections sont indicatives. Les modèles expérimentaux sont séparés des baselines et doivent être lus avec leur niveau de confiance.
 - Les moyennes mobiles nommées « N mesures » ne doivent pas être confondues avec les fenêtres calendaires « N jours ».
+- Une pente n'est annoncée « en baisse » ou « en hausse » que si son intervalle de confiance à 95 % exclut zéro ; sinon elle est dite stable.
+- Les variables dérivées des modèles ML sont décalées d'au moins une mesure : aucune ne contient la cible du jour.
 
 ## 5. Configuration métier
 
@@ -379,7 +399,10 @@ Les tests couvrent notamment :
 - les garde-fous de fiabilité ;
 - la synthèse des mesures ;
 - les utilitaires ;
-- le chargement des pages Streamlit.
+- la tendance robuste, le bruit et le rythme avec intervalle (`tests/test_trend.py`) ;
+- le leaderboard walk-forward (`tests/test_evaluation_forecasters.py`) ;
+- l'effet du jour de la semaine et les pesées atypiques (`tests/test_calendar_effects.py`) ;
+- le chargement des pages Streamlit, y compris l'ajout rapide du Journal (`tests/test_pages_v4.py`).
 
 ## 9. Déploiement
 

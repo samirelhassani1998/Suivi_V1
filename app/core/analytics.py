@@ -573,6 +573,79 @@ def day_of_week_analysis(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# 12b. Effet du jour de la semaine, testé
+# ---------------------------------------------------------------------------
+
+WEEKDAY_NAMES_FR = ("Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche")
+MIN_MEASURES_PER_WEEKDAY = 3
+MIN_MEASURES_WEEKDAY_TEST = 14
+
+
+def weekday_effect(df: pd.DataFrame, *, min_per_day: int = MIN_MEASURES_PER_WEEKDAY) -> dict[str, Any]:
+    """Le jour de la semaine où le poids s'écarte le plus de la tendance, et si l'écart tient.
+
+    Comparer les poids bruts par jour de semaine mélange l'effet du jour et la
+    pente générale (les lundis d'une perte régulière sont plus lourds simplement
+    parce qu'ils sont plus anciens en moyenne). Les écarts à la tendance robuste
+    retirent la pente ; chaque jour est confronté aux six autres par un test de
+    Welch, et le seuil est divisé par sept (Bonferroni) puisque sept jours sont
+    candidats : le plus extrême de sept tirages est toujours loin de la moyenne.
+    """
+    from scipy import stats
+
+    from app.core.trend import trend_weight
+
+    result: dict[str, Any] = {
+        "ready": False,
+        "reason": None,
+        "table": pd.DataFrame(columns=["Jour", "Écart moyen (kg)", "Mesures", "p ajustée"]),
+        "day": None,
+        "mean": float("nan"),
+        "p_adjusted": float("nan"),
+        "significant": False,
+    }
+    frame = trend_weight(df)
+    if len(frame) < MIN_MEASURES_WEEKDAY_TEST:
+        result["reason"] = f"au moins {MIN_MEASURES_WEEKDAY_TEST} mesures nécessaires"
+        return result
+    residuals = frame["Résidu"].to_numpy(dtype=float)
+    weekdays = frame["Date"].dt.weekday.to_numpy()
+    rows = []
+    for day_index, name in enumerate(WEEKDAY_NAMES_FR):
+        own = residuals[weekdays == day_index]
+        others = residuals[weekdays != day_index]
+        p_adjusted = float("nan")
+        if len(own) >= min_per_day and len(others) >= min_per_day and np.std(own) > 0 and np.std(others) > 0:
+            _stat, p_value = stats.ttest_ind(own, others, equal_var=False)
+            p_adjusted = float(min(1.0, float(p_value) * len(WEEKDAY_NAMES_FR)))
+        rows.append(
+            {
+                "Jour": name,
+                "Écart moyen (kg)": float(np.mean(own)) if len(own) else float("nan"),
+                "Mesures": int(len(own)),
+                "p ajustée": p_adjusted,
+            }
+        )
+    table = pd.DataFrame(rows)
+    result["table"] = table
+    eligible = table[table["p ajustée"].notna()]
+    if eligible.empty:
+        result["reason"] = f"moins de {min_per_day} mesures pour chaque jour"
+        return result
+    extreme = eligible.loc[eligible["Écart moyen (kg)"].abs().idxmax()]
+    result.update(
+        {
+            "ready": True,
+            "day": str(extreme["Jour"]),
+            "mean": float(extreme["Écart moyen (kg)"]),
+            "p_adjusted": float(extreme["p ajustée"]),
+            "significant": bool(float(extreme["p ajustée"]) < 0.05),
+        }
+    )
+    return result
+
+
+# ---------------------------------------------------------------------------
 # 13. Score de progression global
 # ---------------------------------------------------------------------------
 
