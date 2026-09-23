@@ -3,15 +3,27 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from app.ui.components import page_hero, section_header
-
 from app.config import AppDefaults, DUPLICATE_STRATEGIES
+from app.core.business import (
+    FINAL_TARGET_WEIGHT_KG,
+    TARGET_TRAJECTORY_END_DATE,
+    TARGET_TRAJECTORY_START_DATE,
+    TARGET_TRAJECTORY_START_WEIGHT_KG,
+)
+from app.core.formatting import format_fr_date, format_fr_kg
 from app.core.session_state import (
     DEFAULT_ZOOM_TARGET_END_DATE,
     DEFAULT_ZOOM_TARGET_START_DATE,
     ensure_session_defaults,
 )
 from app.core.targets import get_target_weights, normalise_target_weights
+from app.ui.components import kpi_card, page_hero, section_header
+
+DUPLICATE_LABELS = {
+    "garder_la_derniere": "Garder la dernière mesure du jour",
+    "moyenne_journaliere": "Moyenne des mesures du jour",
+    "mediane_journaliere": "Médiane des mesures du jour",
+}
 
 
 def main() -> None:
@@ -19,57 +31,71 @@ def main() -> None:
     defaults = AppDefaults()
     page_hero(
         "Configuration",
-        "Paramètres / Qualité",
-        "Ajustez vos objectifs, votre taille, les moyennes mobiles et quelques options d’analyse.",
-        meta="Les changements sont enregistrés dans la session Streamlit",
+        "Paramètres",
+        "Objectifs intermédiaires, taille, fenêtre de zoom et règles de calcul. Les changements vivent dans la session Streamlit.",
+        meta=f"Trajectoire de référence : {format_fr_kg(TARGET_TRAJECTORY_START_WEIGHT_KG, decimals=1)} le {format_fr_date(TARGET_TRAJECTORY_START_DATE)} → {format_fr_kg(FINAL_TARGET_WEIGHT_KG, decimals=1)} le {format_fr_date(TARGET_TRAJECTORY_END_DATE)}",
     )
-    section_header("Objectifs et préférences", "Gardez une cible finale claire tout en suivant des paliers intermédiaires.", "⚙️")
 
+    padded_goals = get_target_weights(st.session_state)
     with st.form("settings_form"):
-        padded_goals = get_target_weights(st.session_state)
+        section_header("Objectifs", "Cinq paliers du plus haut au plus bas ; le cinquième est l'objectif final.", "🎯")
+        goal_cols = st.columns(5)
+        goals = []
+        for index, column in enumerate(goal_cols, start=1):
+            with column:
+                goals.append(st.number_input(f"Objectif {index} (kg)", value=float(padded_goals[index - 1]), step=0.5, format="%.1f"))
         st.number_input(
             "Poids objectif final (kg)",
             value=float(padded_goals[-1]),
             disabled=True,
-            help="Synchronisé avec Objectif 5 pour garder une cible finale unique.",
-        )
-        height_cm = st.number_input("Taille (cm)", value=float(st.session_state.get("height_cm", defaults.height_cm)))
-        g1 = st.number_input("Objectif 1 (kg)", value=float(padded_goals[0]))
-        g2 = st.number_input("Objectif 2 (kg)", value=float(padded_goals[1]))
-        g3 = st.number_input("Objectif 3 (kg)", value=float(padded_goals[2]))
-        g4 = st.number_input("Objectif 4 (kg)", value=float(padded_goals[3]))
-        g5 = st.number_input("Objectif 5 (kg)", value=float(padded_goals[4]))
-
-        ma_type = st.selectbox("Type de moyenne mobile", ["Simple", "Exponentielle"], index=0 if st.session_state.get("ma_type", "Simple") == "Simple" else 1)
-        window_size = st.slider("Fenêtre moyenne mobile", min_value=3, max_value=60, value=int(st.session_state.get("window_size", 7)))
-
-        zoom_start = st.date_input(
-            "Début du zoom trajectoire",
-            value=pd.Timestamp(
-                st.session_state.get("zoom_target_start_date", DEFAULT_ZOOM_TARGET_START_DATE)
-            ).date(),
-        )
-        zoom_end = st.date_input(
-            "Fin du zoom trajectoire",
-            value=pd.Timestamp(
-                st.session_state.get("zoom_target_end_date", DEFAULT_ZOOM_TARGET_END_DATE)
-            ).date(),
+            help="Synchronisé avec l'objectif 5 pour garder une cible finale unique.",
         )
 
-        duplicate = st.selectbox("Gestion doublons journaliers", DUPLICATE_STRATEGIES, index=DUPLICATE_STRATEGIES.index(st.session_state.get("duplicate_strategy", defaults.duplicate_strategy)))
-        default_model = st.selectbox("Modèle par défaut", ["linear", "ridge", "elasticnet", "random_forest", "boosting"], index=0)
-        plotly_theme = st.selectbox("Thème Plotly", ["plotly", "plotly_white", "plotly_dark", "ggplot2", "seaborn"], index=0)
-        submitted = st.form_submit_button("Enregistrer")
+        section_header("Profil", "Utilisé pour l'indice de masse corporelle.", "🧍")
+        height_cm = st.number_input("Taille (cm)", min_value=120.0, max_value=230.0, value=float(st.session_state.get("height_cm", defaults.height_cm)), step=1.0, format="%.0f")
+
+        section_header("Affichage", "Fenêtre de zoom du Dashboard et lissage optionnel.", "🖥️")
+        zoom_cols = st.columns(2)
+        with zoom_cols[0]:
+            zoom_start = st.date_input(
+                "Début du zoom trajectoire",
+                value=pd.Timestamp(st.session_state.get("zoom_target_start_date", DEFAULT_ZOOM_TARGET_START_DATE)).date(),
+                format="DD/MM/YYYY",
+            )
+        with zoom_cols[1]:
+            zoom_end = st.date_input(
+                "Fin du zoom trajectoire",
+                value=pd.Timestamp(st.session_state.get("zoom_target_end_date", DEFAULT_ZOOM_TARGET_END_DATE)).date(),
+                format="DD/MM/YYYY",
+            )
+        window_size = st.slider(
+            "Fenêtre de la tendance long terme (EMA, mesures)",
+            min_value=3,
+            max_value=60,
+            value=int(st.session_state.get("window_size", 7)),
+            help="N'affecte que l'option « Tendance long terme » du graphique principal. Le poids de tendance LOWESS n'en dépend pas.",
+        )
+
+        section_header("Données", "Règle appliquée aux calculs quand plusieurs pesées tombent le même jour.", "🗂️")
+        current_strategy = st.session_state.get("duplicate_strategy", defaults.duplicate_strategy)
+        duplicate = st.selectbox(
+            "Gestion des doublons journaliers",
+            DUPLICATE_STRATEGIES,
+            index=DUPLICATE_STRATEGIES.index(current_strategy) if current_strategy in DUPLICATE_STRATEGIES else 0,
+            format_func=lambda key: DUPLICATE_LABELS.get(key, key),
+            help="Le journal conserve toujours toutes les lignes ; cette règle ne concerne que les analyses.",
+        )
+        submitted = st.form_submit_button("Enregistrer", type="primary")
 
     if submitted:
-        target_weights = normalise_target_weights((g1, g2, g3, g4, g5))
+        target_weights = normalise_target_weights(tuple(goals))
+        if list(target_weights) != sorted(target_weights, reverse=True):
+            st.warning("Les objectifs ne sont pas décroissants : vérifiez l'ordre des paliers (le 5ᵉ doit être le plus bas).")
         st.session_state["target_weights"] = target_weights
         st.session_state["target_weight"] = float(target_weights[-1])
         st.session_state["height_cm"] = float(height_cm)
         st.session_state["height_m"] = float(height_cm) / 100
         st.session_state["duplicate_strategy"] = duplicate
-        st.session_state["default_model"] = default_model
-        st.session_state["ma_type"] = ma_type
         zoom_start_ts = pd.Timestamp(zoom_start)
         zoom_end_ts = pd.Timestamp(zoom_end)
         if zoom_start_ts > zoom_end_ts:
@@ -78,16 +104,21 @@ def main() -> None:
             st.session_state["window_size"] = int(window_size)
             st.session_state["zoom_target_start_date"] = zoom_start_ts
             st.session_state["zoom_target_end_date"] = zoom_end_ts
-            st.session_state["theme"] = plotly_theme
             st.success("Paramètres enregistrés.")
 
     section_header("Diagnostic système", "Informations utiles pour vérifier la session active et le déploiement.", "🧪")
-    st.write({
-        "streamlit": st.__version__,
-        "source": st.session_state.get("data_source", "n/a"),
-        "rows_working_data": len(st.session_state.get("working_data", [])),
-        "session_keys": sorted(list(st.session_state.keys()))[:20],
-    })
+    working = st.session_state.get("working_data", pd.DataFrame())
+    cols = st.columns(4)
+    with cols[0]:
+        kpi_card("Streamlit", st.__version__)
+    with cols[1]:
+        kpi_card("Source", str(st.session_state.get("data_source", "n/a")))
+    with cols[2]:
+        kpi_card("Lignes en session", f"{len(working)}")
+    with cols[3]:
+        kpi_card("WHOOP", "connecté" if st.session_state.get("whoop_token") else "non connecté")
+    with st.expander("Clés de session", expanded=False):
+        st.write(sorted(str(key) for key in st.session_state.keys()))
 
 
 main()

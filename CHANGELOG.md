@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-09-23 — Tendance robuste, incertitude affichée et lecture unifiée des pages poids
+
+Revue complète des pages Dashboard, Journal, Prévisions, Insights et Paramètres, avec un fil conducteur : dire ce que le bruit d'une pesée permet de conclure, et ne rien annoncer que le hasard suffirait à produire.
+
+Analyses (`app/core/trend.py`, nouveau) :
+- **Poids de tendance** par régression locale robuste (LOWESS, Cleveland 1979) sur 14 jours calendaires ; la moyenne mobile passe en option.
+- **Bruit quotidien** : dispersion robuste (MAD × 1,4826) des écarts à la tendance ; la pesée du jour est située « dans le bruit habituel » ou hors de lui, avec la bande à 95 % dessinée sur le graphique principal.
+- **Rythme en kg/semaine avec intervalle de confiance à 95 % et valeur p**, sur 14 et 28 jours ; une pente dont l'intervalle contient zéro n'est plus annoncée comme une baisse.
+- **Cône de projection** combinant en quadrature l'incertitude sur la pente, sur le niveau et le bruit d'une pesée ; date d'arrivée encadrée par les deux bornes de la pente, bornée à l'objectif final.
+- Classes d'IMC de l'OMS affichées comme repère de population, avec les poids correspondant aux seuils 25 et 30.
+
+Prévisions :
+- **Leaderboard walk-forward** (`evaluate_forecasters`) : blocs de test d'une semaine de mesures, au moins vingt mesures d'apprentissage, mêmes découpages pour tous les modèles ; colonnes gain face à la dernière valeur, couverture empirique de l'intervalle à 95 % et verdict. Un modèle indisponible reste dans le tableau avec la raison.
+- **Fuite de cible corrigée** dans les variables dérivées : l'IMC du jour, la variation du jour et les moyennes glissantes incluant la pesée du jour donnaient un R² de 1,000 en régression et une prévision ML plate. Toutes les variables sont décalées d'au moins une mesure.
+- Modèles lourds (SARIMAX, Auto-ARIMA, ML quantile, backtest) mis en cache ; ACF/PACF et STL rendus en Plotly, sans matplotlib ; graphiques limités aux 120 derniers jours d'historique pour que l'horizon reste lisible.
+
+Insights :
+- **Effet du jour de la semaine** sur les écarts à la tendance, test de Welch par jour et correction de Bonferroni : le jour le plus extrême n'est déclaré que si l'écart résiste au test.
+- **Pesées atypiques** sur les écarts à la tendance (z robuste d'Iglewicz & Hoaglin) : comparer à la médiane globale signalait les extrêmes d'une perte régulière ; seules les lignes signalées sont listées, IsolationForest (10 % par construction) devient une option désactivée par défaut.
+- Le clustering KMeans sur le seul poids, sans interprétation possible, est remplacé par la distribution des fluctuations d'un jour à l'autre face au bruit habituel.
+
+UI/UX :
+- **Flèches des indicateurs corrigées** : Streamlit ne lit que le signe ASCII, le signe typographique faisait afficher une perte de poids avec une flèche montante verte. Une baisse s'affiche en vert (`delta_color="inverse"`).
+- Style Plotly partagé (`app/ui/charts.py`) : rôles de couleur fixes (mesure bleue, tendance orange, cible verte), axes de dates sans mois anglais, légende sous le graphique pour ne plus recouvrir le titre.
+- Journal : **ajout rapide** d'une pesée (date, poids, note), colonnes de l'éditeur configurées (dates jour/mois/année, poids à une décimale), bandeau de statut, dernières lignes du plus récent au plus ancien.
+- Paramètres regroupés par sections ; les réglages sans effet (modèle par défaut, thème Plotly, type de moyenne mobile) sont retirés ; diagnostic en indicateurs.
+- Dashboard : « Poids actuel » n'apparaît plus deux fois ; onglet « Objectifs & paliers » avec reste et date indicative par palier ; valeurs d'indicateurs qui passent à la ligne au lieu d'être tronquées ; résumé compact de la qualité dans la barre latérale.
+
+Tests : 526 passés (+39), dont `test_trend.py`, `test_evaluation_forecasters.py`, `test_calendar_effects.py` et `test_pages_v4.py`.
+
 ## 2026-09-15 — Lectures par date, données API inexploitées et constats testés
 
 Passe menée en trois temps : audit multi-lentilles du code (calculs, cohérence, UI/UX et dates, données API, physiologie), mesure du taux de fausse alerte de chaque constat sur 300 séries sans aucun lien réel, puis correction.

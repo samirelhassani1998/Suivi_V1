@@ -8,6 +8,7 @@ from sklearn.ensemble import IsolationForest
 
 from app.core.business import FINAL_TARGET_WEIGHT_KG, StagnationConfig
 from app.core.plateau import evaluate_plateau_window, prepare_plateau_series
+from app.core.trend import MIN_POINTS_TREND, trend_weight
 
 
 def _prepare_time_series(df: pd.DataFrame) -> pd.DataFrame:
@@ -33,25 +34,54 @@ def detect_plateau(df: pd.DataFrame, window: int = 14) -> dict[str, object]:
     cutoff = data["Date"].max() - pd.Timedelta(days=config.window_days)
     return evaluate_plateau_window(data[data["Date"] >= cutoff], config)
 
-def detect_anomalies_robust(df: pd.DataFrame, use_iforest: bool = False) -> pd.DataFrame:
+ANOMALY_Z_THRESHOLD = 3.5
+
+
+def _trend_reference(out: pd.DataFrame) -> pd.Series:
+    """Valeur de référence par ligne : la tendance robuste quand elle existe, sinon la médiane.
+
+    Comparer chaque pesée à la médiane de toute la série signalait comme
+    « anormales » les premières et dernières pesées d'une perte régulière : sur
+    six mois de baisse, les extrêmes sont la tendance elle-même, pas un écart.
+    """
+    series = pd.to_numeric(out["Poids (Kgs)"], errors="coerce")
+    reference = pd.Series(float(series.median()), index=out.index)
+    if "Date" not in out.columns or len(out) < MIN_POINTS_TREND:
+        return reference
+    frame = trend_weight(out)
+    if frame.empty:
+        return reference
+    lookup = frame.set_index("Date")["Tendance"]
+    dates = pd.to_datetime(out["Date"], errors="coerce")
+    mapped = dates.map(lookup)
+    return mapped.where(mapped.notna(), reference).astype(float)
+
+
+def detect_anomalies_robust(df: pd.DataFrame, use_iforest: bool = False, threshold: float = ANOMALY_Z_THRESHOLD) -> pd.DataFrame:
+    """Pesées atypiques : z-score robuste (Iglewicz & Hoaglin) des écarts à la tendance."""
     out = df.copy()
     if out.empty:
         out["anomalie"] = False
         out["raison"] = "aucune donnée"
+        out["decision"] = "conservée"
         return out
-    median = out["Poids (Kgs)"].median()
-    mad = np.median(np.abs(out["Poids (Kgs)"] - median)) + 1e-9
-    z = 0.6745 * (out["Poids (Kgs)"] - median) / mad
+    series = pd.to_numeric(out["Poids (Kgs)"], errors="coerce")
+    residual = series - _trend_reference(out)
+    center = float(np.nanmedian(residual))
+    mad = float(np.nanmedian(np.abs(residual - center))) + 1e-9
+    z = 0.6745 * (residual - center) / mad
+    out["ecart_tendance"] = residual
     out["z_robuste"] = z
-    out["anomalie"] = np.abs(z) > 3.5
-    out["raison"] = np.where(out["anomalie"], "z-score robuste > 3.5", "normal")
+    out["anomalie"] = np.abs(z) > threshold
+    out["raison"] = np.where(out["anomalie"], f"écart à la tendance : z robuste > {threshold}", "normal")
 
     if use_iforest and len(out) >= 10:
         iso = IsolationForest(contamination=0.1, random_state=42)
-        out["iforest"] = iso.fit_predict(out[["Poids (Kgs)"]]) == -1
+        features = residual.fillna(0.0).to_numpy(dtype=float).reshape(-1, 1)
+        out["iforest"] = iso.fit_predict(features) == -1
         out["anomalie"] = out["anomalie"] | out["iforest"]
-        out.loc[out["iforest"], "raison"] = "IsolationForest"
-    out["decision"] = "à revoir"
+        out.loc[out["iforest"] & (out["raison"] == "normal"), "raison"] = "IsolationForest (écart à la tendance)"
+    out["decision"] = np.where(out["anomalie"], "à revoir", "conservée")
     return out
 
 
