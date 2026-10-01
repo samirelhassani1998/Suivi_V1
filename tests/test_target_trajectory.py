@@ -18,43 +18,43 @@ from app.core.target_trajectory import (
 def test_target_trajectory_exact_fixed_contract():
     result = build_target_trajectory(pd.DataFrame())
     trajectory = result["trajectory"]
-    assert trajectory["Date"].iloc[0] == pd.Timestamp("2026-09-20")
-    assert trajectory["Poids cible (kg)"].iloc[0] == 106.1
-    assert trajectory["Date"].iloc[-1] == pd.Timestamp("2026-12-16")
+    assert trajectory["Date"].iloc[0] == pd.Timestamp("2026-10-01")
+    assert trajectory["Poids cible (kg)"].iloc[0] == 106.0
+    assert trajectory["Date"].iloc[-1] == pd.Timestamp("2026-12-15")
     assert trajectory["Poids cible (kg)"].iloc[-1] == 80.0
-    assert len(trajectory) == 88
+    assert len(trajectory) == 76
     assert result["start_date"] == DEFAULT_TARGET_TRAJECTORY_START_DATE
     assert result["end_date"] == DEFAULT_TARGET_TRAJECTORY_END_DATE
-    assert result["total_duration_days"] == 87
+    assert result["total_duration_days"] == 75
 
 
 def test_required_weekly_loss():
-    expected = (106.1 - 80.0) / (87 / 7)
+    expected = (106.0 - 80.0) / (75 / 7)
     assert required_weekly_loss() == pytest.approx(expected, abs=1e-12)
     assert TargetTrajectoryConfig().required_weekly_loss == pytest.approx(expected, abs=1e-12)
 
 
 def test_required_daily_loss():
-    assert required_daily_loss() == pytest.approx((106.1 - 80.0) / 87, abs=1e-12)
+    assert required_daily_loss() == pytest.approx((106.0 - 80.0) / 75, abs=1e-12)
 
 
 @pytest.mark.parametrize("data_weight", [90.0, 100.0, 110.0])
 def test_source_data_does_not_change_target_anchor(data_weight):
-    df = pd.DataFrame({"Date": [pd.Timestamp("2026-09-20")], "Poids (Kgs)": [data_weight]})
+    df = pd.DataFrame({"Date": [pd.Timestamp("2026-10-01")], "Poids (Kgs)": [data_weight]})
     result = build_target_trajectory(df)
-    assert result["start_weight"] == 106.1
+    assert result["start_weight"] == 106.0
     assert result["start_weight_source"] == "fixed_business_rule"
-    assert result["trajectory"]["Poids cible (kg)"].iloc[0] == 106.1
+    assert result["trajectory"]["Poids cible (kg)"].iloc[0] == 106.0
 
 
 def test_target_weight_on_date_fixed_bounds():
-    assert target_weight_on_date(pd.Timestamp("2026-09-19")) is None
-    assert target_weight_on_date(pd.Timestamp("2026-09-20")) == 106.1
+    assert target_weight_on_date(pd.Timestamp("2026-09-30")) is None
+    assert target_weight_on_date(pd.Timestamp("2026-10-01")) == 106.0
     mid = target_weight_on_date(pd.Timestamp("2026-10-25"))
-    expected = 106.1 + (35 / 87) * (80.0 - 106.1)
+    expected = 106.0 + (24 / 75) * (80.0 - 106.0)
     assert mid == pytest.approx(expected, abs=1e-9)
-    assert target_weight_on_date(pd.Timestamp("2026-12-16")) == 80.0
-    assert target_weight_on_date(pd.Timestamp("2026-12-17")) is None
+    assert target_weight_on_date(pd.Timestamp("2026-12-15")) == 80.0
+    assert target_weight_on_date(pd.Timestamp("2026-12-16")) is None
 
 
 def test_trajectory_strictly_decreasing_and_never_below_floor():
@@ -64,34 +64,34 @@ def test_trajectory_strictly_decreasing_and_never_below_floor():
     assert (values.diff().dropna() < 0).all()
     assert (values >= 80.0).all()
     assert (values == 80.0).sum() == 1
-    assert trajectory["Date"].max() == pd.Timestamp("2026-12-16")
+    assert trajectory["Date"].max() == pd.Timestamp("2026-12-15")
 
 
 def test_compare_to_target_trajectory_reports_gap_status_and_progress():
-    scheduled = target_weight_on_date(pd.Timestamp("2026-09-28"))
-    df = pd.DataFrame({"Date": pd.to_datetime(["2026-09-20", "2026-09-28"]), "Poids (Kgs)": [106.1, scheduled - 1.0]})
+    scheduled = target_weight_on_date(pd.Timestamp("2026-10-09"))
+    df = pd.DataFrame({"Date": pd.to_datetime(["2026-10-01", "2026-10-09"]), "Poids (Kgs)": [106.0, scheduled - 1.0]})
     result = compare_to_target_trajectory(df)
     assert result["scheduled_weight"] == pytest.approx(scheduled, abs=1e-9)
     assert result["gap_kg"] == pytest.approx(-1.0, abs=1e-9)
     assert result["status"] == "en avance"
     assert result["days_delta"] == pytest.approx(-1.0 / required_daily_loss(), abs=1e-9)
-    assert math.isclose(result["progress_pct"], (106.1 - (scheduled - 1.0)) / 26.1 * 100)
+    assert math.isclose(result["progress_pct"], (106.0 - (scheduled - 1.0)) / 26.0 * 100)
 
 
 @pytest.mark.parametrize(("offset_kg", "expected_status"), [(-0.40, "en avance"), (-0.30, "aligné"), (0.00, "aligné"), (0.30, "aligné"), (0.40, "en retard")])
 def test_alignment_status_uses_configurable_tolerance(offset_kg, expected_status):
-    comparison_date = pd.Timestamp("2026-09-21")
+    comparison_date = pd.Timestamp("2026-10-02")
     scheduled = target_weight_on_date(comparison_date)
-    df = pd.DataFrame({"Date": [pd.Timestamp("2026-09-20"), comparison_date], "Poids (Kgs)": [106.1, scheduled + offset_kg]})
+    df = pd.DataFrame({"Date": [pd.Timestamp("2026-10-01"), comparison_date], "Poids (Kgs)": [106.0, scheduled + offset_kg]})
     result = compare_to_target_trajectory(df)
     assert result["gap_kg"] == pytest.approx(offset_kg, abs=1e-9)
     assert result["status"] == expected_status
 
 
 def test_post_end_measurement_marks_trajectory_completed_without_exception():
-    df = pd.DataFrame({"Date": [pd.Timestamp("2026-12-17")], "Poids (Kgs)": [79.5]})
+    df = pd.DataFrame({"Date": [pd.Timestamp("2026-12-16")], "Poids (Kgs)": [79.5]})
     result = compare_to_target_trajectory(df)
     assert result["available"] is False
     assert result["trajectory_completed"] is True
     assert "terminée" in result["message"]
-    assert len(result["trajectory"]) == 88
+    assert len(result["trajectory"]) == 76
