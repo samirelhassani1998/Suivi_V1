@@ -26,21 +26,21 @@ DATE_COL = "Date"
 WEIGHT_COL = "Poids (Kgs)"
 TARGET_WEIGHT_COL = "Poids cible (kg)"
 COMPAT_TARGET_WEIGHT_COL = "Poids cible"
-TRAJECTORY_COMPLETED_MESSAGE = "La trajectoire cible s’est terminée le 16/12/2026."
+TRAJECTORY_COMPLETED_MESSAGE = "La trajectoire cible s’est terminée le 15/12/2026."
 
 
 @dataclass(frozen=True)
 class TargetTrajectoryConfig:
     """Fixed business contract for the main target trajectory.
 
-    The target line is always anchored at 106.1 kg on 2026-09-20 and reaches
-    80.0 kg on 2026-12-16. Source measurements are never used to alter the
+    The target line is always anchored at 106.0 kg on 2026-10-01 and reaches
+    80.0 kg on 2026-12-15. Source measurements are never used to alter the
     start point, slope, duration, or final target.
     """
 
-    start_date: pd.Timestamp = pd.Timestamp("2026-09-20")
-    end_date: pd.Timestamp = pd.Timestamp("2026-12-16")
-    start_weight: float = 106.1
+    start_date: pd.Timestamp = pd.Timestamp("2026-10-01")
+    end_date: pd.Timestamp = pd.Timestamp("2026-12-15")
+    start_weight: float = 106.0
     final_target_weight: float = 80.0
 
     @property
