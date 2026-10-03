@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import numpy as np
@@ -19,7 +18,6 @@ from app.core.date_labels import (
     format_long_date,
     format_relative_day,
     format_short_date,
-    format_week_label,
 )
 from app.core.formatting import MISSING_VALUE as MISSING_TEXT, format_fr_number
 from app.core.business import FINAL_TARGET_WEIGHT_KG, TARGET_TRAJECTORY_END_DATE
@@ -43,6 +41,7 @@ from app.core.whoop_analytics import (
     daily_log_table,
     daily_grid,
     energy_balance,
+    filter_period,
     generate_insights,
     hr_zone_profile,
     indexable_metrics,
@@ -98,33 +97,27 @@ from app.core.session_state import (
 from app.core.whoop_session import (
     clear_oauth_params,
     clear_pending_callback,
-    detect_base_url,
+    default_redirect_uri,
     pending_callback,
     redirect_uri_candidates,
+    resolve_credentials,
+    run_whoop_sync,
+    store_token,
+    stored_token,
 )
 from app.core.whoop import (
-    DEFAULT_REDIRECT_URI,
     SLEEP_COLUMNS,
-    build_scopes,
     WhoopError,
     WhoopToken,
     available_metrics,
-    build_daily_frame,
-    credentials_from_sources,
-    cycles_to_frame,
-    ensure_fresh_token,
     exchange_code_for_token,
-    fetch_collection,
-    fetch_profile,
     generate_state,
     merge_with_weight,
-    recoveries_to_frame,
-    sleeps_to_frame,
     sport_label,
     summarise_daily,
-    workouts_to_frame,
     build_authorization_url,
 )
+from app.ui.tables import format_table
 from app.ui.components import day_card, empty_state, insight_card, kpi_card, page_hero, section_header
 
 METRIC_DECIMALS = {
@@ -171,44 +164,12 @@ HIGHER_IS_BETTER = {
 }
 
 
-def _secrets_mapping() -> dict:
-    """Lecture défensive des secrets : absents en local, présents sur Streamlit Cloud."""
-    try:
-        return {key: st.secrets[key] for key in st.secrets}
-    except Exception:
-        return {}
-
-
-def _default_redirect_uri() -> str:
-    """URL de redirection proposée par défaut : celle de l'application elle-même."""
-    detected = detect_base_url(default="")
-    return detected or DEFAULT_REDIRECT_URI
-
-
-def _resolve_credentials():
-    overrides = dict(st.session_state.get("whoop_manual_credentials", {}) or {})
-    return credentials_from_sources(
-        _secrets_mapping(),
-        os.environ,
-        overrides,
-        default_redirect_uri=_default_redirect_uri(),
-        scopes=build_scopes(offline=bool(st.session_state.get("whoop_request_offline", True))),
-    )
-
-
-def _stored_token() -> WhoopToken | None:
-    raw = st.session_state.get("whoop_token")
-    if not raw:
-        return None
-    try:
-        token = WhoopToken.from_dict(raw)
-    except Exception:
-        return None
-    return token if token.access_token else None
-
-
-def _store_token(token: WhoopToken) -> None:
-    st.session_state["whoop_token"] = token.to_dict()
+# Identifiants, jeton et synchronisation sont partagés avec l'onglet Boxe :
+# ils vivent dans ``whoop_session`` et gardent ici leurs noms historiques.
+_default_redirect_uri = default_redirect_uri
+_resolve_credentials = resolve_credentials
+_stored_token = stored_token
+_store_token = store_token
 
 
 def _consume_oauth_callback(credentials) -> None:
@@ -408,38 +369,7 @@ def _sync_controls(credentials, token: WhoopToken) -> None:
     if not launch:
         return
 
-    end = pd.Timestamp.utcnow().tz_localize(None).normalize()
-    start = end - pd.Timedelta(days=int(days))
-
-    try:
-        fresh = ensure_fresh_token(credentials, token)
-        if fresh.access_token != token.access_token:
-            _store_token(fresh)
-        with st.spinner("Récupération des données WHOOP…"):
-            cycle_records = fetch_collection("cycle", fresh, start=start, end=end)
-            # Une récupération ne porte pas de fuseau : sans celui de son cycle,
-            # un score créé à 23 h 30 UTC se retrouvait daté de la veille.
-            offsets = {record.get("id"): record.get("timezone_offset") for record in cycle_records}
-            recovery = recoveries_to_frame(fetch_collection("recovery", fresh, start=start, end=end), offsets)
-            sleep = sleeps_to_frame(fetch_collection("sleep", fresh, start=start, end=end))
-            cycle = cycles_to_frame(cycle_records)
-            workouts = workouts_to_frame(fetch_collection("workout", fresh, start=start, end=end))
-            profile = fetch_profile(fresh)
-    except WhoopError as exc:
-        st.error(str(exc))
-        return
-    except Exception:
-        st.error("Synchronisation WHOOP interrompue : service indisponible ou réseau bloqué.")
-        return
-
-    st.session_state["whoop_daily"] = build_daily_frame(recovery, sleep, cycle)
-    st.session_state["whoop_workouts"] = workouts
-    st.session_state["whoop_profile"] = profile
-    st.session_state["whoop_last_sync"] = pd.Timestamp.utcnow().tz_localize(None)
-    st.success(
-        f"{len(recovery)} récupérations, {len(sleep)} nuits, {len(cycle)} cycles et "
-        f"{len(workouts)} séances importés."
-    )
+    run_whoop_sync(credentials, token, int(days))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -469,35 +399,7 @@ def _metric_delta(metric: str, delta: float) -> str:
 
 def _format_table(frame: pd.DataFrame, decimals: dict[str, int] | None = None) -> pd.DataFrame:
     """Rend un tableau lisible : décimales maîtrisées, dates courtes, vides explicites."""
-    if frame is None or frame.empty:
-        return frame if frame is not None else pd.DataFrame()
-    rules = decimals or {}
-    display = pd.DataFrame(index=frame.index)
-    for column in frame.columns:
-        series = frame[column]
-        if column == "Semaine":
-            # Testé avant le cas général : cette colonne est un horodatage, et la
-            # branche datetime la réduisait à « 3 août » sans dire que c'est une semaine.
-            display[column] = series.apply(format_week_label)
-        elif pd.api.types.is_datetime64_any_dtype(series):
-            # Une colonne d'horodatages perd tout son sens réduite au seul jour ;
-            # et une date de tableau sans son jour de semaine oblige à le
-            # retrouver de tête, alors que c'est lui qui explique la mesure.
-            formatter = format_datetime if column == "Début" else format_short_date
-            display[column] = series.apply(formatter)
-        elif column == "Durée (min)" or column == "Durée totale (min)":
-            display[column] = series.apply(format_duration_minutes)
-        elif column == "Heure de coucher":
-            display[column] = series.apply(format_clock_hour)
-        elif pd.api.types.is_bool_dtype(series):
-            # « True » au milieu d'un tableau français se lit mal : oui / non.
-            display[column] = series.map({True: "oui", False: "non"}).fillna(MISSING_TEXT)
-        elif pd.api.types.is_numeric_dtype(series) and not pd.api.types.is_bool_dtype(series):
-            places = rules.get(column, METRIC_DECIMALS.get(column, 1))
-            display[column] = series.apply(lambda value, places=places: format_fr_number(value, decimals=places))
-        else:
-            display[column] = series.fillna(MISSING_TEXT).astype(str)
-    return display
+    return format_table(frame, decimals, default_decimals=METRIC_DECIMALS)
 
 
 def _table_view(frame: pd.DataFrame, label: str = "Voir les valeurs", decimals: dict[str, int] | None = None) -> None:
@@ -519,23 +421,8 @@ def _render_chart(figure, key: str, *, fallback: str = "Métrique indisponible s
     st.plotly_chart(figure, use_container_width=True, key=key)
 
 
-def _apply_period(frame: pd.DataFrame, days: int | None, *, today: pd.Timestamp | None = None) -> pd.DataFrame:
-    """Restreint une trame aux *days* derniers jours calendaires, à compter d'aujourd'hui.
-
-    Compter depuis la dernière mesure donnerait à « 7 jours » un sens flottant :
-    après une semaine sans porter le bracelet, la tranche affichée ne serait plus
-    celle que le lecteur a demandée.
-    """
-    if frame is None or frame.empty or days is None or "Date" not in frame.columns:
-        return frame if frame is not None else pd.DataFrame()
-    data = frame.copy(deep=True)
-    data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
-    data = data.dropna(subset=["Date"])
-    if data.empty:
-        return data
-    reference = (today or pd.Timestamp.now()).normalize()
-    cutoff = reference - pd.Timedelta(days=int(days) - 1)
-    return data[data["Date"] >= cutoff].reset_index(drop=True)
+# Le filtre de période est partagé avec l'onglet Boxe : voir ``filter_period``.
+_apply_period = filter_period
 
 
 def _freshness_banner(daily: pd.DataFrame) -> None:

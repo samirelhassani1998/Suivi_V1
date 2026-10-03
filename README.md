@@ -155,6 +155,19 @@ Chaque analyse annonce son effectif minimal et affiche le nombre de jours restan
 
 Les données WHOOP vivent uniquement dans la session Streamlit : elles ne sont jamais écrites dans la source de poids, ni dans `working_data`. Sans compte connecté, l'onglet affiche l'écran de connexion et le reste de l'application fonctionne à l'identique.
 
+### Onglet Boxe
+
+L'onglet `Boxe` ne regarde que la boxe. Il lit les séances de la même synchronisation WHOOP (aucune autorisation supplémentaire) et peut lancer lui-même une synchronisation. Par défaut, il retient les séances enregistrées sous « Boxing » ; si aucune ne l'est, il propose les sports de combat détectés (kickboxing, muay-thaï, arts martiaux), et la sélection reste modifiable. Un filtre de période (30 / 90 jours / 6 mois / tout) s'applique aux six sous-onglets :
+
+- **Vue d'ensemble** : un **repère du jour** qui traduit la zone de récupération du matin en type de séance (vert : séance intense ; jaune : modérée ; rouge : technique légère ou repos), d'après la lecture des zones publiée par WHOOP ([WHOOP 101](https://developer.whoop.com/docs/whoop-101/)) — un repère, pas une prescription ; séances, durée, strain et intensité moyens ; constats rédigés et classés ; chaque séance à sa date, colorée selon la récupération du matin.
+- **Séances** : journal daté avec l'**intensité en % de réserve cardiaque** ((FC moyenne − FC de repos du matin) / (FC max − FC de repos), méthode de Karvonen dont WHOOP tire ses zones ; la FC max vient du profil WHOOP, `max_heart_rate` des mesures corporelles, ou à défaut de la plus haute FC observée), le **TRIMP** par zones d'Edwards ([Foster et al., 2001](https://pubmed.ncbi.nlm.nih.gov/11708692/) ; interchangeable avec le TRIMP de Banister en taekwondo, [Haddad et al., 2012](https://pubmed.ncbi.nlm.nih.gov/21904234)), la récupération du matin et celle du lendemain, la nuit suivante ; minutes faciles / modérées / dures par séance ; meilleures marques ; habitudes jour × moment de la journée ; export CSV.
+- **Récupération** : **ce que la boxe coûte au lendemain** (récupération, HRV, FC de repos le matin qui suit une journée de boxe, face au matin qui suit les autres journées), avec un avertissement quand les matins de boxe partent déjà de plus haut ; **profil J0 → J+3** ; **boxez-vous plus fort les matins verts ?** (strain, intensité et minutes en zones 4–5 selon la zone du matin).
+- **Sommeil** : nuits qui suivent une séance terminée **moins de 4 h avant le coucher habituel**, seuil tiré d'une étude sur 14 689 porteurs de WHOOP ([Leota et al., Nature Communications 2025](https://doi.org/10.1038/s41467-025-58271-x)), mis en regard d'une méta-analyse qui ne trouve pas d'effet général de l'exercice du soir ([Stutz et al., Sports Med 2019](https://doi.org/10.1007/s40279-018-1015-0)). La séance est classée par rapport au coucher **habituel** (médiane) et non au coucher réel : sinon un coucher avancé suffirait à la rendre « tardive » et le test serait circulaire.
+- **Charge & progression** : charge boxe des 7 derniers jours face à la semaine type des 21 jours précédents (TRIMP, ou minutes à défaut de zones ; fenêtres découplées), régularité semaine par semaine **semaines vides comprises**, et pente de chaque mesure de séance par tranche de 30 jours avec intervalle de confiance.
+- **Poids & énergie** : calories des séances brutes et **excédent net** (brut moins la dépense de repos que le corps aurait eue de toute façon pendant la séance, estimée sur les jours sans aucune séance), part de la dépense, **part du déficit que suppose la trajectoire cible**, et **la balance du lendemain** (variation de poids entre deux pesées à un jour d'écart, selon qu'une séance les sépare), pour ne pas lire la perte d'eau d'une séance comme de la graisse perdue. Les calories d'un bracelet restent une estimation peu précise ([Shcherbina et al., J Pers Med 2017](https://doi.org/10.3390/jpm7020003)).
+
+Garde-fous : chaque comparaison est un test de Welch dont le seuil est divisé par le nombre de mesures comparées (Bonferroni), chaque analyse attend son effectif minimal (quatre observations par groupe, six séances sur 21 jours pour une pente) et l'annonce tant qu'il n'est pas atteint. Sur 300 séries simulées sans aucun lien entre boxe et récupération, sommeil ou intensité (2 000 pour la progression), le taux de fausse alerte mesuré va de 3 à 5,5 % par famille de tests ; une baisse réelle de 15 points de la récupération du lendemain est détectée dans 87 % des cas.
+
 ## 3. Architecture
 
 ```text
@@ -167,6 +180,7 @@ Suivi_V1/
 │   ├── utils.py
 │   ├── core/
 │   │   ├── analytics.py
+│   │   ├── boxing_analytics.py
 │   │   ├── business.py
 │   │   ├── data.py
 │   │   ├── evaluation.py
@@ -184,8 +198,10 @@ Suivi_V1/
 │   │   ├── weight_summary.py
 │   │   ├── whoop.py
 │   │   ├── whoop_analytics.py
-│   │   └── whoop_session.py
+│   │   ├── whoop_session.py
+│   │   └── whoop_sync.py
 │   ├── pages/
+│   │   ├── Boxe.py
 │   │   ├── Dashboard.py
 │   │   ├── Insights.py
 │   │   ├── Journal.py
@@ -193,16 +209,22 @@ Suivi_V1/
 │   │   ├── Settings.py
 │   │   └── Whoop.py
 │   └── ui/
+│       ├── boxing_visuals.py
 │       ├── components.py
 │       ├── theme.py
+│       ├── tables.py
 │       └── whoop_visuals.py
 └── tests/
     ├── conftest.py
     ├── test_analytics.py
+    ├── test_boxing_analytics.py
+    ├── test_boxing_page.py
+    ├── test_boxing_visuals.py
     ├── test_core_v2.py
     ├── test_date_labels.py
     ├── test_phase2_reliability.py
     ├── test_streamlit_smoke.py
+    ├── test_tables.py
     ├── test_target_trajectory.py
     ├── test_utils.py
     ├── test_v3_guardrails.py
@@ -233,11 +255,15 @@ Suivi_V1/
 - `app/core/session_state.py` : initialisation, lecture, écriture et réinitialisation des données en session Streamlit.
 - `app/core/whoop.py` : client WHOOP (OAuth 2.0, pagination API v2), normalisation des enregistrements en DataFrames, agrégat journalier et croisement avec le poids. Le transport HTTP est injectable, ce qui rend le module testable sans réseau.
 - `app/core/whoop_analytics.py` : analyses croisées WHOOP × poids : grille calendaire continue, zones de récupération, charge aigüe/chronique, dette de sommeil, bilan énergétique, corrélations décalées, synthèses hebdomadaire et par jour de semaine. Chaque fonction refuse de conclure sous son effectif minimal.
-- `app/core/whoop_session.py` : glue Streamlit du flux OAuth : détection de l'URL publique de l'application, capture du retour de redirection sur n'importe quelle page et bascule vers l'onglet Whoop.
-- `app/pages/` : pages visibles de l'application : Dashboard, Journal, Prévisions, Insights, Whoop et Paramètres.
+- `app/core/whoop_session.py` : glue Streamlit du flux OAuth : détection de l'URL publique de l'application, capture du retour de redirection sur n'importe quelle page et bascule vers l'onglet Whoop ; identifiants, jeton et synchronisation partagés par les onglets Whoop et Boxe.
+- `app/core/whoop_sync.py` : import d'une période WHOOP (cycles, récupérations, nuits, séances, profil et mesures corporelles dont la FC maximale), sans dépendance à Streamlit et à transport HTTP injectable.
+- `app/core/boxing_analytics.py` : analyses de l'onglet Boxe : sélection des séances, intensité en réserve cardiaque, TRIMP, coût du lendemain, profil de récupération, effet de la récupération du matin, séances tardives et sommeil, balance du lendemain, charge, progression, part de la boxe dans le déficit visé, repère du jour et constats. Chaque comparaison est testée et corrigée pour le nombre de mesures.
+- `app/pages/` : pages visibles de l'application : Dashboard, Journal, Prévisions, Insights, Whoop, Boxe et Paramètres.
 - `app/ui/` : composants d'interface, cartes, graphiques et thème visuel.
 - `app/ui/charts.py` : style Plotly partagé par les pages poids (rôles de couleur fixes, axes de dates sans mois anglais, légende sous le graphique), aligné sur celui de l'onglet WHOOP.
 - `app/ui/whoop_visuals.py` : construction des figures Plotly de l'onglet WHOOP, sans dépendance à Streamlit, ce qui rend les règles de lisibilité vérifiables par des tests plutôt que par relecture visuelle.
+- `app/ui/boxing_visuals.py` : figures de l'onglet Boxe, sur les mêmes règles (palette de statut pour la zone du matin, axe unique, jours sans mesure laissés vides, largeur de barre fixe).
+- `app/ui/tables.py` : mise en forme des tableaux WHOOP et Boxe (dates en français avec jour de semaine, durées en heures et minutes, heures de coucher en horloge, oui / non).
 - `tests/` : tests automatisés couvrant les calculs, garde-fous, composants Streamlit et comportements métier.
 
 ## 4. Flux de données
@@ -403,6 +429,7 @@ Les tests couvrent notamment :
 - le leaderboard walk-forward (`tests/test_evaluation_forecasters.py`) ;
 - l'effet du jour de la semaine et les pesées atypiques (`tests/test_calendar_effects.py`) ;
 - le chargement des pages Streamlit, y compris l'ajout rapide du Journal (`tests/test_pages_v4.py`).
+- les analyses, figures et la page de l'onglet Boxe, dont la puissance et le silence des tests statistiques sur des séries sans lien (`tests/test_boxing_analytics.py`, `tests/test_boxing_visuals.py`, `tests/test_boxing_page.py`).
 
 ## 9. Déploiement
 

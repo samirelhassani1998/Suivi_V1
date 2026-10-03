@@ -124,6 +124,25 @@ def last_days(frame: pd.DataFrame | None, days: int, *, today: Any = None) -> pd
     return data[(data["Date"] >= cutoff) & (data["Date"] <= reference)].reset_index(drop=True)
 
 
+def filter_period(frame: pd.DataFrame | None, days: int | None, *, today: Any = None) -> pd.DataFrame:
+    """Restreint une trame aux *days* derniers jours calendaires, à compter d'aujourd'hui.
+
+    Compter depuis la dernière mesure donnerait à « 7 jours » un sens flottant :
+    après une semaine sans porter le bracelet, la tranche affichée ne serait plus
+    celle que le lecteur a demandée. ``days=None`` conserve toute la trame.
+    """
+    if frame is None or frame.empty or days is None or "Date" not in frame.columns:
+        return frame if frame is not None else pd.DataFrame()
+    data = frame.copy(deep=True)
+    data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
+    data = data.dropna(subset=["Date"])
+    if data.empty:
+        return data
+    reference = (pd.Timestamp(today) if today is not None else pd.Timestamp.now()).normalize()
+    cutoff = reference - pd.Timedelta(days=int(days) - 1)
+    return data[data["Date"] >= cutoff].reset_index(drop=True)
+
+
 def previous_days(frame: pd.DataFrame | None, days: int, *, today: Any = None) -> pd.DataFrame:
     """Fenêtre calendaire immédiatement antérieure à celle de :func:`last_days`."""
     data = _clean_daily(frame)
