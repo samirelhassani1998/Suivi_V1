@@ -52,6 +52,7 @@ def ensure_whoop_defaults() -> None:
     st.session_state.setdefault("whoop_daily", pd.DataFrame())
     st.session_state.setdefault("whoop_workouts", pd.DataFrame())
     st.session_state.setdefault("whoop_profile", {})
+    st.session_state.setdefault("whoop_body", {})
     st.session_state.setdefault("whoop_last_sync", None)
     st.session_state.setdefault("whoop_sync_days", DEFAULT_WHOOP_SYNC_DAYS)
     st.session_state.setdefault("whoop_manual_credentials", {})
@@ -65,7 +66,17 @@ def clear_whoop_session() -> None:
     st.session_state["whoop_daily"] = pd.DataFrame()
     st.session_state["whoop_workouts"] = pd.DataFrame()
     st.session_state["whoop_profile"] = {}
+    st.session_state["whoop_body"] = {}
     st.session_state["whoop_last_sync"] = None
+
+
+def store_whoop_sync(result) -> None:
+    """Range le résultat d'une synchronisation (voir ``app.core.whoop_sync``) en session."""
+    st.session_state["whoop_daily"] = result.daily
+    st.session_state["whoop_workouts"] = result.workouts
+    st.session_state["whoop_profile"] = result.profile
+    st.session_state["whoop_body"] = result.body
+    st.session_state["whoop_last_sync"] = pd.Timestamp.utcnow().tz_localize(None)
 
 
 def set_source_data(df: pd.DataFrame, source_name: str, quality: dict | None = None) -> None:

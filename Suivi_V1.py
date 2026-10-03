@@ -120,6 +120,7 @@ pages = [
     st.Page("app/pages/Predictions.py", title="Prévisions", icon="📈"),
     st.Page("app/pages/Insights.py", title="Insights", icon="🔍"),
     whoop_page,
+    st.Page("app/pages/Boxe.py", title="Boxe", icon="🥊"),
     st.Page("app/pages/Settings.py", title="Paramètres", icon="⚙️"),
 ]
 navigation = st.navigation(pages)

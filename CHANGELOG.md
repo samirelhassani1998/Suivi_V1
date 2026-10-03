@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-10-03 — Onglet Boxe : les séances de boxe lues à travers WHOOP
+
+Nouvel onglet `Boxe` (🥊), dédié à la seule boxe. Il lit les séances de la synchronisation WHOOP existante et va plus loin que l'application WHOOP, qui range une séance de boxe parmi toutes les autres activités.
+
+Analyses (`app/core/boxing_analytics.py`, nouveau) :
+- **Intensité en % de réserve cardiaque** (méthode de Karvonen, celle des zones WHOOP), à partir de la FC de repos du matin et de la FC maximale du profil WHOOP — désormais importée avec les mesures corporelles — ou, à défaut, de la plus haute FC observée.
+- **TRIMP par zones** (Edwards) : minutes de chaque zone pondérées par son numéro ; sert d'unité de charge, le strain logarithmique ne s'additionnant pas.
+- **Coût du lendemain** : récupération, HRV et FC de repos le matin qui suit une journée de boxe face aux autres matins, avec un avertissement quand les matins de boxe partent déjà de plus haut ; **profil J0 → J+3**.
+- **Récupération du matin → intensité** : la séance est-elle plus intense les matins verts ?
+- **Séances tardives et sommeil** : séance terminée moins de 4 h avant le coucher habituel (seuil de Leota et al., Nature Communications 2025, 14 689 porteurs de WHOOP). Classement sur le coucher **habituel** et non réel, pour éviter un test circulaire repéré pendant la vérification (un coucher avancé rendait mécaniquement la séance « tardive » et l'heure de coucher « significativement » plus tôt).
+- **Charge boxe** 7 j / semaine type des 21 j précédents, **régularité** semaine par semaine semaines vides comprises, **progression** par pente sur 30 jours avec intervalle de confiance.
+- **Énergie** : calories brutes et excédent net (dépense de repos retranchée), part de la dépense et **part du déficit que suppose la trajectoire cible** ; **balance du lendemain** (perte d'eau d'une séance).
+- **Repère du jour** d'après la zone WHOOP du matin et la charge de la semaine ; **constats** rédigés et classés ; meilleures marques ; habitudes jour × moment.
+
+Garde-fous : tests de Welch corrigés par Bonferroni, effectifs minimaux annoncés. Taux de fausse alerte mesuré sur séries sans lien : 3 à 5,5 % par famille de tests ; puissance de 87 % pour une baisse réelle de 15 points le lendemain.
+
+Mutualisation avec l'onglet Whoop, sans changement de comportement :
+- `app/core/whoop_sync.py` (nouveau) : l'import d'une période, sorti de la page Whoop ; il récupère aussi les mesures corporelles (`max_heart_rate`), rangées en session sous `whoop_body`.
+- `app/core/whoop_session.py` : identifiants, jeton et synchronisation partagés par les deux onglets.
+- `app/ui/tables.py` (nouveau) : mise en forme des tableaux ; `filter_period` rejoint `app/core/whoop_analytics.py`.
+- L'onglet Boxe ne lit les identifiants qu'au moment de synchroniser, ce qui évite l'alerte « No secrets found » de Streamlit sur une installation locale sans secrets.
+
+Tests : 594 passés (+68), dont `test_boxing_analytics.py`, `test_boxing_visuals.py`, `test_boxing_page.py` et `test_tables.py`.
+
 ## 2026-09-23 — Tendance robuste, incertitude affichée et lecture unifiée des pages poids
 
 Revue complète des pages Dashboard, Journal, Prévisions, Insights et Paramètres, avec un fil conducteur : dire ce que le bruit d'une pesée permet de conclure, et ne rien annoncer que le hasard suffirait à produire.

@@ -9,12 +9,23 @@ tout rendu de page, puis consommées par la page Whoop.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import streamlit as st
 from streamlit.errors import NoSessionContext, StreamlitAPIException
 
-from app.core.whoop import DEFAULT_REDIRECT_URI
+from app.core.session_state import store_whoop_sync
+from app.core.whoop import (
+    DEFAULT_REDIRECT_URI,
+    WhoopCredentials,
+    WhoopError,
+    WhoopToken,
+    build_scopes,
+    credentials_from_sources,
+    ensure_fresh_token,
+)
+from app.core.whoop_sync import fetch_whoop_data, sync_window
 
 PENDING_KEY = "whoop_pending_auth"
 AUTO_SWITCH_KEY = "whoop_auto_switch_done"
@@ -123,3 +134,73 @@ def switch_to_whoop_page_if_pending(page: Any = None) -> None:
         return
     except NoSessionContext:
         return
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Identifiants, jeton et synchronisation, partagés par les onglets Whoop et Boxe
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def secrets_mapping() -> dict:
+    """Lecture défensive des secrets : absents en local, présents sur Streamlit Cloud."""
+    try:
+        return {key: st.secrets[key] for key in st.secrets}
+    except Exception:
+        return {}
+
+
+def default_redirect_uri() -> str:
+    """URL de redirection proposée par défaut : celle de l'application elle-même."""
+    detected = detect_base_url(default="")
+    return detected or DEFAULT_REDIRECT_URI
+
+
+def resolve_credentials() -> WhoopCredentials:
+    overrides = dict(st.session_state.get("whoop_manual_credentials", {}) or {})
+    return credentials_from_sources(
+        secrets_mapping(),
+        os.environ,
+        overrides,
+        default_redirect_uri=default_redirect_uri(),
+        scopes=build_scopes(offline=bool(st.session_state.get("whoop_request_offline", True))),
+    )
+
+
+def stored_token() -> WhoopToken | None:
+    raw = st.session_state.get("whoop_token")
+    if not raw:
+        return None
+    try:
+        token = WhoopToken.from_dict(raw)
+    except Exception:
+        return None
+    return token if token.access_token else None
+
+
+def store_token(token: WhoopToken) -> None:
+    st.session_state["whoop_token"] = token.to_dict()
+
+
+def run_whoop_sync(credentials: WhoopCredentials, token: WhoopToken, days: int) -> bool:
+    """Importe les *days* derniers jours et les range en session.
+
+    Renvoie ``True`` en cas de succès ; une erreur est affichée sans exposer de
+    secret, et les données déjà en session restent intactes.
+    """
+    start, end = sync_window(days)
+    try:
+        fresh = ensure_fresh_token(credentials, token)
+        if fresh.access_token != token.access_token:
+            store_token(fresh)
+        with st.spinner("Récupération des données WHOOP…"):
+            result = fetch_whoop_data(fresh, start=start, end=end)
+    except WhoopError as exc:
+        st.error(str(exc))
+        return False
+    except Exception:
+        st.error("Synchronisation WHOOP interrompue : service indisponible ou réseau bloqué.")
+        return False
+
+    store_whoop_sync(result)
+    st.success(result.summary())
+    return True
