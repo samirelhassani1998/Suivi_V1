@@ -19,11 +19,11 @@ def test_target_trajectory_official_points_and_floor():
     traj = build_target_trajectory(df)["trajectory"].rename(columns={"Poids cible (kg)": "Poids cible"})
     assert traj["Date"].iloc[0] == pd.Timestamp("2026-10-01")
     assert traj["Poids cible"].iloc[0] == 106.0
-    assert traj["Date"].iloc[-1] == pd.Timestamp("2026-12-15")
+    assert traj["Date"].iloc[-1] == pd.Timestamp("2026-12-31")
     assert traj["Poids cible"].iloc[-1] == 80.0
-    assert len(traj) == 76
+    assert len(traj) == 92
     assert (traj["Poids cible"] >= 80.0).all()
-    assert traj["Date"].max() == pd.Timestamp("2026-12-15")
+    assert traj["Date"].max() == pd.Timestamp("2026-12-31")
     assert len(traj[traj["Poids cible"] == 80.0]) == 1
 
 def test_normalize_datetime_series_distinguishes_iso_and_french_dates():

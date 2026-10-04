@@ -10,7 +10,7 @@ from app.core.targets import DEFAULT_TARGETS, get_target_weights
 
 DEFAULT_WEIGHT_COLUMNS = ["Date", "Poids (Kgs)"]
 DEFAULT_ZOOM_TARGET_START_DATE = pd.Timestamp("2026-10-01")
-DEFAULT_ZOOM_TARGET_END_DATE = pd.Timestamp("2026-12-15")
+DEFAULT_ZOOM_TARGET_END_DATE = pd.Timestamp("2026-12-31")
 DEFAULT_WHOOP_SYNC_DAYS = 30
 
 

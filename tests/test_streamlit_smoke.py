@@ -49,7 +49,7 @@ def _active_trajectory_state(at: AppTest, *, offset_kg: float | None = 0.0) -> N
     )
 
     weights = [
-        106.0 - index * 26.0 / 75
+        106.0 - index * 26.0 / 91
         for index in range(len(dates))
     ]
     # None demande explicitement une série alignée sur la trajectoire cible.
@@ -153,16 +153,16 @@ def test_dashboard_renders_kpis_and_sections():
         spec = json.loads(chart.proto.spec)
         target_traces.extend(
             trace for trace in spec.get("data", [])
-            if "Trajectoire cible vers 80 kg au 15/12/2026" in trace.get("name", "")
+            if "Trajectoire cible vers 80 kg au 31/12/2026" in trace.get("name", "")
         )
     assert target_traces
     trace = next(trace for trace in target_traces if trace["x"][0].startswith("2026-10-01"))
     assert trace["x"][0].startswith("2026-10-01")
     assert trace["y"][0] == 106.0
-    assert trace["x"][-1].startswith("2026-12-15")
+    assert trace["x"][-1].startswith("2026-12-31")
     assert trace["y"][-1] == 80.0
-    assert len(trace["x"]) == 76
-    assert all(not x.startswith("2026-12-16") for x in trace["x"])
+    assert len(trace["x"]) == 92
+    assert all(not x.startswith("2027-01-01") for x in trace["x"])
     assert any("objectif" in str(c.value).lower() for c in at.caption)
 
 
@@ -224,7 +224,7 @@ def test_settings_exposes_five_goals():
     assert "Début du zoom trajectoire" in date_labels
     assert "Fin du zoom trajectoire" in date_labels
     assert at.session_state["zoom_target_start_date"] == pd.Timestamp("2026-10-01")
-    assert at.session_state["zoom_target_end_date"] == pd.Timestamp("2026-12-15")
+    assert at.session_state["zoom_target_end_date"] == pd.Timestamp("2026-12-31")
 
 
 def test_dashboard_zoom_chart_uses_configured_period_and_handles_empty_data():
@@ -240,7 +240,7 @@ def test_dashboard_zoom_chart_uses_configured_period_and_handles_empty_data():
     zoom_spec = json.loads(plotly_elements[1].proto.spec)
     xaxis = zoom_spec.get("layout", {}).get("xaxis", {})
     assert xaxis.get("range", [])[0].startswith("2026-10-01")
-    assert xaxis.get("range", [])[1].startswith("2026-12-15")
+    assert xaxis.get("range", [])[1].startswith("2026-12-31")
     measured_traces = [trace for trace in zoom_spec.get("data", []) if trace.get("name") == "Poids mesuré"]
     assert measured_traces == []
 
@@ -265,7 +265,7 @@ def test_dashboard_zoom_chart_filters_measured_data_to_configured_period():
 def test_dashboard_zoom_invalid_period_warns_without_exception():
     at = AppTest.from_file("app/pages/Dashboard.py")
     _active_trajectory_state(at)
-    at.session_state["zoom_target_start_date"] = pd.Timestamp("2026-12-15")
+    at.session_state["zoom_target_start_date"] = pd.Timestamp("2026-12-31")
     at.session_state["zoom_target_end_date"] = pd.Timestamp("2026-10-01")
     at.run(timeout=15)
 
