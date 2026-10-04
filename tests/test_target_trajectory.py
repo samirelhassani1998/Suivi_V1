@@ -20,22 +20,22 @@ def test_target_trajectory_exact_fixed_contract():
     trajectory = result["trajectory"]
     assert trajectory["Date"].iloc[0] == pd.Timestamp("2026-10-01")
     assert trajectory["Poids cible (kg)"].iloc[0] == 106.0
-    assert trajectory["Date"].iloc[-1] == pd.Timestamp("2026-12-15")
+    assert trajectory["Date"].iloc[-1] == pd.Timestamp("2026-12-31")
     assert trajectory["Poids cible (kg)"].iloc[-1] == 80.0
-    assert len(trajectory) == 76
+    assert len(trajectory) == 92
     assert result["start_date"] == DEFAULT_TARGET_TRAJECTORY_START_DATE
     assert result["end_date"] == DEFAULT_TARGET_TRAJECTORY_END_DATE
-    assert result["total_duration_days"] == 75
+    assert result["total_duration_days"] == 91
 
 
 def test_required_weekly_loss():
-    expected = (106.0 - 80.0) / (75 / 7)
+    expected = (106.0 - 80.0) / (91 / 7)
     assert required_weekly_loss() == pytest.approx(expected, abs=1e-12)
     assert TargetTrajectoryConfig().required_weekly_loss == pytest.approx(expected, abs=1e-12)
 
 
 def test_required_daily_loss():
-    assert required_daily_loss() == pytest.approx((106.0 - 80.0) / 75, abs=1e-12)
+    assert required_daily_loss() == pytest.approx((106.0 - 80.0) / 91, abs=1e-12)
 
 
 @pytest.mark.parametrize("data_weight", [90.0, 100.0, 110.0])
@@ -51,10 +51,10 @@ def test_target_weight_on_date_fixed_bounds():
     assert target_weight_on_date(pd.Timestamp("2026-09-30")) is None
     assert target_weight_on_date(pd.Timestamp("2026-10-01")) == 106.0
     mid = target_weight_on_date(pd.Timestamp("2026-10-25"))
-    expected = 106.0 + (24 / 75) * (80.0 - 106.0)
+    expected = 106.0 + (24 / 91) * (80.0 - 106.0)
     assert mid == pytest.approx(expected, abs=1e-9)
-    assert target_weight_on_date(pd.Timestamp("2026-12-15")) == 80.0
-    assert target_weight_on_date(pd.Timestamp("2026-12-16")) is None
+    assert target_weight_on_date(pd.Timestamp("2026-12-31")) == 80.0
+    assert target_weight_on_date(pd.Timestamp("2027-01-01")) is None
 
 
 def test_trajectory_strictly_decreasing_and_never_below_floor():
@@ -64,7 +64,7 @@ def test_trajectory_strictly_decreasing_and_never_below_floor():
     assert (values.diff().dropna() < 0).all()
     assert (values >= 80.0).all()
     assert (values == 80.0).sum() == 1
-    assert trajectory["Date"].max() == pd.Timestamp("2026-12-15")
+    assert trajectory["Date"].max() == pd.Timestamp("2026-12-31")
 
 
 def test_compare_to_target_trajectory_reports_gap_status_and_progress():
@@ -89,9 +89,9 @@ def test_alignment_status_uses_configurable_tolerance(offset_kg, expected_status
 
 
 def test_post_end_measurement_marks_trajectory_completed_without_exception():
-    df = pd.DataFrame({"Date": [pd.Timestamp("2026-12-16")], "Poids (Kgs)": [79.5]})
+    df = pd.DataFrame({"Date": [pd.Timestamp("2027-01-01")], "Poids (Kgs)": [79.5]})
     result = compare_to_target_trajectory(df)
     assert result["available"] is False
     assert result["trajectory_completed"] is True
     assert "terminée" in result["message"]
-    assert len(result["trajectory"]) == 76
+    assert len(result["trajectory"]) == 92

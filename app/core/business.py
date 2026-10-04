@@ -6,9 +6,9 @@ from typing import Final
 import pandas as pd
 
 TARGET_TRAJECTORY_START_DATE: Final[pd.Timestamp] = pd.Timestamp("2026-10-01")
-TARGET_TRAJECTORY_END_DATE: Final[pd.Timestamp] = pd.Timestamp("2026-12-15")
+TARGET_TRAJECTORY_END_DATE: Final[pd.Timestamp] = pd.Timestamp("2026-12-31")
 TARGET_TRAJECTORY_START_WEIGHT_KG: Final[float] = 106.0
-TARGET_TRAJECTORY_TOTAL_DURATION_DAYS: Final[int] = 75
+TARGET_TRAJECTORY_TOTAL_DURATION_DAYS: Final[int] = 91
 FINAL_TARGET_WEIGHT_KG: Final[float] = 80.0
 ALIGNMENT_TOLERANCE_KG: Final[float] = 0.3
 INTERRUPTION_THRESHOLD_DAYS: Final[int] = 21
