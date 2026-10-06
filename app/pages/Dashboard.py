@@ -758,7 +758,7 @@ def _render_main_weight_chart(
 
     section_header(
         "Zoom sur la période cible",
-        "Même lecture que le graphique principal, limitée à la fenêtre configurable dans les paramètres.",
+        "Poids mesuré, objectifs et trajectoire cible sur la fenêtre configurable dans les paramètres.",
         "🔎",
     )
     zoom_start = pd.Timestamp(st.session_state.get("zoom_target_start_date", DEFAULT_ZOOM_TARGET_START_DATE))
@@ -777,13 +777,8 @@ def _render_main_weight_chart(
         start_date=zoom_start,
         end_date=zoom_end,
         show_secondary_targets=show_secondary_targets,
-        show_long_term_trend=show_long_term_trend,
         show_forecast=show_forecast,
-        show_moving_average=show_moving_average,
-        ma_window_label=selected_ma,
-        show_trend=show_trend,
-        trend_frame=context["frame"],
-        noise_band=noise_band,
+        show_trend=False,
     )
     if zoom_df.empty:
         st.info("Aucune donnée de poids disponible sur cette période.")
