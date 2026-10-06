@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-from app.core.boxing_analytics import LATE_SESSION_HOURS
+from app.core.boxing_analytics import LATE_SESSION_HOURS, sleep_nights
 from app.core.date_labels import format_clock_hour, format_duration_minutes, format_long_date
 from app.core.whoop_analytics import INTENSITY_BANDS
 from app.ui.whoop_visuals import (
@@ -212,11 +212,11 @@ def late_sessions_chart(table: pd.DataFrame | None, *, cutoff: float = LATE_SESS
     """Marge entre fin de séance et coucher habituel, face à la nuit qui a suivi."""
     if table is None or table.empty:
         return None
-    usable = table.dropna(subset=["Marge avant coucher habituel (h)", "Sommeil suivant (heures)"])
+    usable = sleep_nights(table).dropna(subset=["Marge avant coucher habituel (h)", "Sommeil suivant (heures)"])
     if usable.empty:
         return None
     hover = [
-        f"{format_long_date(date)}<br>Fin de séance {_fr(margin)} h avant votre coucher habituel"
+        f"{format_long_date(date)}<br>Dernière fin de séance {_fr(margin)} h avant votre coucher habituel"
         f"<br>Nuit suivante : {_fr(sleep)} h, coucher à {format_clock_hour(bedtime)}"
         for date, margin, sleep, bedtime in zip(usable["Date"], usable["Marge avant coucher habituel (h)"], usable["Sommeil suivant (heures)"], usable["Coucher suivant"])
     ]
@@ -225,7 +225,7 @@ def late_sessions_chart(table: pd.DataFrame | None, *, cutoff: float = LATE_SESS
             x=usable["Marge avant coucher habituel (h)"],
             y=usable["Sommeil suivant (heures)"],
             mode="markers",
-            name="Séances",
+            name="Nuits après boxe",
             marker=dict(size=MARKER_SIZE + 3, color=SERIES_COLORS[0], line=dict(width=2, color=SURFACE)),
             customdata=hover,
             hovertemplate="%{customdata}<extra></extra>",
@@ -238,7 +238,7 @@ def late_sessions_chart(table: pd.DataFrame | None, *, cutoff: float = LATE_SESS
         annotation_position="top right",
         annotation_font=dict(size=11, color=INK_SECONDARY),
     )
-    figure = _base_layout(figure, "Heure de fin de séance et nuit suivante", y_title="Sommeil de la nuit suivante (h)", show_legend=False)
+    figure = _base_layout(figure, "Dernière séance de la journée et nuit suivante", y_title="Sommeil de la nuit suivante (h)", show_legend=False)
     figure.update_layout(hovermode="closest")
     figure.update_xaxes(title="Heures entre la fin de séance et votre coucher habituel", ticksuffix=" h")
     return figure

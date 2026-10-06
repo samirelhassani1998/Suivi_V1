@@ -54,6 +54,9 @@ def _quick_add_form(df: pd.DataFrame) -> pd.DataFrame:
     """Ajout d'une pesée en trois champs, sans faire défiler l'éditeur jusqu'en bas."""
     section_header("Ajouter une pesée", "Le geste du matin : une date, un poids, une note facultative.", "➕")
     last_weight = float(pd.to_numeric(df["Poids (Kgs)"], errors="coerce").dropna().iloc[-1]) if not df.empty and "Poids (Kgs)" in df.columns and pd.to_numeric(df["Poids (Kgs)"], errors="coerce").notna().any() else 80.0
+    if not np.isfinite(last_weight) or not 20.0 <= last_weight <= 400.0:
+        st.warning("La dernière valeur importée est hors des bornes de saisie (20 à 400 kg). Vérifiez-la dans l'éditeur ; l'ajout rapide démarre à 80 kg.")
+        last_weight = 80.0
     with st.form("journal_quick_add", clear_on_submit=False):
         cols = st.columns([1, 1, 2, 1])
         with cols[0]:
@@ -66,6 +69,9 @@ def _quick_add_form(df: pd.DataFrame) -> pd.DataFrame:
             st.markdown("<div style='height:1.7rem'></div>", unsafe_allow_html=True)
             submitted = st.form_submit_button("Ajouter", type="primary", use_container_width=True)
     if not submitted:
+        return df
+    if st.session_state.get("journal_has_unsaved_changes", False):
+        st.warning("Enregistrez ou corrigez d'abord les modifications de l'éditeur avant d'ajouter une pesée.")
         return df
 
     new_row: dict = {column: np.nan for column in df.columns}
@@ -145,10 +151,11 @@ def main() -> None:
         df,
         num_rows="dynamic",
         use_container_width=True,
-        key="journal_editor",
+        key=f"journal_editor_{st.session_state.get('journal_editor_revision', 0)}",
         column_config=_column_config(df),
     )
     report = validate_journal(edited)
+    st.session_state["journal_has_unsaved_changes"] = not _dataframes_equal(edited, get_working_data())
 
     for err in report.errors:
         alert_banner(err, "error")
@@ -164,7 +171,7 @@ def main() -> None:
                 set_working_data(report.cleaned)
                 st.success("Modifications enregistrées dans la session.")
     with c2:
-        if not _dataframes_equal(report.cleaned, get_working_data()):
+        if not _dataframes_equal(edited, get_working_data()):
             st.warning(
                 "Des modifications visibles ne sont pas encore enregistrées.\n"
                 "Enregistrez-les avant l'export pour les inclure."

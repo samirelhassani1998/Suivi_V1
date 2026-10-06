@@ -1,462 +1,156 @@
-# Audit de l'état actuel — Suivi_V1
+# Audit complet et améliorations — Suivi V1
 
-Date de mise à jour de l'audit : 2026-08-07. Périmètre : dépôt local `/workspace/Suivi_V1`, code Python Streamlit, tests, documentation, configuration et historique Git récent.
+**6 octobre 2026.** État initial : `35909e5`, après intégration de la PR #99. Cet audit remplace l’état des lieux du 7 août. Il couvre les sept pages, leurs sous-onglets, les composants communs, le cycle des données, WHOOP, les statistiques, les prévisions et la validation. Les observations portent sur le code et des données synthétiques ; aucune donnée personnelle ni connexion WHOOP réelle n’a été utilisée.
 
-## Mise à jour livrée le 07/08/2026
+## 1. Conclusion et ordre des priorités
 
-- **UI/UX** : le Dashboard rend maintenant visible la fiabilité des tendances juste après la lecture rapide, avec une formulation non culpabilisante et une distinction explicite entre qualité de couverture et résultat de santé.
-- **KPI ajouté** : score de fiabilité 0–100 basé sur le volume, le recul historique, la couverture récente et l'intervalle médian entre mesures. Les seuils sont documentés dans le README et couverts par des tests.
-- **Calculs** : le score est déterministe pour un import historique car sa fenêtre récente est ancrée sur la dernière mesure du jeu, et non sur l'horloge du serveur Streamlit.
-- **Cohérence produit** : le titre navigateur, l'icône et les docstrings utilisent désormais tous le nom « Suivi V1 ».
-- **Documentation** : le README expose la méthode de scoring et rappelle les conventions jours calendaires / nombre de mesures, la non-déduplication de la source et le caractère indicatif des projections.
+Le projet possède déjà un socle utile : journal éditable, données source conservées, trajectoire distincte des mesures, tendance robuste, baselines, validation chronologique, corrections des comparaisons multiples, analyses WHOOP et Boxe, tests de pages. L’enjeu principal est de rendre les résultats aussi fiables que leur présentation le laisse penser.
 
-### Backlog priorisé après audit
+L’audit a reproduit des pertes possibles à l’enregistrement, des incohérences de périodes, des prévisions numériquement instables et des conclusions issues de données manquantes. Les corrections de cette PR ciblent ces problèmes et améliorent les interactions communes. Les changements de méthode qui exigent une vraie calibration, ainsi que le stockage durable, restent explicitement dans la feuille de route.
 
-1. **P0 — Persistance** : ajouter une écriture explicite vers une source durable ou un backend ; les éditions restent aujourd'hui limitées à la session Streamlit.
-2. **P1 — Prévisions** : calibrer les intervalles sur les erreurs walk-forward et désactiver automatiquement tout modèle qui ne bat pas une baseline naïve.
-3. **P1 — Qualité** : créer un écran de résolution guidée des doublons et valeurs aberrantes avant sauvegarde/export.
-4. **P2 — Statistiques** : remplacer le clustering KMeans par des segments temporels interprétables (phases de baisse, stabilité, reprise).
-5. **P2 — Accessibilité** : auditer les contrastes, la navigation clavier et les libellés lecteurs d'écran sur Streamlit Cloud.
+| Priorité | Résultat recherché | Traitement dans cette PR |
+|---|---|---|
+| P1 — données et accès | Une erreur de saisie/import ne détruit pas le travail ; retour OAuth vérifié | Validation bloquante, remplacement protégé, configuration atomique, état OAuth à usage unique, authentification robuste |
+| P1 — exactitude analytique | Les périodes, effectifs, unités et jours comparés correspondent aux libellés | Filtres cohérents, interruptions préservées, plateaux avec recul suffisant, qualité WHOOP conservée, charge Boxe cohérente |
+| P1 — prévisions | Aucun objectif artificiellement atteint par divergence ou fuite de cible | Variables autorisées, cadence explicite, quantiles régularisés, refus des sorties instables |
+| P2 — compréhension | Distinguer mesure, estimation, résultat incertain et calcul impossible | Textes descriptifs, couverture réelle, raisons d’indisponibilité, interactions graphiques et accessibilité améliorées |
+| P2/P3 — évolution | Mesurer les gains avant d’ajouter des modèles ou de l’IA | Feuille de route avec critères d’acceptation ci-dessous |
+
+## 2. Améliorations appliquées et preuves
+
+### Données, Journal et Paramètres
+
+Références : [`Suivi_V1.py`](Suivi_V1.py), [`data.py`](app/core/data.py), [`Journal.py`](app/pages/Journal.py), [`Settings.py`](app/pages/Settings.py), [`session_state.py`](app/core/session_state.py).
 
-## 1. Executive summary
-
-L'application est déjà plus avancée qu'un simple tableau de suivi : elle possède une architecture multipage, une couche `app/core` assez riche, des objectifs multiples, une trajectoire cible, des analyses de plateau, des prévisions, des tests unitaires et des smoke tests Streamlit. Le niveau de maturité fonctionnelle est **intermédiaire à avancé**, mais la maturité de fiabilité analytique reste **intermédiaire** car plusieurs calculs ou modèles peuvent être interprétés trop fortement par l'utilisateur.
-
-### Forces principales
-
-- Architecture lisible : point d'entrée `Suivi_V1.py`, pages dans `app/pages`, logique métier dans `app/core`, composants UI dans `app/ui`.
-- État de session centralisé dans `app/core/session_state.py`, avec séparation `source_data`, `working_data`, `filtered_data` et `raw_data`.
-- Nettoyage des données qui conserve les colonnes supplémentaires via `clean_weight_dataframe`.
-- Tests existants sur le nettoyage, la trajectoire cible, les garde-fous, les prévisions et quelques pages Streamlit.
-- Plusieurs garde-fous récents : ETA bloqué sur signaux fragiles, plateau basé sur jours calendaires, backtesting de baselines chronologique.
-
-### Faiblesses principales
-
-- Une anomalie critique de conservation existait au chargement distant : `load_remote_csv()` dédupliquait automatiquement les dates et supprimait les mesures multiples d'un même jour. Cette anomalie est corrigée dans cette intervention.
-- La page Prévisions expose des modèles coûteux ou expérimentaux sans indicateur de fiabilité suffisamment unifié.
-- Plusieurs analyses avancées peuvent être statistiquement fragiles sur petits volumes : STL hebdomadaire, ACF/PACF, KMeans, IsolationForest, SARIMAX saisonnier.
-- Certaines fonctions préparatoires dédupliquent les dates pour les calculs ; c'est acceptable analytiquement si documenté, mais ne doit jamais modifier la source.
-- `app/utils.py` contient encore une ancienne pile utilitaire partiellement redondante avec `app/core`, ce qui augmente le risque de divergence.
-
-### Niveau de maturité
-
-- **Produit utilisateur** : 6,5/10. L'application est utile au quotidien, mais l'organisation Dashboard / Journal / Prévisions / Insights / Paramètres pourrait mieux distinguer données, analyses, qualité et modèles.
-- **Fiabilité données-calculs** : 6/10 après correction critique ; avant correction, la conservation distante des mesures multiples était un risque majeur.
-- **Industrialisation** : 5,5/10. La suite de tests est réelle, mais ne couvre pas encore assez la persistance, les graphiques essentiels et les cas limites bout en bout.
-
-### Principaux risques
-
-1. Perte ou transformation silencieuse des données source si une logique analytique est appliquée trop tôt dans le pipeline.
-2. Surinterprétation de modèles ML/forecasting entraînés sur peu de données individuelles.
-3. Recalculs lourds au rerun Streamlit, surtout Auto-ARIMA, SARIMAX et STL/ACF/PACF.
-4. Dérive entre l'ancien module `app/utils.py` et les modules modernes `app/core/*`.
-5. Confusion utilisateur entre prévisions expérimentales, trajectoire cible déterministe et tendances observées.
-
-## 2. Cartographie de l'application
-
-### Entrée et navigation accessible
-
-- `Suivi_V1.py` configure Streamlit, applique le thème, vérifie le mot de passe, initialise les données et déclare la navigation.
-- Pages accessibles via `st.navigation` :
-  - `app/pages/Dashboard.py` — Dashboard.
-  - `app/pages/Journal.py` — Journal.
-  - `app/pages/Predictions.py` — Prévisions.
-  - `app/pages/Insights.py` — Insights.
-  - `app/pages/Settings.py` — Paramètres.
-
-### Pages ou fonctionnalités présentes mais non accessibles directement
-
-- Il n'existe pas de page dédiée « Qualité des données » : la qualité est dans `Insights.py` et partiellement dans `Journal.py`.
-- Il n'existe pas de page dédiée « Modèles ML / statistiques » : les modèles sont dans `Predictions.py` et les clusters/anomalies dans `Insights.py`.
-- `app/utils.py` contient d'anciennes fonctions de chargement, filtrage, anomalies et régression linéaire qui ne semblent plus être le chemin principal de l'application multipage moderne, mais qui restent testées.
-- La fonction `_render_smart_alerts()` dans `Dashboard.py` est définie mais n'est pas appelée dans le flux principal observé.
-
-### Sources de données et flux
-
-1. Source distante : `DATA_URL` dans `app/config.py`, éventuellement remplacée par `st.secrets["data_url"]`.
-2. Chargement distant : `load_remote_csv(url)` lit un CSV avec `pd.read_csv`, puis appelle `clean_weight_dataframe`.
-3. Import local : `_import_local_csv(uploaded_file)` lit un CSV local et appelle `clean_weight_dataframe`.
-4. Stockage : `set_source_data(df, source_name)` remplit `source_data`, `working_data`, `filtered_data`, `raw_data`, `data_source`.
-5. Journal : `st.data_editor` édite `working_data`; `validate_journal` nettoie et `set_working_data` persiste en session.
-6. Pages analytiques : `get_filtered_or_working_data()` renvoie `filtered_data` si disponible, sinon `working_data`.
-
-### Variables `st.session_state` identifiées
-
-- Données : `source_data`, `working_data`, `filtered_data`, `raw_data`, `data_source`, `data_url`.
-- Objectifs et préférences : `target_weights`, `target_weight`, `height_cm`, `height_m`, `duplicate_strategy`, `default_model`, `ma_type`, `window_size`, `theme`.
-- Authentification : `password_correct`, `password` temporaire.
-- Tests/performance : `fast_mode`.
-- Widgets : `sidebar_csv_import`, `journal_editor`, clés implicites des sliders/selectbox/toggles.
-
-### Fonctions utilisant le cache
-
-- `Suivi_V1.py::load_remote_csv` : `@st.cache_data(ttl=300)`.
-- `app/utils.py::load_data` : `@st.cache_data(ttl=300, show_spinner=False)`.
-- `app/utils.py::get_data_diagnostics` : `@st.cache_data(ttl=300, show_spinner=False)`.
-- `app/utils.py::convert_df_to_csv` : `@st.cache_data`.
-
-### Modèles statistiques et ML présents
-
-- Régression linéaire : `LinearRegression` dans `Predictions.py`, `app/core/models.py`, `app/utils.py`.
-- Ridge, ElasticNet, RandomForest, GradientBoosting : définis dans `app/core/models.py`.
-- QuantileRegressor q10/q50/q90 : utilisé par `forecast_with_ml`.
-- RandomForestRegressor : comparaison modèles dans `Predictions.py`.
-- SARIMAX : `forecast_with_sarimax`.
-- Auto-ARIMA : import dynamique `pmdarima.auto_arima` dans `Predictions.py`.
-- STL, ACF, PACF : bloc `STL & ACF/PACF` dans `Predictions.py`.
-- KMeans : clustering dans `Insights.py`.
-- IsolationForest : anomalies dans `app/core/insights.py` et ancien `app/utils.py`.
-- Baselines : dernière valeur, moyennes mobiles 7/14, drift dans `app/core/evaluation.py`.
-
-### Graphiques disponibles
-
-- Dashboard : courbe principale poids + objectifs + trajectoire, écart à l'objectif, vue hebdomadaire, moyennes mobiles, distribution du poids, IMC.
-- Prévisions : SARIMAX + intervalle, Auto-ARIMA + intervalle, ML quantile + intervalle, scénarios 90 jours, STL/ACF/PACF.
-- Insights : phases du parcours, jour de semaine, anomalies, KMeans.
-- Journal : tableaux et aperçu filtré, pas de graphique majeur.
-
-## 3. Audit des données
-
-### Constat global
-
-La séparation source/travail/session est saine, mais il faut distinguer strictement :
-
-- **Données source** : doivent conserver toutes les lignes et colonnes valides.
-- **Données analytiques préparées** : peuvent dédupliquer ou agréger si la méthode l'explique.
-- **Données filtrées** : ne doivent jamais remplacer la source sans action explicite.
-
-### Points vérifiés
-
-- Chargement Google Sheets/CSV : présent via `pd.read_csv`.
-- Gestion erreurs réseau : `init_data_once()` capture toute exception et affiche un warning générique ; le bouton de reload affiche l'exception.
-- Conservation des colonnes : `clean_weight_dataframe` conserve les colonnes extras.
-- Parsing dates : `dayfirst=True`, puis fallback `dayfirst=False`.
-- Parsing poids : virgules remplacées par points, conversion numérique.
-- Lignes invalides : supprimées par défaut au chargement ; signalées dans `validate_journal`.
-- Doublons : signalés dans le journal ; les fonctions analytiques peuvent les résoudre.
-- Mesures multiples même jour : doivent être conservées en source ; corrigé pour le chargement distant.
-- Export CSV : exporte le DataFrame édité, donc peut inclure des lignes invalides présentes dans l'éditeur avant sauvegarde.
-- Mutations cache : les fonctions de session copient les DataFrames ; les fonctions cache renvoient des DataFrames nettoyés. Aucun cas évident de mutation directe du cache n'a été constaté.
-
-## 4. Audit des calculs métier
-
-| Calcul | Formule actuelle observée | Évaluation | Recommandation |
-|---|---|---|---|
-| Poids actuel | Dernière ligne après tri par date | Correct si dates valides ; ambigu si plusieurs mesures même jour | Afficher la dernière mesure horodatée si une colonne heure existe ; sinon documenter la règle |
-| Poids moyen | Moyenne simple des mesures | Correct descriptivement, mais dépend de la fréquence de mesure | Ajouter moyenne journalière optionnelle si mesures multiples fréquentes |
-| Min/max | Min/max des mesures | Correct | Conserver |
-| Variation 7j/30j | `delta_since_days` sur fenêtre calendaire avec recul minimal | Bonne amélioration récente | Conserver les messages N/A quand recul insuffisant |
-| Variation hebdomadaire | Agrégation par semaine, variation de moyenne hebdo | Correct pour lecture agrégée | Indiquer le nombre de mesures par semaine |
-| Vitesse kg/semaine | Différence poids courant vs référence / jours réels × 7 | Correct mais sensible aux fluctuations d'eau | Afficher confiance selon nb mesures et span |
-| Moyenne mobile simple | Rolling N mesures dans `multi_rolling_averages`; rolling calendaire dans `moving_average_by_days` | Les deux sont utiles mais doivent être libellées clairement | Garder les deux avec labels « mesures » vs « jours » |
-| EMA | `compute_trend_ema` sur nombre de mesures | Utile visuellement, pas prédictif | Label explicite |
-| IMC | poids / taille² | Correct si taille configurée | Ajouter avertissement si taille par défaut non confirmée |
-| Progression objectifs | Écart courant et scores dans analytics/target trajectory | Globalement correct | Vérifier cas objectif supérieur au poids initial |
-| ETA objectif | Régression linéaire sur fenêtres récentes avec garde-fous | Correctement prudent, mais encore sensible aux petits volumes | Refuser si span réel < 14 jours pour ETA forte confiance |
-| Plateau | Moteur calendaire `evaluate_plateau_window` | Bonne direction | Conserver seuils centralisés et expliquer limites |
-| Reprise poids | CUSUM simplifié / phase / streak | Indicatif uniquement | Ne pas alarmer sans confirmation multi-jours |
-| Bilan calorique | calories consommées - brûlées dans features | Présent comme feature, peu exploité en UI | Ne pas conclure causalement sans qualité nutritionnelle |
-
-## 5. Audit statistique
-
-- Les moyennes mobiles sont pertinentes si leur unité est claire. L'application mélange encore des moyennes en nombre de mesures et des fenêtres calendaires ; c'est acceptable si explicitement indiqué.
-- La volatilité par écart-type/CV est descriptive, mais sensible aux petits volumes. L'UI affiche parfois des scores même avec peu de points.
-- Les Z-scores robustes via MAD sont préférables aux Z-scores classiques ; l'ancienne fonction `app/utils.py::detect_anomalies` garde un Z-score classique.
-- ACF/PACF/STL sur série interpolée quotidiennement peuvent créer une illusion de fréquence régulière. Il faut refuser ou dégrader la confiance si la couverture journalière est trop basse.
-- Le CUSUM simplifié dans `detect_trend_breaks` est intéressant, mais ne doit pas être présenté comme détection statistique formelle de rupture.
-- Les intervalles SARIMAX sont des intervalles modèle, pas des intervalles de prédiction intégrant toutes les incertitudes utilisateur.
-- Les corrélations et effets jour de semaine ne doivent pas être interprétés causalement.
-
-## 6. Audit ML et forecasting
-
-### Inventaire et pertinence
-
-| Modèle | Usage | Risques | Pertinence |
-|---|---|---|---|
-| Baseline dernière valeur | Backtest | Simple, robuste | Très pertinente |
-| Baseline MA7/MA14 | Backtest | Rolling en mesures, pas jours | Pertinente |
-| Drift | Backtest | Sensible début/fin | Pertinente comme baseline |
-| LinearRegression | Comparaison modèle | Features auto-corrélées, peu de données | Pertinente si prudente |
-| Ridge/ElasticNet | Définis dans modèles | Pas exposés clairement | Pertinents si intégrés au backtest |
-| RandomForest | Comparaison | Overfitting probable sur petit historique | Faible valeur actuelle |
-| GradientBoosting | Défini non utilisé directement | Overfitting | Expérimental |
-| QuantileRegressor | Prévision ML | Entraînement in-sample ; intervalles conditionnels fragiles | À conserver en expérimental |
-| SARIMAX | Prévision | Fréquence irrégulière, saisonnalité hebdo imposée | À conditionner à données suffisantes |
-| Auto-ARIMA | Prévision | Coût élevé, peut échouer, dépendance optionnelle | Optionnel/expérimental |
-| STL | Décomposition | Interpolation quotidienne artificielle | Seulement si couverture suffisante |
-| ACF/PACF | Diagnostic | Peu interprétable pour suivi individuel irrégulier | Avancé, à masquer par défaut |
-| KMeans | Clustering poids | Clusters par niveau de poids peu actionnables | Faible valeur |
-| IsolationForest | Anomalies | Fluctuations normales signalées | Utile seulement en aide à revue |
-
-### Stratégie recommandée de forecasting
-
-1. Refuser les prévisions si moins de 14 mesures ou moins de 21 jours de span pour les modèles simples ; seuil plus élevé pour SARIMAX/STL.
-2. Toujours afficher les baselines : dernière valeur, moyenne mobile calendaire, drift.
-3. Walk-forward chronologique avec horizon fixe et métriques hors échantillon uniquement.
-4. Régression linéaire prudente sur temps réel + lags seulement si données suffisantes.
-5. SARIMAX uniquement si série rééchantillonnée raisonnablement régulière, couverture suffisante et diagnostics OK.
-6. Intervalles de prédiction calibrés à partir des erreurs walk-forward, pas uniquement des intervalles internes du modèle.
-7. Indicateur de fiabilité : faible / moyenne / élevée selon nb mesures, span, régularité, erreur baseline et stabilité des résidus.
-8. Masquer ou marquer expérimentalement RandomForest/KMeans/Auto-ARIMA tant qu'ils n'apportent pas un gain clair vs baseline.
-
-## 7. Audit des graphiques
-
-### Dashboard
-
-À conserver : courbe principale, trajectoire cible, objectifs, vue rapide, distribution, IMC, hebdomadaire. À corriger/améliorer : indiquer explicitement quand les moyennes mobiles sont en jours vs mesures ; afficher le nombre de mesures dans les agrégats hebdomadaires ; appeler ou supprimer proprement `_render_smart_alerts` après décision produit.
-
-### Journal
-
-À conserver : éditeur, aperçu filtré, export. À améliorer : aperçu de validation avant sauvegarde plus visible, compteur lignes invalides, avertissement si export avant sauvegarde contient des lignes invalides.
-
-### Prévisions
-
-À conserver : leaderboard baselines, scénarios, ETA avec garde-fous. À rendre optionnel/expérimental : SARIMAX, Auto-ARIMA, STL/ACF/PACF, ML quantile. À corriger : harmoniser les intervalles comme intervalles de prédiction empiriques et afficher fiabilité.
-
-### Insights
-
-À conserver : qualité, plateau, phases, meilleures/pires semaines, jour de semaine, anomalies. À rendre optionnel : KMeans. À corriger : préciser que les anomalies sont des points à revoir et pas des erreurs certaines.
-
-### Settings
-
-À conserver : objectifs, taille, moyenne mobile, doublons, modèle par défaut. À corriger : la stratégie de doublons doit être appliquée explicitement aux analyses ou à une vue agrégée, pas au dataset source.
-
-## 8. Audit UI/UX
-
-### Navigation
-
-La navigation actuelle est claire, mais l'architecture cible devrait distinguer plus explicitement : Dashboard, Journal, Analyses/Tendances, Prévisions, Modèles/Stats, Qualité données, Paramètres. Il n'est pas nécessaire de multiplier les pages immédiatement ; une première étape peut déplacer des blocs vers des tabs mieux nommés.
-
-### Page par page
-
-- Dashboard : objectif clair, bonne synthèse. Confusion possible entre objectif final, trajectoire cible et prévision. Améliorer les labels de confiance.
-- Journal : fonctionnel et important. Ajouter feedback plus fort sur lignes ignorées et conservation des colonnes.
-- Prévisions : riche mais dense. Séparer clairement « baselines fiables » et « modèles expérimentaux ».
-- Insights : riche, mais mélange qualité, statistiques, clustering et anomalies. Ajouter hiérarchie.
-- Paramètres : simple. Le champ objectif final désactivé synchronisé avec Objectif 5 est cohérent mais peut surprendre.
-
-## 9. Architecture et qualité du code
-
-### Points positifs
-
-- Séparation UI / core réelle.
-- Tests existants et nombreux modules purs.
-- Configuration métier centralisée.
-- Composants UI réutilisables.
-
-### Points à corriger
-
-- `app/utils.py` duplique des responsabilités modernes de `app/core/data.py`, `app/core/forecasting.py` et `app/core/insights.py`.
-- Plusieurs pages appellent `main()` au niveau module. C'est courant pour Streamlit multipage mais complique certains imports de test.
-- Quelques blocs `try/except Exception` larges masquent les causes exactes côté utilisateur.
-- Les modèles sont entraînés au rerun sans cache ressource ni contrôle fin.
-- Certaines fonctions analytiques mutent des copies, ce qui est correct, mais la règle doit rester stricte.
-
-## 10. Performances
-
-- `load_remote_csv` est caché 5 minutes : bon pour réseau.
-- Auto-ARIMA, SARIMAX, STL/ACF/PACF sont recalculés au rerun si l'onglet/bloc s'exécute : risque de lenteur.
-- `st.form` est bien utilisé dans Paramètres, mais pas dans Journal pour encadrer toutes les éditions.
-- `st.session_state` est utilisé pour l'état éditable : bonne pratique.
-- Recommandation : utiliser `st.cache_data` pour features/diagnostics purs dépendants d'un hash de données, `st.cache_resource` seulement pour ressources lourdes stables, ne jamais mettre `working_data` éditable en cache global.
-
-## 11. Audit des tests
-
-### Couverture actuelle
-
-- `tests/test_core_v2.py` : nettoyage, colonnes, doublons, baselines, ETA, plateau, prévisions, objectifs.
-- `tests/test_weight_summary.py` : synthèse, deltas, projection, insights, tri, virgules.
-- `tests/test_phase2_reliability.py` : trajectoire cible, contraintes de projection, plateau, formatting.
-- `tests/test_streamlit_smoke.py` : rendu Dashboard/Journal/Predictions/Settings et navigation simulée.
-- `tests/test_utils.py` : ancienne couche utils.
-
-### Faiblesses des tests
-
-- Peu de tests vérifient le contenu exact des graphiques Plotly.
-- Peu de tests vérifient la persistance après édition réelle dans `st.data_editor`.
-- Les tests de modèles vérifient surtout la forme des DataFrames, pas la qualité prédictive.
-- Pas assez de datasets synthétiques irréguliers avec mesures multiples même jour, longues pauses, reprise, plateau et outliers combinés.
-
-### Plan de tests recommandé
-
-Créer des fixtures synthétiques : vide, une mesure, 5 mesures, 30 jours réguliers, irrégulier, multiples mesures/jour, colonnes extras, calories, outliers, longue pause. Couvrir : import CSV, conservation lignes/colonnes, parsing, doublons, calculs 7/30j, IMC, progression, ETA, plateau, anomalies, backtesting, prévisions, navigation, session_state, graphiques essentiels, lignes d'objectifs, petits datasets.
-
-## 12. Score par domaine
-
-| Domaine | Score | Justification |
-|---|---:|---|
-| Données | 7/10 | Pipeline clair et colonnes conservées ; correction apportée à la perte des mesures multiples au chargement distant. |
-| Calculs métier | 7/10 | Variations calendaires et garde-fous solides ; quelques ambiguïtés sur mesures multiples et objectifs. |
-| Statistiques | 5,5/10 | Analyses riches, mais certains diagnostics avancés fragiles sur séries irrégulières ou petites. |
-| ML / forecasting | 5/10 | Baselines utiles ; modèles avancés expérimentaux, coûteux et parfois surdimensionnés. |
-| UI/UX | 6,5/10 | Interface moderne et riche ; densité forte dans Prévisions/Insights. |
-| Architecture | 6,5/10 | Bonne modularité core/pages ; dette `app/utils.py` et imports exécutants. |
-| Performances | 5,5/10 | Cache réseau présent ; modèles lourds recalculés. |
-| Tests | 6/10 | Suite existante utile ; manque tests graphiques/persistance/qualité prédictive. |
-| Documentation | 7/10 | README, audit précédent, model card, changelog ; manque doc des limites statistiques dans l'UI. |
-| Sécurité/confidentialité | 6,5/10 | Auth optionnelle, secrets exemple ; URL Google Sheet par défaut dans config et détails erreurs activés. |
-
-## 13. Anomalies détectées
-
-| ID | Criticité | Fichier | Fonction/zone | Description | Impact | Cause probable | Correction proposée |
-|---|---|---|---|---|---|---|---|
-| A-001 | Critique | `Suivi_V1.py` | `load_remote_csv` | Déduplication automatique des dates avec conservation de la dernière ligne. | Mesures multiples le même jour supprimées au chargement distant. | Confusion entre préparation analytique et conservation source. | Corrigé : ne plus appeler `resolve_duplicates` dans le chargement source. |
-| A-002 | Majeur | `app/core/weight_summary.py` | `prepare_weight_series` | Déduplication des dates pour calculs. | Les métriques peuvent ignorer une mesure intra-journalière. | Règle analytique implicite. | Documenter et éventuellement agréger selon stratégie utilisateur. |
-| A-003 | Majeur | `app/pages/Predictions.py` | Auto-ARIMA/STL/SARIMAX | Modèles avancés exécutés sans seuils de couverture temporelle assez stricts. | Lenteur et sorties fragiles. | Blocs expérimentaux exposés directement. | Ajouter seuils nb points/span/couverture et cache. |
-| A-004 | Majeur | `app/core/forecasting.py` | `forecast_with_ml` | Modèles quantiles entraînés sur tout l'historique, intervalles non calibrés sur backtest. | Intervalles trop optimistes. | Intervalle conditionnel présenté comme incertitude générale. | Calibrer avec erreurs walk-forward. |
-| A-005 | Moyen | `app/pages/Insights.py` | KMeans | Clustering uniquement sur poids. | Information peu interprétable. | Modèle non supervisé sans features métier. | Marquer expérimental ou déplacer dans modèles avancés. |
-| A-006 | Moyen | `app/core/insights.py` | `detect_anomalies_robust` | IsolationForest contamination fixe 10 %. | Peut signaler des fluctuations normales. | Hypothèse fixe d'anomalies. | Contamination adaptative et libellé « à vérifier ». |
-| A-007 | Moyen | `app/utils.py` | Module entier | Ancienne pile redondante. | Divergence possible entre comportements testés et UI actuelle. | Migration progressive. | Déprécier ou réaligner avec `app/core`. |
-| A-008 | Moyen | `Suivi_V1.py` | `init_data_once` | `except Exception` sans détail visible. | Diagnostic utilisateur limité. | Gestion réseau défensive. | Journaliser détail et afficher message actionnable. |
-| A-009 | Mineur | `Dashboard.py` | `_render_smart_alerts` | Fonction définie mais non appelée. | Fonctionnalité invisible. | Régression ou fonctionnalité abandonnée. | Décider de restaurer ou supprimer après validation. |
-| A-010 | Mineur | `.streamlit/config.toml` | `showErrorDetails=true` | Détails d'erreurs activés. | Peut exposer détails techniques en production. | Configuration dev. | Désactiver en production. |
-
-## 14. Régressions fonctionnelles / fonctionnalités invisibles
-
-- Fonctionnalité invisible : alertes intelligentes Dashboard définies mais non appelées.
-- Fonctionnalité partiellement fonctionnelle : stratégie de doublons dans Paramètres n'est pas appliquée de manière visible au pipeline source ; elle existe plutôt comme choix potentiel.
-- Fonctionnalité présente mais séparée : qualité des données intégrée dans Insights, pas accessible comme page dédiée.
-- Fonctionnalité potentiellement abandonnée : ancienne couche `app/utils.py`, encore testée mais non centrale dans l'UI multipage.
-- Fonctionnalité expérimentale exposée : Auto-ARIMA, STL/ACF/PACF, KMeans sans assez de pédagogie sur leurs limites.
-
-## 15. Améliorations recommandées
-
-### Corrections urgentes
-
-- Corriger toute perte de lignes source lors du chargement distant. Fait.
-- Ajouter test de non-régression pour conservation des mesures multiples même jour. Fait.
-- Empêcher tout remplacement de source par données filtrées sans action explicite.
-
-### Améliorations à forte valeur
-
-- Ajouter une page ou tab « Qualité des données » avec diagnostics actionnables.
-- Harmoniser les règles de mesures multiples : conserver source, choisir vue analytique explicite.
-- Ajouter indicateur de fiabilité commun à chaque prévision.
-- Calibrer les intervalles de prévision sur backtesting walk-forward.
-- Clarifier dans l'UI : trajectoire cible vs prévision observée vs modèle expérimental.
-
-### Améliorations secondaires
-
-- Déprécier `app/utils.py` ou le transformer en wrappers vers `app/core`.
-- Ajouter tests Plotly sur présence lignes objectifs et traces essentielles.
-- Mieux organiser Insights en sections repliables.
-
-### Améliorations expérimentales
-
-- Modèle statistique simple sélectionné automatiquement après comparaison aux baselines.
-- Détection de ruptures plus robuste si volume suffisant.
-- Quantification empirique de l'incertitude avec erreurs historiques.
-
-## 16. Roadmap priorisée
-
-### Lot 0 — Sécurisation
-
-- Fichiers : `Suivi_V1.py`, `app/core/data.py`, `app/core/session_state.py`, tests core.
-- Modifications : garantir conservation lignes/colonnes, messages invalides, aucune mutation destructive implicite.
-- Risques : changer des hypothèses analytiques existantes.
-- Dépendances : tests fixtures multi-mesures.
-- Critères : import distant/local conserve toutes les lignes valides ; aucune page ne perd les données en navigation.
-
-### Lot 1 — Fiabilité analytique
-
-- Fichiers : `weight_summary.py`, `analytics.py`, `insights.py`, `target_trajectory.py`.
-- Modifications : libellés jours/mesures, seuils petits volumes, objectifs prise/perte.
-- Risques : résultats changent légèrement.
-- Dépendances : Lot 0.
-- Critères : calculs 7j/30j/ETA/plateau documentés et testés sur cas limites.
-
-### Lot 2 — Restauration fonctionnelle
-
-- Fichiers : `Dashboard.py`, `Insights.py`, `Settings.py`.
-- Modifications : décider sur alertes intelligentes, stratégie doublons visible, qualité données plus accessible.
-- Risques : densité UI.
-- Dépendances : Lot 1.
-- Critères : fonctionnalités présentes dans le code visibles ou explicitement supprimées après décision.
-
-### Lot 3 — UI/UX
-
-- Fichiers : pages Streamlit, `app/ui/*`.
-- Modifications : hiérarchie Dashboard / Journal / Analyses / Prévisions / Qualité / Paramètres sans refonte globale.
-- Risques : perturbation habitudes utilisateur.
-- Dépendances : Lots 0-2.
-- Critères : moins de confusion, états vides et erreurs clairs, mobile lisible.
-
-### Lot 4 — ML et forecasting
-
-- Fichiers : `forecasting.py`, `evaluation.py`, `Predictions.py`, `models.py`.
-- Modifications : baselines obligatoires, walk-forward réel, intervalles empiriques, refus si insuffisant, modèles complexes optionnels.
-- Risques : suppression apparente de résultats si seuils stricts.
-- Dépendances : Lots 0-1.
-- Critères : aucun modèle ne présente une métrique in-sample comme prédictive.
-
-### Lot 5 — Industrialisation
-
-- Fichiers : tests, CI, README, docs.
-- Modifications : tests graphiques, persistance session, datasets synthétiques, documentation limites.
-- Risques : temps de maintenance.
-- Dépendances : tous lots précédents.
-- Critères : suite stable, rapide, sans réseau obligatoire.
-
-## 17. Quick wins
-
-- Ajouter un compteur de lignes avant/après import.
-- Afficher clairement les lignes invalides supprimées au chargement.
-- Ajouter `fast_mode` ou toggle utilisateur pour ne pas lancer Auto-ARIMA/STL par défaut.
-- Ajouter des captions « expérimental » sur KMeans, IsolationForest et Auto-ARIMA.
-- Ajouter tests sur traces Plotly : historique, objectif, intervalle.
-- Désactiver `showErrorDetails` en production.
-
-## 18. Fonctionnalités à ne pas modifier inutilement
-
-- Centralisation `session_state` actuelle : bonne base.
-- Conservation des colonnes supplémentaires par `clean_weight_dataframe`.
-- Variations calendaires 7j/30j prudentes.
-- Moteur plateau centralisé.
-- Trajectoire cible avec paramètres métier centralisés.
-- Backtesting des baselines chronologique.
-- Import/export CSV du Journal.
-- Authentification optionnelle par secrets.
-
-## 19. Corrections appliquées dans cette intervention
-
-- Correction A-001 : suppression de la déduplication destructive dans `load_remote_csv`.
-- Ajout d'un test de non-régression : `test_clean_weight_dataframe_preserves_multiple_measurements_same_day`.
-
-Les anomalies majeures, moyennes et mineures listées ci-dessus sont documentées mais non corrigées automatiquement, conformément à la consigne de limiter les changements aux anomalies critiques/bloquantes.
-
-## Lot 0 — État après sécurisation du cycle de vie des données
-
-### Cycle confirmé
-
-```text
-CSV distant ou local
-→ clean_weight_dataframe_with_report()
-→ source_data (copie fidèle validée, non éditée)
-→ working_data (copie éditable Journal)
-→ filtered_data (vue temporaire copiée)
-→ analysis_data / copies analytiques dédiées
-→ pages analytiques
-→ export depuis working_data
-```
-
-### Anomalies corrigées
-
-- Les accès à `filtered_data` retournaient une référence mutable pouvant modifier indirectement l'état de session : ils retournent maintenant une copie profonde.
-- Les remplacements de source réinitialisent explicitement `source_data`, `working_data`, `filtered_data`, `raw_data` et vident `analysis_data`; `ensure_session_defaults()` n'écrase plus les éditions existantes.
-- Les lignes invalides ne sont plus supprimées silencieusement : le rapport liste le nombre de lignes rejetées, leurs indices et les raisons.
-- Les poids nuls ou négatifs sont rejetés pendant le nettoyage, au même titre que dates invalides et poids non numériques.
-- Les stratégies de mesures multiples le même jour sont confinées à `prepare_analysis_data()` / `resolve_duplicates()` et ne mutent jamais la source, le travail ou le filtre.
-- La stratégie “garder la dernière” utilise `Timestamp`, `Heure`, `Moment` ou équivalent si présent; sinon l'ordre stable d'origine départage les mesures.
-- L'export Journal utilise les données de travail persistées plutôt qu'une édition non validée.
-
-### Tests ajoutés
-
-- Test direct de `load_remote_csv()` avec `pandas.read_csv` mocké.
-- Tests import local, colonnes additionnelles, mesures multiples, lignes invalides et raisons de rejet.
-- Tests session simulant rerun/navigation et isolation `source_data` / `working_data` / `filtered_data`.
-- Test analytique vérifiant que les agrégations de doublons opèrent sur une copie.
-- Tests AppTest renforcés sur présence du Journal, colonnes additionnelles, informations qualité et persistance.
-
-### Limites restantes
-
-- L'environnement local actuel ne contient pas `numpy`, `pandas` ni `streamlit`; l'installation depuis le registre Python échoue avec `403 Forbidden`. La validation complète doit donc s'exécuter dans GitHub Actions ou dans un environnement avec accès aux dépendances.
+- **Édition sans suppression silencieuse.** Effacer la date d’une ligne produisait un simple avertissement, puis le nettoyage supprimait la mesure à l’enregistrement. Les lignes invalides bloquent désormais l’enregistrement. L’état modifié compare l’éditeur brut aux données enregistrées, y compris les nouvelles lignes incomplètes. L’ajout rapide demande de terminer les modifications de l’éditeur avant d’ajouter une pesée.
+- **Import contrôlé.** Prise en charge des CSV à virgule, point-virgule ou tabulation, BOM UTF-8 et encodage Windows courant. Les en-têtes ambigus sont refusés avant leur renommage automatique par pandas. Un fichier vide, sans colonnes requises ou sans mesure valide ne remplace pas la session. Le téléchargement distant utilise le même parseur, vérifie la réponse HTTP et limite les délais de connexion/lecture à 5/20 secondes.
+- **Valeurs et dates.** Les poids infinis sont rejetés. Une valeur finie hors des bornes du formulaire reste corrigeable dans le journal, sans faire planter l’ajout rapide. Le numéro de jour Excel `46000` donne le même jour sous forme numérique ou textuelle, au lieu de devenir une date de 1970.
+- **Protection du travail local.** Importer, recharger ou réinitialiser exige une confirmation dans l’application lorsque des modifications locales existent. Chaque remplacement renouvelle cette confirmation et réinitialise l’éditeur pour empêcher la réapplication d’anciennes modifications. Le chargement initial ne remplace plus automatiquement des données de travail déjà présentes. Cette protection ne constitue pas une sauvegarde durable.
+- **Paramètres atomiques.** Objectifs positifs et finis, ordre des paliers et dates du zoom sont validés avant toute écriture. Une erreur de dates ne sauvegarde plus simultanément une nouvelle taille et une cible invalide.
+
+### Dashboard et Insights
+
+Références : [`Dashboard.py`](app/pages/Dashboard.py), [`Insights.py`](app/pages/Insights.py), [`analytics.py`](app/core/analytics.py), [`plateau.py`](app/core/plateau.py), [`trend.py`](app/core/trend.py).
+
+- **Périmètre commun.** « Effort actuel » s’applique aussi aux anomalies et aux fluctuations. Les dates et l’effectif du périmètre sont affichés.
+- **Interruptions réelles.** Deux phases de perte séparées de plusieurs mois ne fusionnent plus en une phase continue. Le cas reproduit de deux blocs de 14 jours devenait auparavant une phase de 104 jours.
+- **Plateau avec recul suffisant.** Quatre pesées constantes sur quatre jours ne suffisent plus à déclarer un plateau de 14 ou 30 jours. Les fenêtres demandent respectivement au moins 12 ou 28 jours de recul, en plus du nombre minimal de mesures ; une indisponibilité expose sa raison.
+- **Couverture bornée.** La régularité des 30 derniers jours compte 30 dates civiles distinctes, sans gonflement par doublons horaires. Le résultat ne peut plus afficher 31/30 ou 103,3 %.
+- **Date d’objectif bornée.** Le sous-onglet Prévisions utilise le calcul d’arrivée partagé, limité à trois ans. Une pente très faible ne provoque plus de débordement de date et n’affiche pas une échéance démesurée.
+- **Dispersion cohérente.** L’histogramme des fluctuations et sa bande portent tous deux sur les écarts à la tendance. Les différences entre deux pesées n’étaient pas comparables à une bande calculée sur les résidus.
+- **Lecture plus précise.** Dernière pesée datée, fenêtres glissantes nommées comme telles, qualité présentée en tableau lisible. Une pente non significative devient une « direction non établie ». Les bandes et intervalles sont indiqués comme approximatifs ; l’association à un jour de semaine ne permet pas de conclure à une cause hydrique ou à une variation de graisse.
+
+Le zoom conserve la simplification de la PR #99 : poids mesuré, trajectoire cible et objectifs.
+
+### Prévisions, statistiques et ML
+
+Références : [`Predictions.py`](app/pages/Predictions.py), [`evaluation.py`](app/core/evaluation.py), [`features.py`](app/core/features.py), [`forecasting.py`](app/core/forecasting.py), [`models.py`](app/core/models.py), [fiche des modèles](docs/MODEL_CARD.md).
+
+- **Mesure ≠ jour.** Les modèles récursifs quotidiens refusent les jours manquants et les mesures multiples par jour au lieu de convertir implicitement une ligne en journée. La tendance qui utilise les dates réelles reste disponible. Le drift du benchmark utilise lui aussi le temps réel. Dans le cas reproduit de 40 pesées hebdomadaires à −0,2 kg par pesée, SARIMAX présentait auparavant sept semaines d’évolution comme J+7.
+- **Prévention des fuites.** Les variables ML proviennent d’une liste explicite de dérivées du poids passé et du calendrier. Ajouter un IMC du jour ou une copie numérique de la cible à l’import ne peut plus produire artificiellement un score parfait. Des notes facultatives vides ne suppriment plus l’ensemble des lignes d’apprentissage.
+- **Quantiles stabilisés.** Standardisation, régularisation, seuil effectif annoncé, ordre des quantiles et contrôle de finitude/stabilité avant application de la borne d’affichage. Le cas stationnaire `100 ± 0,5 kg`, 40 jours, graine 42, produisait auparavant une médiane brute divergente et un objectif de 80 kg affiché atteint en environ une semaine.
+- **Évaluation honnête.** Les modèles incompatibles restent visibles comme « non évalués » avec une raison. La précision directionnelle ne compte plus les sauts entre blocs de réajustement comme des prédictions réussies. Les bandes expérimentales ne sont pas présentées comme calibrées.
+- **Coût des modèles.** Les calculs expérimentaux coûteux sont déclenchés explicitement ; la synthèse et les références restent disponibles. Les corps des onglets Streamlit masqués ne doivent pas lancer implicitement tous les modèles.
+
+La stabilité numérique, le tri des quantiles et un backtest chronologique ne prouvent ni un gain prédictif durable ni la calibration à 30 jours. Cette distinction est conservée dans la fiche des modèles.
+
+### WHOOP
+
+Références : [`Whoop.py`](app/pages/Whoop.py), [`whoop.py`](app/core/whoop.py), [`whoop_analytics.py`](app/core/whoop_analytics.py), [`whoop_session.py`](app/core/whoop_session.py).
+
+- **Qualité propagée au croisement.** Les drapeaux de cycle ouvert et de calibration ne disparaissent plus lors de la jointure avec le poids. Un cycle encore partiel ne redevient pas une journée complète dans le bilan énergétique. Le cas de 13 cycles clos à 2 500 kcal et un cycle ouvert à 100 kcal faisait auparavant passer le seuil de disponibilité et abaissait artificiellement la moyenne.
+- **Signaux comparables.** La veille physiologique rapproche des mesures de la même nuit, affiche leur date et le nombre réellement évalué. Une FC anormale ancienne ne s’additionne plus à une HRV anormale récente pour former une alerte « concordante ».
+- **Couverture explicite.** « Journée complète » demande les sources nécessaires ; une récupération seule ne vaut plus une journée complète à 100 %. Les états de disponibilité suivent les critères des moteurs, notamment les deux fenêtres de charge.
+- **Synchronisation complète ou erreur.** Une pagination malformée, répétée ou tronquée échoue explicitement au lieu de remplacer l’historique par un import présenté comme complet.
+- **OAuth vérifié.** Le retour exige un état attendu non vide, concordant et consommé une seule fois. Lors d’un retour dans un nouvel onglet, un parcours permet de recopier l’URL de retour dans le champ masqué de l’onglet d’origine, qui détient encore l’état attendu. Si cet onglet a expiré, la connexion doit être relancée ; l’absence d’état n’est plus acceptée comme une autorisation. Les diagnostics de configuration évitent les chemins internes et utilisent une explication française.
+- **Interprétation.** Les associations exploratoires et les marges énergétiques sont accompagnées de leurs limites ; les incertitudes du bracelet ne sont pas confondues avec la seule erreur de pente.
+
+### Boxe
+
+Références : [`Boxe.py`](app/pages/Boxe.py), [`boxing_analytics.py`](app/core/boxing_analytics.py), [`boxing_visuals.py`](app/ui/boxing_visuals.py).
+
+- **Fenêtre de comparaison du poids.** Les journées exposées à la boxe sont comparées dans la période sélectionnée, avec leur résultat à J+1. L’historique extérieur ne peut plus être reclassé implicitement en journées sans boxe. La sonde initiale de 60 pesées, filtrées sur 30 jours de séances, comptait 49 journées « autres » au lieu de 19.
+- **Charge et données manquantes.** L’unité est choisie de façon cohérente pour les fenêtres aiguë et chronique. Une séance sans TRIMP ne devient plus une charge nulle ; le repli en durée est annoncé, ou le résultat reste indisponible si la couverture ne suffit pas.
+- **Une nuit, une observation.** Plusieurs séances le même jour ne multiplient plus artificiellement les nuits du test sur l’horaire d’entraînement.
+- **Inférence indisponible visible.** Le statut du test circule jusqu’à l’interface. Des groupes constants ou trop petits ne produisent plus un message rassurant affirmant que les séances tardives n’affectent pas le sommeil. Absence d’effet détecté et absence d’effet démontrée restent distinctes.
+- **Langage et énergie.** Les comparaisons sont décrites comme des associations. Une dépense brute ne remplace plus silencieusement une estimation nette pour annoncer une part du déficit couverte. Les équivalences énergétiques restent des scénarios, pas des prévisions de perte de poids.
+
+### UI commune, accessibilité et accès
+
+Références : [`theme.py`](app/ui/theme.py), [`charts.py`](app/ui/charts.py), [`components.py`](app/ui/components.py), [`whoop_visuals.py`](app/ui/whoop_visuals.py), [`auth.py`](app/auth.py).
+
+- En-têtes plus compacts pour remonter les indicateurs utiles.
+- Clic sur une légende pour masquer/afficher une série ; double-clic pour l’isoler. Un clic ne fait plus disparaître les autres séries.
+- Légendes du poids agrandies et contraste renforcé des libellés d’axes communs.
+- Focus clavier visible, prise en compte de la préférence de réduction des animations, rôle et valeurs accessibles pour les barres de progression personnalisées.
+- Mot de passe avec caractères accentués accepté par la comparaison sécurisée ; configuration absente traitée explicitement en conservant l’accès fermé. L’exemple de configuration place `data_url` à la racine TOML pour qu’il soit réellement utilisé.
+
+Ces corrections ne constituent pas une certification d’accessibilité : lecteurs d’écran, zoom navigateur et interactions complexes des graphiques demandent des essais complémentaires.
+
+## 3. Revue de chaque onglet et de ses sous-onglets
+
+| Surface examinée | État utile / amélioration livrée | Prochaine amélioration proposée |
+|---|---|---|
+| Dashboard — vue rapide, courbe et zoom | Mesure datée, objectifs distincts, légende compréhensible, intervalles indicatifs | Limiter la synthèse initiale à 3–4 indicateurs et une action « Ajouter une pesée » ; conserver les détails accessibles |
+| Dashboard — Analyse détaillée | Couverture et recul explicités, statistiques préservées | Réduire les constats répétés et relier chaque conclusion à sa preuve |
+| Dashboard — Prévisions | ETA partagée et bornée | Un seul contrat de projection commun aux pages, avec même période et même cible |
+| Dashboard — Historique | Résidus et bande cohérents | Points/moyennes hebdomadaires avec effectif, durée réellement couverte et semaines manquantes |
+| Dashboard — Objectifs & paliers | Trajectoire fixe et paliers conservés | Clarifier « atteint par pesée » / « atteint par tendance » ; éviter une date trop précise pour chaque palier |
+| Journal | Ajout rapide, validation bloquante, modifications protégées, export conservé | Édition adaptée au téléphone, export des lignes rejetées avec motifs et restauration d’une version |
+| Prévisions — synthèse et leaderboard | Baselines, dates réelles, modèle incompatible explicitement indisponible | Benchmark par J+1/J+7/J+14/J+30 du pipeline réellement publié, largeur et couverture des bandes |
+| Prévisions — Régression ML | Variables autorisées et horizon décrit correctement | Validation chronologique répétée, baseline de prochaine mesure, coût du calcul mesuré |
+| Prévisions — SARIMA / Auto-ARIMA | Cadence et disponibilité contrôlées | Modèle d’état acceptant les jours manquants, diagnostics de convergence et budget de recherche |
+| Prévisions — STL / ACF-PACF | Exploration séparée des projections | Afficher fraction observée/imputée, refuser les longs trous et expliquer la différence entre saisonnalité descriptive et effet établi |
+| Prévisions — Scénarios | Trajectoires conditionnelles conservées | Exposer clairement les hypothèses et dates ; aucune probabilité sans modèle calibré |
+| Insights — qualité, régularité, phases | Tableau lisible, 30 jours bornés, interruptions préservées, plateau avec recul | Comparaisons mois-à-date appariées ; détecteur de changements normalisé par les jours et réinitialisé aux interruptions |
+| Insights — jour de semaine, séries | Association descriptive et correction multiple conservées | Effets avec intervalle temporel validé ; noms neutres « baisses/hausses observées » |
+| Insights — Anomalies / Fluctuations | Même périmètre, résidus correctement comparés | Confirmer une anomalie et annoter ses conditions sans supprimer automatiquement la mesure |
+| WHOOP — Vue d’ensemble | Couverture et disponibilité plus fidèles | Trois signaux prioritaires, fenêtre de référence toujours visible et preuve accessible |
+| WHOOP — Jour par jour | Calendrier et statut provisoire conservés | Provenance et couverture par métrique ; identifiant source pour les mises à jour incrémentales |
+| WHOOP — Poids × WHOOP | Qualité conservée à la jointure | Corrélations avec inférence temporelle validée ; bilan sur tous les cycles complets de la fenêtre |
+| WHOOP — Récupération | Signaux d’une même nuit, date et nombre évalué | Références personnelles calculées sur le passé, pas sur toute la période lors d’un futur usage prédictif |
+| WHOOP — Sommeil | Sous-composantes, dette et heures conservées | Comparaisons avec covariables et sensibilité aux nuits manquantes |
+| WHOOP — Effort | Charge actuelle avec critères de disponibilité réels | Historique de synchronisation, couverture des fenêtres et attribution des séances multi-jours |
+| Boxe — Vue d’ensemble | Interprétations prudentes et données insuffisantes visibles | Repère du jour distinct du filtre historique, nombre réduit de cartes |
+| Boxe — Séances | Journal, durée, intensité et export | Détail d’une séance, types de travail et RPE facultatifs ; séances multiples d’un jour distinctes sur les graphiques |
+| Boxe — Récupération | Statut des comparaisons conservé | Effets et intervalles, variables d’ajustement et observation par jour |
+| Boxe — Sommeil | Une nuit par observation, aucune équivalence déduite d’un test indisponible | Relation continue entre horaire, intensité et sommeil ; seuil de 4 h présenté comme repère |
+| Boxe — Charge & progression | Charge manquante distincte de zéro | Qualité capteur et unités visibles, séances comparables ; maxima de charge distincts de performance technique |
+| Boxe — Poids & énergie | Période commune, brut/net explicites | Distributions des variations avec effectifs ; scénario énergétique avec compensation non observée explicitée |
+| Paramètres | Validation globale avant sauvegarde | Diagnostics techniques repliés, choix de stockage, confirmation de taille et articulation cible fixe/paliers personnels |
+
+## 4. Feuille de route priorisée
+
+Les estimations suivantes représentent des lots de travail, pas des dates de livraison garanties. S = changement local ; M = plusieurs modules et validation ; L = évolution d’architecture ou expérimentation.
+
+| Priorité / effort | Proposition | Critère d’acceptation |
+|---|---|---|
+| P1 / L | Sauvegarde durable, versionnée, avec restauration et identité utilisateur | Fermer puis reprendre une session sans perdre les pesées ; restaurer une version sans écraser des changements concurrents ; politique de suppression explicite |
+| P1 / M | Dates civiles de pesées distinctes des instants UTC WHOOP | Une pesée à minuit en Europe/Paris conserve le jour choisi à l’import/export et au croisement ; tests minuit et changements d’heure |
+| P1 / L | Calibration temporelle des intervalles et des tests | Mesurer couverture, largeur, faux positifs et puissance sur séries indépendantes, autocorrélées, trouées et à changement de régime ; publier les limites par effectif |
+| P2 / M | Évaluation du pipeline complet par horizon | Même origine, mêmes dates et mêmes transformations qu’en production ; score, biais, couverture et nombre d’origines face à la baseline pour chaque horizon |
+| P2 / M | Disponibilité et couverture par métrique | Une valeur partielle/manquante ne devient jamais zéro ; afficher nombre utilisé/éligible et raison des exclusions |
+| P2 / M | Contrat de période partagé par toutes les pages | Début, fin, granularité, jours réellement observés et résultat J+1 explicités ; modifier des données hors fenêtre n’altère pas la comparaison |
+| P2 / M | Tableau de données conservant les types au tri | Tri numérique 1, 2, 10 et chronologique correct, tout en conservant unités et format français ; export complet inchangé |
+| P2 / M | Synchronisation WHOOP incrémentale et dédupliquée | IDs/updated_at conservés ; rejeu idempotent ; reprise bornée sur 429/5xx ; extraction correcte aux frontières de fuseaux |
+| P2 / M | Performance mesurée et calculs à la demande | Temps froid/chaud mesuré pour 100/365/1 000 jours ; changement d’un contrôle simple sans réajuster tous les modèles |
+| P2 / M | Tests d’accessibilité et parcours mobile | Clavier, zoom 200 %, lecteur d’écran et 320/390/768 px ; tout résultat essentiel accessible sans couleur seule ni infobulle obligatoire |
+| P3 / M | Réduire les doublons de maintenance | Une seule définition des objectifs et du nettoyage ; déprécier progressivement `app/utils.py` derrière des adaptateurs testés |
+| P3 / S–M | Configuration de déploiement indépendante d’une source personnelle | Source définie par configuration ; jeu de démonstration synthétique explicite ; aucun secret ou export individuel dans les fixtures/documentations |
+
+### Direction ML / IA / apprentissage actif
+
+1. **Comparer avant de complexifier.** Garder dernière valeur et tendance locale comme références. Tester ensuite un modèle d’état local linéaire acceptant les jours manquants, puis un petit modèle régularisé. Les réseaux profonds ne sont pas justifiés par le volume actuel d’une seule personne.
+2. **Introduire WHOOP sans fuite.** Les variables doivent exister à l’origine de prévision ; références et normalisation apprises uniquement sur le passé. Évaluer plusieurs blocs chronologiques et s’abstenir si le gain sur la baseline n’est pas stable.
+3. **Produire une synthèse fondée sur des preuves.** Un assistant peut reformuler les résultats calculés : période, effectif, valeur, intervalle et lien au graphique. Il ne doit pas calculer librement les statistiques, inventer une cause ou transformer une extrapolation en promesse. Un objet de faits vérifiable précède toute génération de texte.
+4. **Collecter l’information utile.** Si « AL » désigne l’apprentissage actif, commencer par des demandes ciblées et facultatives : confirmer une pesée atypique, préciser les conditions de mesure ou le type/RPE d’une séance. Mesurer la pertinence des demandes et leur coût pour l’utilisateur ; ne pas supprimer automatiquement les observations rejetées par un algorithme.
+5. **Séparer validité et utilité.** La MAE, la couverture et la calibration évaluent le modèle ; la compréhension, le taux de correction d’erreurs et l’utilité déclarée évaluent le produit. Un chatbot supplémentaire n’améliore pas ces mesures par lui-même.
+
+## 5. Vérification et limites de l’audit
+
+- **Référence avant modifications :** 594 tests passés sous Python 3.12. Les nouveaux cas reproduits montrent pourquoi une suite verte ne suffit pas à valider toutes les hypothèses statistiques.
+- **Validation finale :** `pytest -q` sous Python 3.11.16, version majeure/mineure ciblée par `runtime.txt` : **698 tests réussis**, 9 avertissements, en 139 secondes. Les régressions ajoutées couvrent les pertes de données, les périodes, les prévisions, WHOOP, Boxe et l’authentification.
+- **UI :** les sept pages sont chargées avec des données synthétiques dans Chromium aux largeurs 1 440 et 390 px, sans exception ni débordement horizontal de la page. Les 23 sous-onglets sont ouverts dans les deux formats ; l’isolation d’une bande par la légende est également vérifiée. Cette vérification ne remplace pas une étude utilisateur ni une certification WCAG.
+- **Statistiques :** sondes synthétiques, pas d’évaluation de santé ni d’estimation de performance sur les données individuelles réelles. Les comparaisons répétées d’une même personne restent exposées à l’autocorrélation et aux facteurs de confusion.
+- **Intégrations :** callbacks et réponses WHOOP simulés dans les tests ; pas de connexion OAuth réelle ni de synchronisation avec un compte personnel. Le retour OAuth après expiration complète de la session reste une limite UX documentée.
+- **Livraison :** cette PR corrige les défauts décrits comme appliqués. Les propositions de la feuille de route restent à réaliser ; aucun nouveau stockage externe, modèle distant ou envoi de données de santé n’est introduit.

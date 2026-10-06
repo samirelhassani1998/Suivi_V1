@@ -434,16 +434,22 @@ def fetch_collection(
             raise WhoopError("Quota WHOOP atteint (429) : réessayez dans quelques minutes.")
         if not response.ok:
             raise WhoopError(f"Appel WHOOP {resource} en échec (HTTP {response.status_code}).")
-        payload = response.payload if isinstance(response.payload, Mapping) else {}
-        page = payload.get("records") or []
-        records.extend(item for item in page if isinstance(item, Mapping))
+        payload = response.payload
+        if not isinstance(payload, Mapping) or not isinstance(payload.get("records"), list):
+            raise WhoopError(f"Réponse WHOOP {resource} illisible : les données précédentes sont conservées.")
+        page = payload["records"]
+        if not all(isinstance(item, Mapping) for item in page):
+            raise WhoopError(f"Réponse WHOOP {resource} incomplète : les données précédentes sont conservées.")
+        records.extend(page)
         next_token = payload.get("next_token") or payload.get("nextToken")
-        if not next_token or next_token in seen_tokens:
-            break
-        seen_tokens.add(str(next_token))
+        if not next_token:
+            return [dict(item) for item in records]
+        if not isinstance(next_token, str) or next_token in seen_tokens:
+            raise WhoopError(f"Pagination WHOOP {resource} interrompue : réessayez la synchronisation.")
+        seen_tokens.add(next_token)
         params["nextToken"] = next_token
 
-    return [dict(item) for item in records]
+    raise WhoopError(f"Historique WHOOP {resource} incomplet : réduisez la période de synchronisation.")
 
 
 def fetch_profile(token: WhoopToken, *, transport: Transport | None = None) -> dict[str, Any]:
@@ -920,7 +926,7 @@ def merge_with_weight(weight_df: pd.DataFrame, whoop_daily: pd.DataFrame) -> pd.
         "Variation poids (kg)",
         "Jours depuis la pesée précédente",
         "Variation poids (kg/jour)",
-    ] + list(WHOOP_DAILY_METRICS)
+    ] + list(WHOOP_DAILY_METRICS) + ["Cycle en cours", "Calibration"]
     if weight_df is None or weight_df.empty or whoop_daily is None or whoop_daily.empty:
         return _empty_frame(columns)
 
@@ -940,6 +946,8 @@ def merge_with_weight(weight_df: pd.DataFrame, whoop_daily: pd.DataFrame) -> pd.
     whoop = whoop.dropna(subset=["Date"])
 
     merged = weights.merge(whoop, on="Date", how="inner").sort_values("Date", kind="mergesort").reset_index(drop=True)
+    # Les analyses masquent les cycles ouverts à partir de ce drapeau : le
+    # perdre ici ferait passer les calories d'une matinée pour un jour complet.
     ordered = [column for column in columns if column in merged.columns]
     return merged[ordered]
 

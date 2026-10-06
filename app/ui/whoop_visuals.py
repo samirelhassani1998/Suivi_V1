@@ -38,7 +38,7 @@ ZONE_COLORS: Mapping[str, str] = {
 SURFACE = "#fcfcfb"
 GRID = "#e1e0d9"
 AXIS = "#c3c2b7"
-INK_MUTED = "#898781"
+INK_MUTED = "#696761"
 INK_SECONDARY = "#52514e"
 
 # Bandes de référence publiées par WHOOP, dessinées en fond des courbes pour

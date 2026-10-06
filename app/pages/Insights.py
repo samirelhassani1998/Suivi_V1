@@ -79,9 +79,19 @@ def _quality_section(analysis_df: pd.DataFrame) -> None:
     with q_cols[2]:
         kpi_card("Régularité", f"{format_fr_number(quality['weekly_measurements'], decimals=1)}/sem", help_text=f"Irrégularité des intervalles : {format_fr_number(quality['irregularity'], decimals=2)} (0 = parfaitement régulier).")
     with q_cols[3]:
-        kpi_card("Valeurs atypiques", f"{quality['anomalies']}", help_text=f"Doublons de date : {quality['duplicates']}.")
+        kpi_card("Écarts à la médiane", f"{quality['anomalies']}", help_text=f"Repérage global, distinct des anomalies calculées sur la tendance plus bas. Doublons de date : {quality['duplicates']}.")
     with st.expander("Détails qualité", expanded=False):
-        st.json(quality)
+        details = [
+            ("Dernière pesée", format_fr_date(quality["last_entry"])),
+            ("Couverture de la période", f"{format_fr_number(quality['coverage_pct'], decimals=1)} %"),
+            ("Jours sans mesure", str(quality["missing_days"])),
+            ("Mesures par semaine", format_fr_number(quality["weekly_measurements"], decimals=1)),
+            ("Doublons de date", str(quality["duplicates"])),
+            ("Écarts atypiques à la médiane globale", str(quality["anomalies"])),
+            ("Irrégularité des intervalles (0 = régulier)", format_fr_number(quality["irregularity"], decimals=2)),
+        ]
+        st.dataframe(pd.DataFrame(details, columns=["Indicateur", "Valeur"]), use_container_width=True, hide_index=True)
+        st.caption("Le score résume la couverture et la régularité des données. Vérifiez les dates et les poids inhabituels dans le Journal avant de modifier une mesure.")
 
     plateau14 = detect_plateau(analysis_df, 14)
     plateau30 = detect_plateau(analysis_df, 30)
@@ -93,25 +103,32 @@ def _quality_section(analysis_df: pd.DataFrame) -> None:
             kpi_card(
                 f"Plateau ({label})",
                 f"{icon} {status}",
-                help_text=f"Pente : {format_fr_kg_per_week(plateau['slope'], decimals=3, sign=True)} sur {plateau.get('nb_mesures', '?')} mesures. Fenêtre calendaire, pas un nombre fixe de mesures.",
+                help_text=(
+                    f"Indisponible : {plateau.get('reason')} ({plateau.get('nb_mesures', 0)} mesures)."
+                    if status == "indisponible"
+                    else f"Pente : {format_fr_kg_per_week(plateau['slope'], decimals=3, sign=True)} sur {plateau.get('nb_mesures', '?')} mesures. Fenêtre calendaire, pas un nombre fixe de mesures."
+                ),
             )
-    st.caption("Un plateau est déclaré quand la pente reste sous 0,15 kg/semaine et l'amplitude sous 0,5 kg sur la fenêtre.")
+    st.caption("Un plateau nécessite au moins quatre pesées réparties sur 12 jours (fenêtre 14 j) ou 28 jours (fenêtre 30 j), une pente absolue ≤ 0,15 kg/semaine et une amplitude ≤ 0,5 kg.")
 
 
 def _scores_section(analysis_df: pd.DataFrame) -> None:
-    section_header("Scores & discipline", "Régularité de la saisie et cohérence des pesées.", "🎯")
+    section_header("Régularité du suivi", "Fréquence de saisie et dispersion des pesées.", "🎯")
     disc = discipline_score(analysis_df, window_days=30)
     cons = consistency_score(analysis_df, n_weeks=4)
     vol = weight_volatility(analysis_df, window=14)
     sc_cols = st.columns(3)
     with sc_cols[0]:
-        kpi_card("Discipline (30 j)", f"{_score_badge(disc['score'])} {disc['score']}/100", help_text=f"{disc['interpretation'].title()} — {disc['measured_days']}/{disc['expected_days']} jours mesurés.")
+        kpi_card("Jours mesurés (30 j)", f"{disc['measured_days']}/{disc['expected_days']}", help_text="Nombre de jours avec au moins une pesée dans les 30 derniers jours de données. Ce repère de couverture n'évalue pas vos résultats.")
         st.progress(disc["score"] / 100)
     with sc_cols[1]:
-        kpi_card("Cohérence", f"{_score_badge(cons['score'])} {cons['score']}/100", help_text=f"{cons['interpretation'].title()} — écart-type intra-semaine moyen : {format_fr_kg(cons['avg_weekly_std'], decimals=2)}.")
-        st.progress(cons["score"] / 100)
+        if cons["interpretation"] in {"données insuffisantes", "pas assez de mesures par semaine"}:
+            kpi_card("Cohérence", "—", help_text=cons["interpretation"].capitalize())
+        else:
+            kpi_card("Cohérence", f"{_score_badge(cons['score'])} {cons['score']}/100", help_text=f"{cons['interpretation'].title()} — écart-type intra-semaine moyen : {format_fr_kg(cons['avg_weekly_std'], decimals=2)}.")
+            st.progress(cons["score"] / 100)
     with sc_cols[2]:
-        v_badge = "🟢" if vol["cv"] < 1 else "🟡" if vol["cv"] < 2 else "🔴"
+        v_badge = "⚪" if vol["interpretation"] == "données insuffisantes" else "🟢" if vol["cv"] < 1 else "🟡" if vol["cv"] < 2 else "🔴"
         kpi_card(
             "Volatilité (14 j)",
             f"{v_badge} {vol['interpretation'].title()}",
@@ -123,7 +140,7 @@ def _phases_section(analysis_df: pd.DataFrame) -> None:
     section_header("Phases du parcours", "Segments de perte, de plateau et de reprise, détectés sur la pente locale.", "📈")
     phases = segment_phases(analysis_df, min_days=7)
     if not phases:
-        st.info("Segmentation disponible à partir de 14 mesures sans interruption.")
+        st.info("Segmentation disponible à partir de 14 mesures au total, avec au moins 7 mesures dans une même période de suivi sans interruption de plus de 21 jours.")
         return
     rows = [
         {
@@ -201,23 +218,23 @@ def _weeks_section(analysis_df: pd.DataFrame) -> None:
 
 
 def _period_section(analysis_df: pd.DataFrame) -> None:
-    section_header("Comparaison périodique", "Moyennes calendaires : semaine et mois en cours face aux précédents.", "📅")
+    section_header("Comparaison périodique", "Sept derniers jours face aux sept précédents ; mois en cours face au mois précédent.", "📅")
     period = period_comparison(analysis_df)
     cmp_cols = st.columns(2)
-    for column, key, title, unit_label in ((cmp_cols[0], "week", "Semaine courante", "hebdo"), (cmp_cols[1], "month", "Mois courant", "mensuel")):
+    for column, key, title in ((cmp_cols[0], "week", "Moyenne des 7 derniers jours"), (cmp_cols[1], "month", "Moyenne du mois en cours")):
         with column:
             data = period.get(key)
             if data:
                 st.metric(
-                    f"Delta {unit_label}",
+                    title,
                     format_fr_kg(data["current_mean"], decimals=1),
                     _metric_delta(data["delta"]),
                     delta_color="inverse",
                     help=f"{title} : {format_fr_kg(data['current_mean'], decimals=2)} ({data['current_count']} mesures) contre {format_fr_kg(data['previous_mean'], decimals=2)} ({data['previous_count']} mesures) la période précédente.",
                 )
             else:
-                kpi_card(f"Delta {unit_label}", "—", help_text="Données insuffisantes sur l'une des deux périodes.")
-    st.caption("Base de calcul : moyennes calendaires ; une baisse s'affiche en vert.")
+                kpi_card(title, "—", help_text="Données insuffisantes sur l'une des deux périodes.")
+    st.caption("Périodes ancrées à la dernière pesée. Les fenêtres de 7 jours sont glissantes ; le mois en cours peut être incomplet. Une baisse s'affiche en vert.")
 
 
 def _weekday_section(analysis_df: pd.DataFrame) -> None:
@@ -249,8 +266,8 @@ def _weekday_section(analysis_df: pd.DataFrame) -> None:
         insight_card(
             f"Le {effect['day'].lower()} est votre jour le plus {direction}",
             f"Écart moyen de {format_fr_kg(effect['mean'], decimals=2, sign=True)} à la tendance, et l'écart résiste à un test qui tient compte des sept jours candidats "
-            f"(p ajustée = {format_fr_number(effect['p_adjusted'], decimals=3)}). Ce genre d'effet tient le plus souvent au sel, à l'alcool ou au repas du week-end : "
-            "c'est de l'eau, pas de la masse grasse.",
+            f"(p ajustée = {format_fr_number(effect['p_adjusted'], decimals=3)}). Cette association ne permet pas d'identifier une cause "
+            "ni de distinguer une variation d'eau d'une variation de masse grasse.",
             tone="info",
             icon="📆",
         )
@@ -267,7 +284,7 @@ def _weekday_section(analysis_df: pd.DataFrame) -> None:
     display["p ajustée"] = display["p ajustée"].apply(lambda x: format_fr_number(x, decimals=3) if pd.notna(x) else "—")
     with st.expander("Voir le tableau par jour", expanded=False):
         st.dataframe(display, use_container_width=True, hide_index=True)
-    st.caption("Écarts calculés par rapport au poids de tendance (LOWESS) pour retirer la pente générale ; test de Welch par jour, seuil divisé par sept (Bonferroni).")
+    st.caption("Écarts calculés par rapport au poids de tendance (LOWESS) pour retirer la pente générale ; test de Welch par jour, correction Bonferroni sur sept jours. Le test suppose des observations indépendantes : les résultats restent exploratoires en présence de dépendance temporelle.")
 
 
 def _streaks_section(analysis_df: pd.DataFrame) -> None:
@@ -330,27 +347,27 @@ def _anomalies_section(df: pd.DataFrame) -> None:
 
 
 def _fluctuations_section(df: pd.DataFrame) -> None:
-    st.markdown("**Fluctuations d'un jour à l'autre**")
+    st.markdown("**Écarts des pesées à la tendance**")
     frame = trend_weight(df)
     noise = noise_level(df)
-    if not noise["ready"] or len(frame) < 6:
+    if not noise["ready"]:
         st.info("Disponible après cinq pesées.")
         return
-    diffs = frame["Poids (Kgs)"].diff().dropna()
-    fig = histogram_figure(diffs, "Variation entre deux pesées consécutives", x_title="Variation (kg)", nbins=25, reference=0.0, reference_label="aucune variation")
+    residuals = frame["Résidu"].dropna()
+    fig = histogram_figure(residuals, "Écarts entre les pesées et la tendance", x_title="Écart à la tendance (kg)", nbins=25, reference=0.0, reference_label="tendance")
     fig.add_vrect(x0=-noise["band"], x1=noise["band"], fillcolor=TREND_BAND_FILL, line_width=0, layer="below", annotation_text="bruit habituel", annotation_position="top left")
     st.plotly_chart(fig, use_container_width=True)
-    share_inside = float((diffs.abs() <= noise["band"]).mean() * 100)
+    share_inside = float((residuals.abs() <= noise["band"]).mean() * 100)
     cols = st.columns(3)
     with cols[0]:
-        kpi_card("Bruit quotidien", f"± {format_fr_kg(noise['band'], decimals=1)}", help_text=f"σ robuste des écarts à la tendance : {format_fr_kg(noise['sigma'], decimals=2)}.")
+        kpi_card("Dispersion indicative", f"± {format_fr_kg(noise['band'], decimals=1)}", help_text=f"Bande de 1,96 × σ robuste des écarts à la tendance ; σ = {format_fr_kg(noise['sigma'], decimals=2)}. Sa couverture réelle n'est pas calibrée.")
     with cols[1]:
-        kpi_card("Variation médiane", format_fr_kg(float(diffs.abs().median()), decimals=2), help_text="Valeur absolue médiane d'une variation entre deux pesées consécutives.")
+        kpi_card("Écart absolu médian", format_fr_kg(float(residuals.abs().median()), decimals=2), help_text="Valeur absolue médiane de l'écart entre une pesée et la tendance à sa date.")
     with cols[2]:
-        kpi_card("Variations dans le bruit", f"{format_fr_number(share_inside, decimals=0)} %", help_text="Part des variations entre pesées consécutives plus petites que le bruit habituel.")
+        kpi_card("Pesées dans la bande", f"{format_fr_number(share_inside, decimals=0)} %", help_text=f"Part observée des {len(residuals)} pesées dont l'écart à la tendance est dans la bande indicative.")
     st.caption(
         "L'eau, le glycogène et le contenu digestif font varier le poids de plusieurs centaines de grammes sans que la masse grasse change. "
-        "Une variation dans la bande n'est pas un événement ; seule la tendance en dit quelque chose."
+        "La bande décrit les écarts observés autour du lissage ; elle ne suffit pas à identifier la cause d'une variation."
     )
 
 
@@ -391,6 +408,8 @@ def main() -> None:
     else:
         analysis_df = df
 
+    st.caption(f"Périmètre de toutes les analyses : {format_fr_date(analysis_df['Date'].min())} → {format_fr_date(analysis_df['Date'].max())} · {len(analysis_df)} mesures.")
+
     _quality_section(analysis_df)
     _scores_section(analysis_df)
     _phases_section(analysis_df)
@@ -403,9 +422,9 @@ def main() -> None:
     section_header("Pesées atypiques & fluctuations", "Ce qui mérite une vérification, et ce qui n'est que du bruit.", "🔍")
     t1, t2 = st.tabs(["Anomalies", "Fluctuations"])
     with t1:
-        _anomalies_section(df)
+        _anomalies_section(analysis_df)
     with t2:
-        _fluctuations_section(df)
+        _fluctuations_section(analysis_df)
 
 
 main()

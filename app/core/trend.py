@@ -161,9 +161,11 @@ def rate_of_change(df: pd.DataFrame, window_days: int = RATE_WINDOW_DAYS) -> dic
     """Pente du poids sur les derniers jours calendaires, avec intervalle de confiance.
 
     Moindres carrés ordinaires sur les jours écoulés ; l'intervalle et la
-    valeur p sont ceux de la loi de Student à n − 2 degrés de liberté. Une
-    pente dont l'intervalle contient zéro n'est pas distinguable d'une
-    stagnation : le résultat le dit plutôt que d'afficher un chiffre signé.
+    valeur p sont ceux de la loi de Student à n − 2 degrés de liberté, sous
+    hypothèse de résidus indépendants. La dépendance temporelle peut rendre
+    l'intervalle trop étroit : sa couverture n'est pas calibrée ici. Le code
+    historique ``stable`` signifie que la direction n'est pas établie par ce
+    test, pas qu'une équivalence à une pente nulle est démontrée.
     """
     data = prepare_weight_series(df)
     result: dict[str, Any] = {

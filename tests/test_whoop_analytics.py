@@ -136,6 +136,27 @@ def test_coverage_report_counts_real_gaps():
     assert coverage["coverage_pct"] == 80.0
 
 
+def test_recovery_only_days_are_not_reported_as_complete():
+    frame = _daily(14)[["Date", "Récupération (%)"]]
+
+    coverage = coverage_report(frame)
+
+    assert coverage["days_with_data"] == 14
+    assert coverage["complete_days"] == 0
+    assert coverage["complete_pct"] == 0.
+
+
+def test_analysis_availability_uses_the_actual_analysis_requirements():
+    frame = _daily(14)[["Date", "Récupération (%)"]]
+    items = {item.name: item for item in analysis_availability(frame)}
+
+    assert not items["Charge d'entraînement"].ready
+    assert not items["Moteurs de la récupération"].ready
+    load = {item.name: item for item in analysis_availability(_daily(14))}["Charge d'entraînement"]
+    assert not load.ready  # Seven recent days do not provide ten earlier days.
+    assert "21 jours précédents" in load.detail
+
+
 def test_analysis_availability_reports_what_is_still_missing():
     items = {item.name: item for item in analysis_availability(_daily(5), _merged(5))}
 
@@ -1327,6 +1348,34 @@ def test_physiological_watch_counts_concordant_signals():
 
     assert watch["count"] == 4
     assert watch["level"] == "plusieurs signaux concordants"
+
+
+def test_physiological_watch_never_combines_anomalies_from_different_nights():
+    frame = _vitals_frame()[["Date", "FC repos (bpm)", "HRV (ms)"]]
+    frame.loc[frame.index[-5], "FC repos (bpm)"] = 90.
+    frame.loc[frame.index[-4:], "FC repos (bpm)"] = np.nan
+    frame.loc[frame.index[-1], "HRV (ms)"] = 10.
+
+    watch = physiological_watch(frame)
+
+    assert watch["count"] == 1
+    assert watch["evaluated"] == 1
+    assert watch["level"] == "un signal isolé"
+    assert watch["date"] == frame["Date"].max()
+    assert "FC repos (bpm)" in watch["missing_metrics"]
+    assert watch["table"]["Date"].nunique() == 1
+
+
+def test_physiological_watch_dates_the_measured_night_not_a_later_cycle():
+    frame = _vitals_frame()
+    night = frame["Date"].max()
+    frame = pd.concat([frame, pd.DataFrame({"Date": [night + pd.Timedelta(days=1)], "Strain": [2.]})], ignore_index=True)
+
+    watch = physiological_watch(frame)
+
+    assert watch["ready"]
+    assert watch["date"] == night
+    assert watch["evaluated"] == 5
 
 
 def test_physiological_watch_rarely_cries_wolf_on_a_quiet_series():

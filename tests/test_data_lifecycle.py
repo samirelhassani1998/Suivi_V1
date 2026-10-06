@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 from io import StringIO
 from pathlib import Path
+from unittest.mock import Mock
 
 import pandas as pd
 
@@ -31,7 +32,9 @@ def sample_df():
 
 def test_load_remote_csv_entrypoint_preserves_duplicate_day_and_extra_columns(monkeypatch):
     mod = _main_module()
-    monkeypatch.setattr("pandas.read_csv", lambda *a, **k: sample_df().copy())
+    response = Mock(content=sample_df().to_csv(index=False).encode("utf-8"))
+    transport = Mock(return_value=response)
+    monkeypatch.setattr("requests.get", transport)
     mod["load_remote_csv_with_report"].clear()
     result = mod["load_remote_csv_with_report"]("fake://csv")
     assert isinstance(result, tuple)
@@ -49,6 +52,9 @@ def test_load_remote_csv_entrypoint_preserves_duplicate_day_and_extra_columns(mo
     assert {"Moment", "Colonne personnalisée"}.issubset(wrapped.columns)
     assert quality["duplicate_dates"] == 1
     assert hasattr(mod["load_remote_csv_with_report"], "clear")
+    # Le second appel réutilise le cache ; le statut HTTP est contrôlé une fois.
+    assert transport.call_count == 1
+    response.raise_for_status.assert_called_once()
 
 
 def test_local_csv_cleaning_preserves_all_valid_rows_columns_and_duplicate_days():
@@ -161,3 +167,20 @@ def test_columns_survive_cleaning_session_filter_and_export(monkeypatch):
     assert expected.issubset(state["working_data"].columns)
     assert expected.issubset(state["filtered_data"].columns)
     assert expected.issubset(roundtrip.columns)
+
+
+def test_whoop_disconnect_clears_pending_oauth_without_touching_weight_data(monkeypatch):
+    import app.core.session_state as ss
+    original = sample_df()
+    state = {
+        "working_data": original.copy(),
+        "whoop_callback_to_resume": {"code": "test"},
+        "whoop_callback_url": "https://example.test/?code=test",
+        "whoop_pending_auth": {"state": "test"},
+        "whoop_token": {"access_token": "test"},
+    }
+    monkeypatch.setattr(ss.st, "session_state", state)
+    ss.clear_whoop_session()
+    assert state["whoop_token"] is None
+    assert not {"whoop_callback_to_resume", "whoop_callback_url", "whoop_pending_auth"}.intersection(state)
+    pd.testing.assert_frame_equal(state["working_data"], original)

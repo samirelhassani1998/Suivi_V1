@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import pandas as pd
 import streamlit as st
 
@@ -88,22 +90,30 @@ def main() -> None:
         submitted = st.form_submit_button("Enregistrer", type="primary")
 
     if submitted:
-        target_weights = normalise_target_weights(tuple(goals))
-        if list(target_weights) != sorted(target_weights, reverse=True):
-            st.warning("Les objectifs ne sont pas décroissants : vérifiez l'ordre des paliers (le 5ᵉ doit être le plus bas).")
-        st.session_state["target_weights"] = target_weights
-        st.session_state["target_weight"] = float(target_weights[-1])
-        st.session_state["height_cm"] = float(height_cm)
-        st.session_state["height_m"] = float(height_cm) / 100
-        st.session_state["duplicate_strategy"] = duplicate
+        errors = []
+        if any(not math.isfinite(goal) or goal <= 0 for goal in goals):
+            errors.append("Chaque objectif doit être un poids positif et fini.")
+        if goals != sorted(goals, reverse=True):
+            errors.append("Les objectifs doivent être décroissants : le 5ᵉ doit être le plus bas.")
         zoom_start_ts = pd.Timestamp(zoom_start)
         zoom_end_ts = pd.Timestamp(zoom_end)
-        if zoom_start_ts > zoom_end_ts:
-            st.warning("La date de début du zoom doit être antérieure ou égale à la date de fin.")
+        if zoom_start is None or zoom_end is None or pd.isna(zoom_start_ts) or pd.isna(zoom_end_ts) or zoom_start_ts > zoom_end_ts:
+            errors.append("La date de début du zoom doit être antérieure ou égale à la date de fin.")
+        if errors:
+            for message in errors:
+                st.error(message)
         else:
-            st.session_state["window_size"] = int(window_size)
-            st.session_state["zoom_target_start_date"] = zoom_start_ts
-            st.session_state["zoom_target_end_date"] = zoom_end_ts
+            target_weights = normalise_target_weights(tuple(goals))
+            st.session_state.update({
+                "target_weights": target_weights,
+                "target_weight": float(target_weights[-1]),
+                "height_cm": float(height_cm),
+                "height_m": float(height_cm) / 100,
+                "duplicate_strategy": duplicate,
+                "window_size": int(window_size),
+                "zoom_target_start_date": zoom_start_ts,
+                "zoom_target_end_date": zoom_end_ts,
+            })
             st.success("Paramètres enregistrés.")
 
     section_header("Diagnostic système", "Informations utiles pour vérifier la session active et le déploiement.", "🧪")

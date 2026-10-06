@@ -28,6 +28,7 @@ from app.core.whoop import (
 from app.core.whoop_sync import fetch_whoop_data, sync_window
 
 PENDING_KEY = "whoop_pending_auth"
+RESUME_KEY = "whoop_callback_to_resume"
 AUTO_SWITCH_KEY = "whoop_auto_switch_done"
 WHOOP_PAGE_PATH = "app/pages/Whoop.py"
 WHOOP_PAGE_SLUG = "Whoop"
@@ -144,7 +145,14 @@ def switch_to_whoop_page_if_pending(page: Any = None) -> None:
 def secrets_mapping() -> dict:
     """Lecture défensive des secrets : absents en local, présents sur Streamlit Cloud."""
     try:
-        return {key: st.secrets[key] for key in st.secrets}
+        # L'itération directe déclenche aussi un st.error avec les chemins
+        # internes avant de lever FileNotFoundError. Cette API charge les
+        # secrets optionnels sans afficher ce diagnostic dans la page.
+        secrets_store = st.secrets
+        load_optional = getattr(secrets_store, "load_if_toml_exists", None)
+        if callable(load_optional) and not load_optional():
+            return {}
+        return {key: secrets_store[key] for key in secrets_store}
     except Exception:
         return {}
 

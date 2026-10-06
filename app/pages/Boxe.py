@@ -172,7 +172,11 @@ def _tests_display(table: pd.DataFrame) -> pd.DataFrame:
             record["Écart"] = _signed(row["Écart"], decimals) + suffix
             record["IC 95 %"] = f"{_signed(row['IC 95 % bas'], decimals)} à {_signed(row['IC 95 % haut'], decimals)}{suffix}"
         record["Effectifs"] = str(row["Effectifs"])
-        record["Écart établi"] = "oui" if bool(row["Écart établi"]) else "non"
+        record["Lecture"] = (
+            "Test indisponible" if row.get("Inférence") != "testée"
+            else "Association détectée" if bool(row["Écart établi"])
+            else "Résultat incertain"
+        )
         rows.append(record)
     return pd.DataFrame(rows)
 
@@ -180,9 +184,10 @@ def _tests_display(table: pd.DataFrame) -> pd.DataFrame:
 def _tests_table(table: pd.DataFrame) -> None:
     st.dataframe(_tests_display(table), use_container_width=True, hide_index=True)
     st.caption(
-        "« Écart établi » : l'écart résiste à un test de Welch dont le seuil de 5 % est divisé par le nombre "
-        "de mesures comparées (correction de Bonferroni). Sans cette correction, comparer plusieurs mesures "
-        "en ferait « différer » une par pur hasard. Effectifs : premier groupe / second groupe."
+        "« Association détectée » : test de Welch au seuil de 5 % divisé par le nombre de mesures comparées "
+        "(Bonferroni). Les IC à 95 % sont individuels, sans correction simultanée. Effectifs : premier groupe / second groupe. "
+        "Un résultat incertain ou un test indisponible ne démontre pas l'absence d'effet. Ces comparaisons "
+        "exploratoires de mesures répétées n'isolent pas une cause ; les habitudes et l'autocorrélation peuvent influer sur leur précision."
     )
 
 
@@ -342,8 +347,8 @@ def _sessions_tab(context: dict[str, Any]) -> None:
         "**Intensité (% FCR)** : (FC moyenne − FC de repos du matin) / (FC max − FC de repos), la méthode de "
         "réserve cardiaque de Karvonen dont WHOOP tire ses zones. **TRIMP** : minutes de chaque zone multipliées "
         "par le numéro de la zone (méthode des zones d'Edwards, référence objective du RPE de séance chez "
-        "[Foster et al., J Strength Cond Res 2001](https://pubmed.ncbi.nlm.nih.gov/11708692/), et interchangeable "
-        "avec le TRIMP de Banister en sport de combat : r = 0,89 chez des pratiquants de taekwondo, "
+        "[Foster et al., J Strength Cond Res 2001](https://pubmed.ncbi.nlm.nih.gov/11708692/), et corrélée "
+        "au TRIMP de Banister en sport de combat : r = 0,89 chez des pratiquants de taekwondo, "
         "[Haddad et al., J Strength Cond Res 2012](https://pubmed.ncbi.nlm.nih.gov/21904234)) — WHOOP exprimant ses zones en réserve "
         "cardiaque plutôt qu'en FC max, le score se compare d'une séance à l'autre, pas d'une personne à l'autre. "
         "**Matin** : récupération calculée au réveil, avant la séance. **Lendemain** : premier score qui porte sa trace."
@@ -390,7 +395,7 @@ def _sessions_tab(context: dict[str, Any]) -> None:
 
 def _recovery_tab(context: dict[str, Any]) -> None:
     cost = context["cost"]
-    section_header("Ce que la boxe coûte au lendemain", "Récupération, HRV et FC de repos le matin qui suit une journée de boxe, face au matin qui suit vos autres journées.", "🌡️")
+    section_header("Récupération observée après la boxe", "Récupération, HRV et FC de repos le matin qui suit une journée de boxe, face au matin qui suit vos autres journées.", "🌡️")
     if not cost["ready"]:
         st.info(
             f"Comparaison disponible à partir de {cost['required']} lendemains de boxe notés et {cost['required']} autres "
@@ -407,9 +412,10 @@ def _recovery_tab(context: dict[str, Any]) -> None:
             # « non établi » passé en delta s'afficherait avec une flèche verte
             # montante : le statut est donc porté par le libellé.
             kpi_card(
-                "Écart établi" if bool(row["Écart établi"]) else "Écart (non établi)",
+                "Écart observé",
                 f"{_signed(row['Écart'], 0)} pts",
-                help_text=f"Intervalle de confiance à 95 % : {_signed(row['IC 95 % bas'], 0)} à {_signed(row['IC 95 % haut'], 0)} points.",
+                help_text=(f"IC individuel à 95 % : {_signed(row['IC 95 % bas'], 0)} à {_signed(row['IC 95 % haut'], 0)} points. "
+                           + ("Test indisponible." if row.get("Inférence") != "testée" else "Association détectée." if row["Écart établi"] else "Résultat incertain.")),
             )
         _tests_table(cost["table"])
         morning_gap = cost["morning_boxing"] - cost["morning_other"]
@@ -417,11 +423,11 @@ def _recovery_tab(context: dict[str, Any]) -> None:
             st.caption(
                 f"⚠️ Vos matins de boxe sont déjà {format_fr_number(abs(morning_gap), decimals=0)} points "
                 f"{'au-dessus' if morning_gap > 0 else 'en dessous'} de vos autres matins : si vous boxez surtout les jours "
-                "où vous êtes en forme, le lendemain de boxe part de plus haut, et la comparaison minimise le coût réel de la séance."
+                "où vous êtes en forme, le lendemain de boxe part de plus haut. Cette différence limite l'interprétation de la comparaison."
             )
 
     profile = context["profile"]
-    section_header("En combien de jours vous revenez", "Récupération moyenne du matin de la séance à trois jours plus tard.", "↩️")
+    section_header("Profil de récupération observé", "Récupération moyenne du matin de la séance à trois jours plus tard.", "↩️")
     if profile["table"].empty:
         st.info("Profil disponible dès qu'une séance est suivie de matins notés.")
     else:
@@ -456,21 +462,22 @@ def _sleep_tab(context: dict[str, Any]) -> None:
     late = context["late"]
     section_header(
         "Séances tardives et sommeil",
-        f"Les nuits qui suivent une séance terminée moins de {format_fr_number(LATE_SESSION_HOURS, decimals=0)} h avant votre coucher habituel, face aux autres.",
+        f"Une nuit par journée de boxe : dernière séance terminée moins de {format_fr_number(LATE_SESSION_HOURS, decimals=0)} h avant votre coucher habituel, face aux journées où elle finit plus tôt.",
         "🌙",
     )
     cols = st.columns(3)
     with cols[0]:
-        kpi_card("Séances tardives", f"{late['late']}", help_text=f"Terminées moins de {format_fr_number(LATE_SESSION_HOURS, decimals=0)} h avant votre coucher habituel.")
+        kpi_card("Nuits après séance tardive", f"{late['late']}", help_text=f"Dernière séance terminée moins de {format_fr_number(LATE_SESSION_HOURS, decimals=0)} h avant votre coucher habituel.")
     with cols[1]:
-        kpi_card("Séances plus tôt", f"{late['early']}")
+        kpi_card("Nuits après séance plus tôt", f"{late['early']}")
     with cols[2]:
         kpi_card("Marge médiane", f"{format_fr_number(late['median_gap'], decimals=1)} h", help_text="Entre la fin de séance et votre heure de coucher habituelle.")
-    _render_chart(late_sessions_chart(context["table"]), "boxing-late", fallback="Heures de coucher ou de séance indisponibles sur la période.")
+    _render_chart(late_sessions_chart(late["nights"]), "boxing-late", fallback="Heures de coucher ou de séance indisponibles sur la période.")
+    st.caption("Plusieurs séances le même jour comptent une seule nuit, classée selon la dernière fin de séance. Si une heure de fin manque, la journée est exclue. Les effectifs exploitables peuvent varier selon la mesure.")
     if not late["ready"]:
         st.info(
-            f"Comparaison disponible à partir de {late['required']} séances tardives et {late['required']} plus tôt suivies "
-            f"d'une nuit mesurée (actuellement {late['late']} et {late['early']})."
+            f"Comparaison disponible à partir de {late['required']} nuits mesurées après une dernière séance tardive et {late['required']} après une séance plus tôt "
+            f"(journées classables actuellement : {late['late']} et {late['early']})."
         )
     else:
         _tests_table(late["table"])
@@ -480,7 +487,7 @@ def _sleep_tab(context: dict[str, Any]) -> None:
         "HRV plus basse, d'autant plus que l'effort est intense "
         "([Leota et al., Nature Communications 2025](https://doi.org/10.1038/s41467-025-58271-x)). Une méta-analyse "
         "d'essais contrôlés concluait au contraire que l'exercice du soir ne dégrade pas le sommeil en général "
-        "([Stutz et al., Sports Med 2019](https://doi.org/10.1007/s40279-018-1015-0)). Ce test tranche pour vous : "
+        "([Stutz et al., Sports Med 2019](https://doi.org/10.1007/s40279-018-1015-0)). Cette comparaison explore l'association sur vos données : "
         "la séance est dite tardive par rapport à votre coucher **habituel**, pour qu'un coucher avancé ne suffise pas "
         "à la classer ainsi."
     )
@@ -488,11 +495,16 @@ def _sleep_tab(context: dict[str, Any]) -> None:
 
 def _load_tab(context: dict[str, Any]) -> None:
     load = context["load"]
-    section_header("Charge boxe", "Les 7 derniers jours rapportés à votre semaine type des 21 jours précédents.", "🏋️")
+    section_header("Charge boxe", f"Les 7 jours au {format_short_date(load['acute_end'])} rapportés à votre semaine type des 21 jours précédents.", "🏋️")
     if load["status"] == "historique trop court":
         st.info(
             f"Il faut 28 jours d'historique WHOOP pour comparer la semaine en cours à une habitude : "
             f"synchronisez au moins depuis le {format_long_date(load['chronic_start'], with_weekday=False)}."
+        )
+    elif load["status"] == "données incomplètes":
+        st.info(
+            f"Charge non comparable : TRIMP disponible pour {load['trimp_sessions']}/{load['total_sessions']} séances "
+            f"et durée pour {load['duration_sessions']}/{load['total_sessions']}. Une même mesure doit couvrir toutes les séances des deux fenêtres."
         )
     elif load["status"] in ("habitude trop mince", "indisponible"):
         st.info(
@@ -533,7 +545,7 @@ def _load_tab(context: dict[str, Any]) -> None:
             "([Windt & Gabbett, Br J Sports Med 2019](https://bjsm.bmj.com/content/53/16/988))."
         )
         if unit == "minutes":
-            st.caption("Zones de fréquence cardiaque absentes : la charge est comptée en minutes de boxe plutôt qu'en TRIMP.")
+            st.caption(f"TRIMP disponible pour {load['trimp_sessions']}/{load['total_sessions']} séances : les deux fenêtres sont comparées en minutes, avec toutes leurs durées renseignées.")
 
     weekly = context["weekly"]
     section_header("Régularité", "Séances par semaine sur la période, semaines vides comprises.", "📅")
@@ -555,7 +567,7 @@ def _load_tab(context: dict[str, Any]) -> None:
     )
     st.caption(
         "Une mesure n'est dite « en hausse » ou « en baisse » que si sa pente résiste à un test dont le seuil est divisé "
-        "par le nombre de mesures examinées ; « stable » signifie que le hasard suffit à produire la pente observée. "
+        "par le nombre de mesures examinées. Les IC à 95 % sont individuels. « Tendance non déterminée » ne prouve pas la stabilité. "
         "Une intensité qui baisse à séance égale peut traduire une meilleure condition — ou des séances plus techniques : "
         "le chiffre ne dit pas laquelle."
     )
@@ -582,19 +594,19 @@ def _weight_tab(context: dict[str, Any]) -> None:
                     f"{format_fr_number(energy['baseline_per_minute'], decimals=2)} kcal/min, médiane de vos "
                     f"{energy['rest_days']} jours sans aucune séance."
                     if np.isfinite(energy["net_weekly"])
-                    else "Il faut au moins trois jours sans séance avec une dépense mesurée pour estimer l'excédent net."
+                    else "Il faut au moins trois jours sans séance avec une dépense mesurée, ainsi que les calories et la durée de chaque séance, pour estimer l'excédent net."
                 ),
             )
         with cols[2]:
             kpi_card("Part de la dépense", f"{format_fr_number(energy['share_of_burn'], decimals=0)} %", help_text="Calories des séances sur la dépense totale des jours mesurés.")
         with cols[3]:
             kpi_card(
-                "Part du déficit visé",
+                "Rapport au déficit cible (estimé)",
                 f"{format_fr_number(energy['share_of_target'], decimals=0)} %",
-                help_text=f"Déficit hebdomadaire que suppose la trajectoire cible : {format_fr_number(energy['required_weekly_deficit'], decimals=0)} kcal.",
+                help_text=f"Énergie nette estimée divisée par le déficit hebdomadaire cible de {format_fr_number(energy['required_weekly_deficit'], decimals=0)} kcal. Indisponible sans estimation nette ; ce n'est pas le déficit réellement atteint.",
             )
         st.caption(
-            f"Équivalent indicatif : {format_fr_number(energy['kg_per_month'], decimals=1)} kg par mois sur la base de "
+            f"Équivalence énergétique théorique, sans compensation alimentaire ou d'activité : {format_fr_number(energy['kg_per_month'], decimals=1)} kg par mois sur la base de "
             f"{format_fr_number(KCAL_PER_KG, decimals=0)} kcal par kilogramme. Deux réserves : les bracelets du commerce "
             "mesurent correctement la fréquence cardiaque mais estiment mal la dépense énergétique "
             "([Shcherbina et al., J Pers Med 2017](https://doi.org/10.3390/jpm7020003), sept appareils testés, WHOOP n'en "
@@ -603,7 +615,7 @@ def _weight_tab(context: dict[str, Any]) -> None:
         )
 
     weight = context["weight"]
-    section_header("La balance du lendemain", "Variation de poids d'un matin au suivant, selon qu'une séance a eu lieu entre les deux.", "⚖️")
+    section_header("La balance du lendemain", "Variation de poids d'un matin au suivant, pour les journées de la période Boxe choisie, avec le filtre de poids actif s'il y en a un.", "⚖️")
     if not weight["ready"]:
         st.info(
             f"Comparaison disponible à partir de {weight['required']} paires de pesées à un jour d'écart encadrant une séance "
@@ -617,9 +629,10 @@ def _weight_tab(context: dict[str, Any]) -> None:
         kpi_card("Les autres jours", f"{_signed(weight['other'], 2)} kg", help_text=f"Sur {_n(weight['other_pairs'], 'paire')} de pesées.")
     with cols[2]:
         kpi_card(
-            "Écart établi" if weight["significant"] else "Écart (non établi)",
+            "Écart observé (poids)",
             f"{_signed(weight['gap'], 2)} kg",
-            help_text=f"Intervalle à 95 % : {_signed(weight['low'], 2)} à {_signed(weight['high'], 2)} kg. Test de Welch au seuil de 5 %.",
+            help_text=(f"Intervalle à 95 % : {_signed(weight['low'], 2)} à {_signed(weight['high'], 2)} kg. "
+                       + ("Test indisponible." if weight["inference"] != "testée" else "Association détectée au seuil de 5 %." if weight["significant"] else "Résultat incertain ; l'absence d'effet n'est pas démontrée.")),
         )
     st.caption(
         "Une séance fait perdre de l'eau par la transpiration, que la réhydratation rend en un à deux jours : un creux "
@@ -682,7 +695,7 @@ def main() -> None:
         return
 
     _freshness_banner(full_daily)
-    period_label = st.radio("Période analysée", list(PERIOD_CHOICES), index=len(PERIOD_CHOICES) - 1, horizontal=True, help="S'applique à tous les onglets ci-dessous.")
+    period_label = st.radio("Période analysée", list(PERIOD_CHOICES), index=len(PERIOD_CHOICES) - 1, horizontal=True, help="Période des analyses historiques. Le repère du jour et la charge des quatre dernières semaines gardent leur propre fenêtre datée.")
     days = PERIOD_CHOICES[period_label]
     today = pd.Timestamp.now().normalize()
     daily = filter_period(full_daily, days, today=today)
@@ -716,7 +729,7 @@ def main() -> None:
     profile = recovery_profile(daily, table)
     readiness = readiness_effect(table)
     late = late_session_sleep(table)
-    weight = next_morning_weight(get_filtered_or_working_data(), table)
+    weight = next_morning_weight(get_filtered_or_working_data(), all_sessions, exposure_start=period_start, exposure_end=today)
     progression = boxing_progression(table)
     energy = boxing_energy(daily, workouts, table, window_days=window_days, required_daily_kg=required_daily_loss())
     context = {

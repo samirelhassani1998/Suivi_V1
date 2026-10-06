@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.linear_model import ElasticNet, LinearRegression, QuantileRegressor, Ridge
+from sklearn.pipeline import Pipeline, make_pipeline
+from sklearn.preprocessing import StandardScaler
 
 
 def get_regression_models() -> dict[str, object]:
@@ -16,9 +18,15 @@ def get_regression_models() -> dict[str, object]:
     }
 
 
-def get_quantile_models() -> dict[str, QuantileRegressor]:
+def get_quantile_models() -> dict[str, Pipeline]:
+    """Régressions régularisées, avec échelle apprise sur le passé uniquement.
+
+    Sans pénalité, les nombreux retards colinéaires interpolent les petits
+    historiques et leur réinjection récursive peut exploser en quelques jours.
+    """
     return {
-        "q10": QuantileRegressor(quantile=0.1, alpha=0),
-        "q50": QuantileRegressor(quantile=0.5, alpha=0),
-        "q90": QuantileRegressor(quantile=0.9, alpha=0),
+        f"q{int(quantile * 100)}": make_pipeline(
+            StandardScaler(), QuantileRegressor(quantile=quantile, alpha=0.1)
+        )
+        for quantile in (0.1, 0.5, 0.9)
     }

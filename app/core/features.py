@@ -3,8 +3,9 @@
 Toutes les variables dérivées du poids sont **décalées d'au moins une mesure** :
 une moyenne glissante qui inclut la pesée du jour, ou l'IMC du jour, contient
 la cible elle-même et donne des modèles au R² de 1,000 qui ne prédisent rien.
-Les variables de calendrier et les apports exogènes (calories) restent connus
-le jour même.
+Seules les variables issues du poids passé et du calendrier sont autorisées.
+Les colonnes importées (IMC courant, calories, notes…) ne sont pas des variables
+prédictives tant que leur disponibilité avant la prévision n'est pas définie.
 """
 
 from __future__ import annotations
@@ -16,12 +17,15 @@ WINDOWS: tuple[int, ...] = (7, 14, 30)
 
 
 def build_features(df: pd.DataFrame, height_m: float | None = None) -> pd.DataFrame:
-    data = df.sort_values("Date").copy()
+    # Une colonne numérique importée peut être la cible elle-même (IMC courant,
+    # copie du poids…) : ne jamais l'admettre implicitement dans les modèles.
+    data = df[["Date", "Poids (Kgs)"]].sort_values("Date", kind="mergesort").copy()
     weight = pd.to_numeric(data["Poids (Kgs)"], errors="coerce")
     previous = weight.shift(1)
 
     data["jour_semaine"] = data["Date"].dt.weekday
-    data["jours_depuis_derniere_mesure"] = data["Date"].diff().dt.days.fillna(0)
+    calendar_days = data["Date"].dt.tz_localize(None).dt.normalize()
+    data["jours_depuis_derniere_mesure"] = calendar_days.diff().dt.days.fillna(0)
     # Variation entre les deux pesées précédentes : connue au moment de prédire.
     data["variation_precedente"] = weight.diff().shift(1).fillna(0)
 
@@ -36,9 +40,4 @@ def build_features(df: pd.DataFrame, height_m: float | None = None) -> pd.DataFr
         # IMC de la pesée précédente : le même jour, ce serait la cible divisée par une constante.
         data["imc_precedent"] = previous / (height_m**2)
 
-    if {"Calories consommées", "Calories brûlées"}.issubset(data.columns):
-        data["bilan_calorique"] = (
-            pd.to_numeric(data["Calories consommées"], errors="coerce").fillna(0)
-            - pd.to_numeric(data["Calories brûlées"], errors="coerce").fillna(0)
-        )
     return data

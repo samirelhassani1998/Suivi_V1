@@ -21,6 +21,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.model_selection import TimeSeriesSplit
 
 from app.core.trend import LONG_RATE_WINDOW_DAYS, trend_cone, trend_weight
+from app.core.forecasting import require_daily_sampling
 
 NAIVE_MODEL = "Dernière valeur"
 TREND_MODEL = "Tendance robuste + pente 28 j"
@@ -92,13 +93,18 @@ def walk_forward_backtest(series: pd.Series, model_fn, n_splits: int = 5) -> dic
 
     splitter = TimeSeriesSplit(n_splits=min(n_splits, max(2, len(series) // 5)))
     y_true_all, y_pred_all = [], []
+    direction_correct, direction_total = 0, 0
     for train_idx, test_idx in splitter.split(series):
         train = series.iloc[train_idx]
         test = series.iloc[test_idx]
         pred = model_fn(train, len(test))
         y_true_all.extend(test.values)
         y_pred_all.extend(pred)
-    return compute_metrics(np.asarray(y_true_all), np.asarray(y_pred_all))
+        direction_correct += int(np.sum(np.sign(np.diff(test.values)) == np.sign(np.diff(pred))))
+        direction_total += max(0, len(test) - 1)
+    metrics = compute_metrics(np.asarray(y_true_all), np.asarray(y_pred_all))
+    metrics["directional_accuracy"] = 100.0 * direction_correct / direction_total if direction_total else float("nan")
+    return metrics
 
 
 def evaluate_baselines(series: pd.Series) -> pd.DataFrame:
@@ -143,6 +149,7 @@ def _sarimax_forecaster(train: pd.DataFrame, dates: pd.DatetimeIndex) -> Predict
 
     if len(train) < 14:
         raise ValueError("historique trop court pour SARIMAX")
+    require_daily_sampling(pd.DataFrame({"Date": list(train["Date"]) + list(dates)}))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         model = SARIMAX(
@@ -160,10 +167,11 @@ def _sarimax_forecaster(train: pd.DataFrame, dates: pd.DatetimeIndex) -> Predict
 
 
 def _auto_arima_forecaster(train: pd.DataFrame, dates: pd.DatetimeIndex) -> Prediction:
-    from pmdarima import auto_arima
-
     if len(train) < 20:
         raise ValueError("historique trop court pour Auto-ARIMA")
+    require_daily_sampling(pd.DataFrame({"Date": list(train["Date"]) + list(dates)}))
+    from pmdarima import auto_arima
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         model = auto_arima(train["Poids (Kgs)"].to_numpy(dtype=float), seasonal=False, error_action="ignore", suppress_warnings=True)
@@ -174,6 +182,12 @@ def _auto_arima_forecaster(train: pd.DataFrame, dates: pd.DatetimeIndex) -> Pred
 
 def _series_forecaster(kind: str) -> Forecaster:
     def _predict(train: pd.DataFrame, dates: pd.DatetimeIndex) -> Prediction:
+        if kind == "drift":
+            elapsed = (train["Date"].iloc[-1] - train["Date"].iloc[0]).total_seconds() / 86400
+            last = float(train["Poids (Kgs)"].iloc[-1])
+            slope = (last - float(train["Poids (Kgs)"].iloc[0])) / elapsed if elapsed > 0 else 0.0
+            offsets = (dates - train["Date"].iloc[-1]).total_seconds().to_numpy() / 86400
+            return last + slope * offsets, None, None
         return baseline_predictions(train["Poids (Kgs)"].reset_index(drop=True), len(dates), kind), None, None
 
     return _predict
@@ -248,6 +262,7 @@ def evaluate_forecasters(
         y_true: list[float] = []
         y_pred: list[float] = []
         covered: list[bool] = []
+        direction_correct, direction_total = 0, 0
         has_bounds = True
         failure: str | None = None
         for train_idx, test_idx in splits:
@@ -265,17 +280,26 @@ def evaluate_forecasters(
             truth = test["Poids (Kgs)"].to_numpy(dtype=float)
             y_true.extend(truth.tolist())
             y_pred.extend(central.tolist())
+            direction_correct += int(np.sum(np.sign(np.diff(truth)) == np.sign(np.diff(central))))
+            direction_total += max(0, len(truth) - 1)
             if low is None or high is None:
                 has_bounds = False
             else:
                 low_arr = np.asarray(low, dtype=float)
                 high_arr = np.asarray(high, dtype=float)
+                if low_arr.shape != truth.shape or high_arr.shape != truth.shape or not (np.isfinite(low_arr).all() and np.isfinite(high_arr).all()):
+                    failure = "intervalle incomplet"
+                    break
+                if np.any(low_arr > high_arr):
+                    failure = "bornes d'intervalle inversées"
+                    break
                 covered.extend(((truth >= low_arr) & (truth <= high_arr)).tolist())
         collected[name] = {
             "y_true": np.asarray(y_true),
             "y_pred": np.asarray(y_pred),
-            "coverage": float(np.mean(covered) * 100) if has_bounds and covered else float("nan"),
+            "coverage": float(np.mean(covered) * 100) if failure is None and has_bounds and covered else float("nan"),
             "failure": failure,
+            "directional_accuracy": 100.0 * direction_correct / direction_total if direction_total else float("nan"),
         }
 
     naive = collected.get(NAIVE_MODEL)
@@ -286,6 +310,7 @@ def evaluate_forecasters(
         available = result["failure"] is None and len(result["y_true"]) > 0
         if available:
             metrics = compute_metrics(result["y_true"], result["y_pred"])
+            metrics["directional_accuracy"] = result["directional_accuracy"]
             skill = (1.0 - metrics["mae"] / naive_mae) * 100 if np.isfinite(naive_mae) and naive_mae > 0 else float("nan")
         else:
             metrics = {"mae": np.nan, "rmse": np.nan, "biais": np.nan, "directional_accuracy": np.nan}

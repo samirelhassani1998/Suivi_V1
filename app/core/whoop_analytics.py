@@ -65,10 +65,12 @@ class Availability:
     name: str
     available: int
     required: int
+    computed_ready: bool | None = None
+    detail: str = ""
 
     @property
     def ready(self) -> bool:
-        return self.available >= self.required
+        return self.available >= self.required if self.computed_ready is None else self.computed_ready
 
     @property
     def missing(self) -> int:
@@ -175,8 +177,8 @@ def coverage_report(frame: pd.DataFrame | None) -> dict[str, Any]:
     # Une ligne existe dès qu'une seule des trois sources a renvoyé quelque chose.
     # Compter ces jours comme couverts annonçait 100 % de couverture alors que
     # ni la récupération ni le sommeil n'étaient disponibles.
-    core_columns = [column for column in ("Récupération (%)", "Sommeil (heures)", "Strain") if column in data.columns]
-    if core_columns:
+    core_columns = ["Récupération (%)", "Sommeil (heures)", "Strain"]
+    if all(column in data.columns for column in core_columns):
         complete = int(data.loc[data[core_columns].notna().all(axis=1), "Date"].nunique())
     else:
         complete = 0
@@ -194,7 +196,6 @@ def coverage_report(frame: pd.DataFrame | None) -> dict[str, Any]:
 
 def analysis_availability(daily: pd.DataFrame | None, merged: pd.DataFrame | None = None) -> list[Availability]:
     """Ce qui est déjà calculable et ce qui attend encore des jours de mesure."""
-    whoop_days = coverage_report(daily)["days_with_data"]
     common = _clean_daily(merged) if merged is not None else pd.DataFrame()
     common_days = int(len(common))
     # La première pesée n'a pas de variation : elle ne forme pas une paire, et
@@ -205,11 +206,22 @@ def analysis_availability(daily: pd.DataFrame | None, merged: pd.DataFrame | Non
         if not common.empty and DEFAULT_CORRELATION_TARGET in common.columns
         else common_days
     )
+    load = training_load(daily)
+    drivers = recovery_drivers(daily)
+    correlations = lagged_correlations(merged)
+    balance = energy_balance(merged)
     return [
-        Availability("Charge d'entraînement", whoop_days, MIN_DAYS_TRAINING_LOAD),
-        Availability("Moteurs de la récupération", whoop_days, MIN_DAYS_REGRESSION),
-        Availability("Corrélations poids", pairs, MIN_DAYS_CORRELATION),
-        Availability("Bilan énergétique", common_days, MIN_DAYS_ENERGY_BALANCE),
+        Availability(
+            "Charge d'entraînement",
+            min(load["acute_days_measured"], MIN_ACUTE_COVERAGE) + min(load["chronic_days_measured"], MIN_CHRONIC_COVERAGE),
+            MIN_ACUTE_COVERAGE + MIN_CHRONIC_COVERAGE,
+            bool(np.isfinite(load["ratio"])),
+            f"{load['acute_days_measured']}/{MIN_ACUTE_COVERAGE} jours requis dans la semaine récente ; "
+            f"{load['chronic_days_measured']}/{MIN_CHRONIC_COVERAGE} dans les 21 jours précédents.",
+        ),
+        Availability("Moteurs de la récupération", drivers["days"], MIN_DAYS_REGRESSION, drivers["ready"], "Le modèle exige des journées complètes et des mesures suffisamment variées."),
+        Availability("Corrélations poids", pairs, MIN_DAYS_CORRELATION, not correlations.empty, "Au moins 10 paires exploitables par métrique et décalage, avec des valeurs suffisamment variées."),
+        Availability("Bilan énergétique", balance["days"], MIN_DAYS_ENERGY_BALANCE, balance["ready"], "Au moins 14 journées croisées avec une dépense complète et une pente du poids calculable."),
     ]
 
 
@@ -268,9 +280,6 @@ def training_load(frame: pd.DataFrame | None) -> dict[str, Any]:
     strain = grid["Strain"]
     measured = int(strain.notna().sum())
     result["days"] = measured
-    if measured < MIN_DAYS_TRAINING_LOAD:
-        return result
-
     acute_window = strain.tail(ACUTE_LOAD_DAYS)
     # Fenêtre chronique découplée : les jours qui précèdent la semaine aigüe,
     # sans elle. Voir la note sur MIN_CHRONIC_COVERAGE.
@@ -289,6 +298,8 @@ def training_load(frame: pd.DataFrame | None) -> dict[str, Any]:
     chronic = float(chronic_window.mean(skipna=True)) if chronic_measured else float("nan")
     result["acute"] = acute
     result["chronic"] = chronic
+    if measured < MIN_DAYS_TRAINING_LOAD:
+        return result
     # Deux journées intenses isolées dans une semaine peu portée donneraient une
     # « charge aigüe » élevée qui ne décrit pas une semaine de travail réelle.
     if acute_measured < MIN_ACUTE_COVERAGE:
@@ -2454,10 +2465,18 @@ def vital_deviations(
     Les valeurs absolues de ces grandeurs varient énormément d'une personne à
     l'autre : seule la comparaison à sa propre habitude est interprétable.
     """
-    columns = ["Signe vital", "Dernière nuit", "Repère habituel", "Écart", "Sens", "Inhabituel"]
+    columns = ["Date", "Signe vital", "Dernière nuit", "Repère habituel", "Écart", "Sens", "Inhabituel"]
     data = _clean_daily(frame)
     if data.empty:
         return pd.DataFrame(columns=columns)
+
+    vital_columns = [metric for metric, _, _ in NOCTURNAL_VITALS if metric in data.columns]
+    if not vital_columns:
+        return pd.DataFrame(columns=columns)
+    measured_nights = data.loc[data[vital_columns].notna().any(axis=1), "Date"]
+    if measured_nights.empty:
+        return pd.DataFrame(columns=columns)
+    reference_date = measured_nights.max()
 
     rows = []
     for metric, concerning_direction, concerning_label in NOCTURNAL_VITALS:
@@ -2469,6 +2488,10 @@ def vital_deviations(
 
         latest = float(measured[metric].iloc[-1])
         latest_date = measured["Date"].iloc[-1]
+        # Une anomalie ancienne ne doit pas être présentée comme concordante
+        # avec une autre mesurée cette nuit : la date de référence est commune.
+        if latest_date != reference_date:
+            continue
         history = measured.iloc[:-1]
         history = history[history["Date"] >= latest_date - pd.Timedelta(days=max(1, int(days)))]
         if len(history) < 3:
@@ -2486,6 +2509,7 @@ def vital_deviations(
         )
         rows.append(
             {
+                "Date": reference_date,
                 "Signe vital": metric,
                 "Dernière nuit": round(latest, 2),
                 "Repère habituel": round(baseline, 2),
@@ -2517,12 +2541,13 @@ def physiological_watch(frame: pd.DataFrame | None, **kwargs: Any) -> dict[str, 
         "count": 0,
         "level": "indisponible",
         "date": None,
+        "evaluated": int(len(table)),
+        "missing_metrics": [metric for metric, _, _ in NOCTURNAL_VITALS if metric not in set(table["Signe vital"])],
     }
     if table.empty:
         return result
 
-    data = _clean_daily(frame)
-    result["date"] = data["Date"].max() if not data.empty else None
+    result["date"] = table["Date"].iloc[0]
     flagged = table[table["Inhabituel"]]
     result["flagged"] = [
         {"Signe vital": row["Signe vital"], "Sens": row["Sens"], "Écart": row["Écart"]}
@@ -2554,7 +2579,7 @@ def _vitals_insight(daily: pd.DataFrame | None) -> Insight | None:
     several = watch["count"] > 1
     return Insight(
         f"{watch['count']} {_plural(watch['count'], 'signe vital', 'signes vitaux')} hors de votre habitude",
-        f"La dernière nuit montre : {names}. Ces écarts sont mesurés par rapport à votre propre "
+        f"La nuit du {pd.Timestamp(watch['date']).strftime('%d/%m/%Y')} montre : {names}. Ces écarts sont mesurés par rapport à votre propre "
         "repère des trente derniers jours, pas à une norme. Un bracelet ne diagnostique rien ; "
         + (
             "plusieurs signes qui dévient ensemble méritent toutefois d'être signalés à un "

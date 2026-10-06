@@ -8,7 +8,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from app.core import whoop_session
-from app.core.whoop import WhoopError
+from app.core.whoop import WhoopError, WhoopToken
 
 
 class FakeQueryParams(dict):
@@ -147,9 +147,10 @@ def test_whoop_page_exchanges_a_callback_received_on_another_page(monkeypatch):
         "client_secret": "client-secret",
         "redirect_uri": "https://mon-app.streamlit.app/",
     }
+    at.session_state["whoop_oauth_state"] = "etat-attendu"
     at.session_state[whoop_session.PENDING_KEY] = {
         "code": "code-recu-sur-la-racine",
-        "state": "",
+        "state": "etat-attendu",
         "error": "",
         "error_description": "",
     }
@@ -221,6 +222,120 @@ def test_whoop_page_rejects_a_state_that_does_not_match_the_request():
     assert any("État OAuth inattendu" in str(error.value) for error in at.error)
     # Aucun jeton ne doit être créé à partir d'un retour non sollicité.
     assert not at.session_state["whoop_token"]
+
+
+@pytest.mark.parametrize("expected,received", [(None, "etat-recu"), ("etat-attendu", ""), (None, "")])
+def test_whoop_callback_without_both_states_never_attempts_exchange(monkeypatch, expected, received):
+    attempts = []
+    monkeypatch.setattr("app.core.whoop.exchange_code_for_token", lambda *args, **kwargs: attempts.append(args))
+    at = AppTest.from_file("app/pages/Whoop.py")
+    at.session_state["whoop_oauth_state"] = expected
+    at.session_state[whoop_session.PENDING_KEY] = {"code": "fake", "state": received, "error": ""}
+
+    at.run(timeout=15)
+
+    assert not at.exception
+    assert not attempts
+    if expected is None and received:
+        assert at.session_state[whoop_session.RESUME_KEY]["state"] == received
+        assert any("Revenez à l'onglet" in str(info.value) for info in at.info)
+    else:
+        assert any("Connexion WHOOP à relancer" in str(error.value) for error in at.error)
+
+
+def test_whoop_callback_accepts_matching_state_once(monkeypatch):
+    attempts = []
+
+    def exchange(credentials, code, **kwargs):
+        attempts.append(code)
+        return WhoopToken(access_token="offline-test-token")
+
+    monkeypatch.setattr("app.core.whoop.exchange_code_for_token", exchange)
+    at = AppTest.from_file("app/pages/Whoop.py")
+    callback = {"code": "fake", "state": "etat-attendu", "error": ""}
+    at.session_state["whoop_oauth_state"] = "etat-attendu"
+    at.session_state[whoop_session.PENDING_KEY] = callback.copy()
+    at.run(timeout=15)
+    assert not at.exception
+    assert attempts == ["fake"]
+
+    at.session_state[whoop_session.PENDING_KEY] = callback.copy()
+    at.run(timeout=15)
+
+    assert not at.exception
+    assert attempts == ["fake"]
+    assert any("Connexion WHOOP à relancer" in str(error.value) for error in at.error)
+
+
+def test_callback_from_a_new_tab_can_be_completed_only_in_its_original_session(monkeypatch):
+    attempts = []
+
+    def exchange(credentials, code, **kwargs):
+        attempts.append(code)
+        return WhoopToken(access_token="offline-test-token")
+
+    monkeypatch.setattr("app.core.whoop.exchange_code_for_token", exchange)
+    credentials = {"client_id": "test-id", "client_secret": "test-secret", "redirect_uri": "https://app.example/"}
+    original = AppTest.from_file("app/pages/Whoop.py")
+    original.session_state["whoop_manual_credentials"] = credentials.copy()
+    original.run(timeout=15)
+    nonce = original.session_state["whoop_oauth_state"]
+
+    callback_tab = AppTest.from_file("app/pages/Whoop.py")
+    callback_tab.session_state["whoop_manual_credentials"] = credentials.copy()
+    callback_tab.session_state[whoop_session.PENDING_KEY] = {"code": "fake-returned-code", "state": nonce, "error": ""}
+    callback_tab.run(timeout=15)
+    assert not callback_tab.exception
+    assert not attempts
+    callback_url = next(str(code.value) for code in callback_tab.code if "fake-returned-code" in str(code.value))
+
+    original.text_input(key="whoop_callback_url").set_value(callback_url)
+    next(button for button in original.button if button.label == "Terminer la connexion").click().run(timeout=15)
+
+    assert not original.exception
+    assert attempts == ["fake-returned-code"]
+    assert original.session_state["whoop_token"]["access_token"] == "offline-test-token"
+    assert not original.session_state["whoop_oauth_state"]
+    assert "whoop_callback_url" not in original.session_state or not original.session_state["whoop_callback_url"]
+
+
+@pytest.mark.parametrize("callback_url", [
+    "https://app.example/?code=fake&state=another-session",
+    "https://app.example/?code=one&code=two&state=another-session",
+    "file:///tmp/callback?code=fake&state=another-session",
+    "https://app.example/?code=fake",
+])
+def test_manual_callback_rejects_invalid_urls_and_another_sessions_state(monkeypatch, callback_url):
+    attempts = []
+    monkeypatch.setattr("app.core.whoop.exchange_code_for_token", lambda *args, **kwargs: attempts.append(args))
+    at = AppTest.from_file("app/pages/Whoop.py")
+    at.session_state["whoop_manual_credentials"] = {
+        "client_id": "test-id", "client_secret": "test-secret", "redirect_uri": "https://app.example/",
+    }
+    at.run(timeout=15)
+    at.text_input(key="whoop_callback_url").set_value(callback_url)
+    next(button for button in at.button if button.label == "Terminer la connexion").click().run(timeout=15)
+
+    assert not at.exception
+    assert not attempts
+    assert not at.session_state["whoop_token"]
+    assert at.error
+
+
+def test_missing_optional_secrets_do_not_trigger_a_raw_error(stub_streamlit):
+    iterations = []
+
+    class MissingSecrets:
+        def load_if_toml_exists(self):
+            return False
+
+        def __iter__(self):
+            iterations.append(True)
+            raise AssertionError("Direct secret iteration would display an internal error")
+
+    stub_streamlit.secrets = MissingSecrets()
+    assert whoop_session.secrets_mapping() == {}
+    assert not iterations
 
 
 def test_entry_point_keeps_the_callback_even_when_authentication_blocks_the_app():

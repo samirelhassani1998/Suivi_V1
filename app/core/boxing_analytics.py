@@ -286,7 +286,7 @@ def session_table(
     table["Zones 4–5 (min)"] = hard
     table["Part en zones 4–5 (%)"] = hard / zone_total.where(zone_total > 0) * 100.0
     weights = pd.Series(TRIMP_WEIGHTS, dtype=float)
-    table["TRIMP"] = (zones[list(weights.index)].fillna(0.0) * weights).sum(axis=1).where(zones.notna().any(axis=1))
+    table["TRIMP"] = (zones[list(weights.index)] * weights).sum(axis=1, min_count=len(weights))
     table["Part enregistrée (%)"] = _numeric(data, "Part enregistrée (%)")
 
     next_days = [pd.Timestamp(date) + pd.Timedelta(days=1) for date in table["Date"]]
@@ -426,16 +426,16 @@ def weekly_sessions(table: pd.DataFrame | None, *, start: Any, end: Any) -> pd.D
     grouped = data.groupby("Semaine").agg(
         Séances=("Date", "size"),
         **{
-            "Durée totale (min)": ("Durée (min)", "sum"),
+            "Durée totale (min)": ("Durée (min)", lambda values: values.sum(min_count=1)),
             "TRIMP": ("TRIMP", lambda values: float(values.sum(min_count=1)) if values.notna().any() else np.nan),
-            "Calories (kcal)": ("Calories séance (kcal)", "sum"),
+            "Calories (kcal)": ("Calories séance (kcal)", lambda values: values.sum(min_count=1)),
             "Strain moyen": ("Strain séance", "mean"),
         },
     )
     frame = frame.merge(grouped, left_on="Semaine", right_index=True, how="left")
     frame["Séances"] = frame["Séances"].fillna(0).astype(int)
     for column in ("Durée totale (min)", "Calories (kcal)"):
-        frame[column] = frame[column].fillna(0.0)
+        frame.loc[frame["Séances"] == 0, column] = 0.0
     frame.loc[frame["Séances"] == 0, "TRIMP"] = 0.0
     return frame[columns]
 
@@ -523,6 +523,9 @@ def boxing_load(table: pd.DataFrame | None, *, reference: Any, data_start: Any) 
         "unit": "TRIMP",
         "acute_sessions": 0,
         "chronic_sessions": 0,
+        "trimp_sessions": 0,
+        "duration_sessions": 0,
+        "total_sessions": 0,
         "acute_start": acute_start,
         "acute_end": reference_day,
         "chronic_start": chronic_start,
@@ -532,14 +535,28 @@ def boxing_load(table: pd.DataFrame | None, *, reference: Any, data_start: Any) 
         return result
     data = table.copy()
     data["Date"] = pd.to_datetime(data["Date"]).dt.normalize()
-    use_trimp = "TRIMP" in data.columns and data["TRIMP"].notna().any()
-    unit = "TRIMP" if use_trimp else "minutes"
-    load = pd.to_numeric(data["TRIMP" if use_trimp else "Durée (min)"], errors="coerce").fillna(0.0)
-    result["unit"] = unit
+    data = data[data["Date"].between(chronic_start, reference_day)]
     acute_mask = (data["Date"] >= acute_start) & (data["Date"] <= reference_day)
     chronic_mask = (data["Date"] >= chronic_start) & (data["Date"] <= chronic_end)
     result["acute_sessions"] = int(acute_mask.sum())
     result["chronic_sessions"] = int(chronic_mask.sum())
+    trimp = _numeric(data, "TRIMP")
+    duration = _numeric(data, "Durée (min)")
+    trimp_valid = np.isfinite(trimp) & (trimp >= 0)
+    duration_valid = np.isfinite(duration) & (duration > 0)
+    result["total_sessions"] = len(data)
+    result["trimp_sessions"] = int(trimp_valid.sum())
+    result["duration_sessions"] = int(duration_valid.sum())
+    # Même unité sur les deux fenêtres. Une mesure absente n'est jamais une
+    # séance de charge nulle ; un ancien TRIMP hors fenêtre ne décide pas ici.
+    if trimp_valid.all():
+        load = trimp
+    elif duration_valid.all():
+        load = duration
+        result["unit"] = "minutes"
+    else:
+        result["status"] = "données incomplètes"
+        return result
     result["acute"] = float(load[acute_mask].sum())
     # Une absence de séance n'est un zéro que si le bracelet couvrait déjà ces
     # jours : avant le début de l'historique, le zéro serait inventé.
@@ -580,7 +597,7 @@ def _group_tests(
     Comparer cinq mesures entre deux groupes, c'est tirer cinq fois : sans
     correction, l'une d'elles « diffère » par hasard une fois sur quatre.
     """
-    columns = ["Mesure", labels[0], labels[1], "Écart", "IC 95 % bas", "IC 95 % haut", "Effectifs", "Écart établi"]
+    columns = ["Mesure", labels[0], labels[1], "Écart", "IC 95 % bas", "IC 95 % haut", "Effectifs", "Inférence", "Écart établi"]
     records = []
     for name, first, second in rows:
         a, b = _clean_values(first), _clean_values(second)
@@ -596,6 +613,7 @@ def _group_tests(
                 "IC 95 % bas": float(test["low"]),
                 "IC 95 % haut": float(test["high"]),
                 "Effectifs": f"{a.size} / {b.size}",
+                "Inférence": test["inference"],
                 "_p": float(test["p_value"]),
             }
         )
@@ -603,7 +621,7 @@ def _group_tests(
         return pd.DataFrame(columns=columns)
     table = pd.DataFrame(records)
     threshold = ALPHA / max(1, len(table))
-    table["Écart établi"] = table["_p"].notna() & (table["_p"] <= threshold)
+    table["Écart établi"] = table["Inférence"].eq("testée") & table["_p"].notna() & (table["_p"] <= threshold)
     return table[columns]
 
 
@@ -775,13 +793,33 @@ def readiness_effect(table: pd.DataFrame | None, *, min_size: int = MIN_GROUP_SI
     return result
 
 
+def sleep_nights(table: pd.DataFrame | None) -> pd.DataFrame:
+    """Une nuit par journée de boxe, classée selon la dernière fin de séance.
+
+    La plus petite marge correspond à la fin la plus tardive. Si une marge
+    manque dans une journée, sa classification reste inconnue : on ne sait
+    pas si cette séance s'est terminée après les autres.
+    """
+    if table is None or table.empty or "Date" not in table.columns or "Marge avant coucher habituel (h)" not in table.columns:
+        return pd.DataFrame(columns=table.columns if table is not None else [])
+    data = table.copy().reset_index(drop=True)
+    data["Date"] = pd.to_datetime(data["Date"], errors="coerce").dt.normalize()
+    data["Marge avant coucher habituel (h)"] = _numeric(data, "Marge avant coucher habituel (h)")
+    indices = []
+    for _, day in data.dropna(subset=["Date"]).groupby("Date", sort=True):
+        margins = day["Marge avant coucher habituel (h)"]
+        if np.isfinite(margins).all():
+            indices.append(margins.idxmin())
+    return data.loc[indices].reset_index(drop=True)
+
+
 def late_session_sleep(
     table: pd.DataFrame | None,
     *,
     cutoff_hours: float = LATE_SESSION_HOURS,
     min_size: int = MIN_GROUP_SIZE,
 ) -> dict[str, Any]:
-    """Les nuits qui suivent une séance tardive, face à celles qui suivent une séance plus tôt.
+    """Nuits après une dernière séance tardive, face aux autres nuits de boxe.
 
     Sur 14 689 porteurs de WHOOP, Leota et al. (Nature Communications 2025)
     associent un effort qui s'achève moins de quatre heures avant le coucher à
@@ -792,7 +830,7 @@ def late_session_sleep(
     habituelle, et non au coucher de la nuit suivante : sans quoi un coucher
     avancé suffirait à la rendre « tardive » et le test se mordrait la queue.
     """
-    labels = ("Séances tardives", "Séances plus tôt")
+    labels = ("Après séance tardive", "Après séance plus tôt")
     result: dict[str, Any] = {
         "ready": False,
         "late": 0,
@@ -801,15 +839,17 @@ def late_session_sleep(
         "table": pd.DataFrame(columns=["Mesure", *labels, "Écart", "IC 95 % bas", "IC 95 % haut", "Effectifs", "Écart établi"]),
         "cutoff": float(cutoff_hours),
         "required": min_size,
+        "nights": pd.DataFrame(),
     }
     if table is None or table.empty or "Marge avant coucher habituel (h)" not in table.columns:
         return result
-    gaps = pd.to_numeric(table["Marge avant coucher habituel (h)"], errors="coerce")
-    known = table[gaps.notna()]
+    known = sleep_nights(table)
+    result["nights"] = known
     if known.empty:
         return result
-    late = known[gaps[gaps.notna()] < cutoff_hours]
-    early = known[gaps[gaps.notna()] >= cutoff_hours]
+    gaps = known["Marge avant coucher habituel (h)"]
+    late = known[gaps < cutoff_hours]
+    early = known[gaps >= cutoff_hours]
     result["late"], result["early"] = int(len(late)), int(len(early))
     result["median_gap"] = float(gaps.dropna().median())
     tests = _group_tests(
@@ -829,12 +869,21 @@ def late_session_sleep(
     return result
 
 
-def next_morning_weight(weights: pd.DataFrame | None, table: pd.DataFrame | None, *, min_size: int = MIN_GROUP_SIZE) -> dict[str, Any]:
+def next_morning_weight(
+    weights: pd.DataFrame | None,
+    table: pd.DataFrame | None,
+    *,
+    min_size: int = MIN_GROUP_SIZE,
+    exposure_start: Any = None,
+    exposure_end: Any = None,
+) -> dict[str, Any]:
     """Variation de poids d'un matin au suivant, selon qu'une séance a eu lieu entre les deux.
 
     Une séance fait transpirer : la pesée du lendemain peut baisser sans
     qu'aucune graisse n'ait été perdue, puis remonter dès la réhydratation.
     Seules les paires de pesées espacées d'exactement un jour sont comparées.
+    Les bornes portent sur le jour d'exposition (première pesée) : son
+    lendemain peut se trouver un jour après la fin de la période.
     """
     result: dict[str, Any] = {
         "ready": False,
@@ -847,6 +896,7 @@ def next_morning_weight(weights: pd.DataFrame | None, table: pd.DataFrame | None
         "high": float("nan"),
         "p_value": float("nan"),
         "significant": False,
+        "inference": "indisponible",
         "required": min_size,
     }
     if weights is None or weights.empty or "Poids (Kgs)" not in weights.columns or table is None or table.empty:
@@ -861,8 +911,12 @@ def next_morning_weight(weights: pd.DataFrame | None, table: pd.DataFrame | None
     change = data["Poids (Kgs)"].diff()
     gap_days = data["Date"].diff().dt.days
     after, other = [], []
+    first = pd.Timestamp(exposure_start).normalize() if exposure_start is not None else None
+    last = pd.Timestamp(exposure_end).normalize() if exposure_end is not None else None
     for previous_day, delta, gap in zip(data["Date"].shift(1), change, gap_days):
         if gap != 1 or pd.isna(delta):
+            continue
+        if (first is not None and previous_day < first) or (last is not None and previous_day > last):
             continue
         (after if pd.Timestamp(previous_day) in boxing_days else other).append(float(delta))
     result["boxing_pairs"], result["other_pairs"] = len(after), len(other)
@@ -878,6 +932,7 @@ def next_morning_weight(weights: pd.DataFrame | None, table: pd.DataFrame | None
             "low": float(test["low"]),
             "high": float(test["high"]),
             "p_value": float(test["p_value"]),
+            "inference": test["inference"],
             "significant": bool(np.isfinite(test["p_value"]) and test["p_value"] <= ALPHA),
         }
     )
@@ -903,8 +958,8 @@ def boxing_progression(
 
     Une pente n'est dite « en hausse » ou « en baisse » que si elle résiste à
     un test corrigé pour le nombre de mesures examinées ; sinon elle est
-    « stable » — ce qui veut dire que le hasard suffit à la produire, pas
-    qu'elle est nulle.
+    « tendance non déterminée ». Un test non significatif ne démontre pas
+    la stabilité de la mesure.
     """
     columns = ["Mesure", "Séances", "Pente / 30 jours", "IC 95 % bas", "IC 95 % haut", "Lecture"]
     result: dict[str, Any] = {"ready": False, "table": pd.DataFrame(columns=columns), "span_days": 0, "required": min_sessions}
@@ -945,7 +1000,7 @@ def boxing_progression(
     frame = pd.DataFrame(rows)
     threshold = ALPHA / max(1, len(frame))
     frame["Lecture"] = [
-        ("en hausse" if slope > 0 else "en baisse") if np.isfinite(p) and p <= threshold else "stable (non établi)"
+        ("en hausse" if slope > 0 else "en baisse") if np.isfinite(p) and p <= threshold else "tendance non déterminée"
         for slope, p in zip(frame["Pente / 30 jours"], frame["_p"])
     ]
     result["units"] = dict(zip(frame["Mesure"], frame["_unit"]))
@@ -1002,8 +1057,9 @@ def boxing_energy(
         if len(rest) >= MIN_REST_DAYS_BASELINE:
             per_minute = float(rest.median()) / 1440.0
             result["baseline_per_minute"] = per_minute
-            net = (calories - duration * per_minute).clip(lower=0.0)
-            result["net_weekly"] = float(net.sum()) / weeks
+            if (np.isfinite(calories) & (calories >= 0) & np.isfinite(duration) & (duration > 0)).all():
+                net = (calories - duration * per_minute).clip(lower=0.0)
+                result["net_weekly"] = float(net.sum()) / weeks
         measured = grid.loc[burn.notna(), "Date"].map(pd.Timestamp)
         measured_days = set(measured)
         on_measured = calories[[pd.Timestamp(date) in measured_days for date in table["Date"]]]
@@ -1011,7 +1067,9 @@ def boxing_energy(
         if total_burn > 0 and on_measured.notna().any():
             result["share_of_burn"] = float(on_measured.sum()) / total_burn * 100.0
 
-    reference_weekly = result["net_weekly"] if np.isfinite(result["net_weekly"]) else result["gross_weekly"]
+    # Le brut inclut la dépense sans séance : il ne remplace pas une
+    # estimation nette manquante dans un scénario de déficit.
+    reference_weekly = result["net_weekly"]
     result["kg_per_month"] = reference_weekly * (30.0 / 7.0) / float(kcal_per_kg)
     if required_daily_kg is not None and np.isfinite(required_daily_kg) and required_daily_kg > 0:
         required_weekly = float(required_daily_kg) * float(kcal_per_kg) * 7.0
@@ -1155,10 +1213,10 @@ def boxing_insights(
         if gap < 0:
             found.append(
                 Insight(
-                    f"La boxe vous coûte {_fr(abs(gap))} points le lendemain",
+                    f"Récupération observée : {_fr(abs(gap))} points de moins après la boxe",
                     f"Après une journée de boxe, votre récupération du lendemain est en moyenne {_fr(abs(gap))} points "
                     f"sous celle qui suit vos autres journées ({cost.get('boxing_days')} lendemains de boxe comparés). "
-                    "L'écart résiste au test : prévoir une journée plus calme après une grosse séance est une piste.",
+                    "Cette association ne permet pas d'isoler l'effet de la séance des autres différences entre vos journées.",
                     tone="warning",
                     icon="🥊",
                     priority=76,
@@ -1181,23 +1239,23 @@ def boxing_insights(
     if sleep_established and np.isfinite(sleep_gap) and sleep_gap < 0:
         found.append(
             Insight(
-                f"Vos séances tardives raccourcissent votre nuit de {_fr(abs(sleep_gap) * 60)} min",
+                f"Nuits après séance tardive : {_fr(abs(sleep_gap) * 60)} min de moins en moyenne",
                 f"Quand la séance se termine moins de {_fr(late.get('cutoff', LATE_SESSION_HOURS))} heures avant le "
-                "coucher, la nuit qui suit est plus courte, et l'écart résiste au test. Une étude sur 14 689 porteurs "
-                "de WHOOP fait le même constat (Leota et al., Nature Communications 2025).",
+                "coucher habituel, les nuits observées sont plus courtes. Cette association ne démontre pas que "
+                "l'horaire en est la cause ; la durée, l'intensité et les autres habitudes peuvent différer.",
                 tone="warning",
                 icon="🌙",
                 priority=74,
             )
         )
-    elif late.get("ready") and not late_tests["Écart établi"].any():
+    elif late.get("ready") and not late_tests["Écart établi"].any() and late_tests.get("Inférence", pd.Series(dtype=str)).eq("testée").any():
         found.append(
             Insight(
-                "Vos séances tardives n'abîment pas visiblement vos nuits",
-                f"{late.get('late')} séances terminées moins de {_fr(late.get('cutoff', LATE_SESSION_HOURS))} h avant "
-                "le coucher, comparées aux autres : aucun écart de sommeil, de FC de repos ou de HRV ne se distingue "
-                "du hasard sur vos données.",
-                tone="success",
+                "Horaire et sommeil : résultat encore incertain",
+                f"{late.get('late')} nuits après une dernière séance terminée moins de {_fr(late.get('cutoff', LATE_SESSION_HOURS))} h "
+                "avant le coucher habituel, comparées aux autres nuits de boxe. Les tests disponibles ne détectent "
+                "pas d'association après correction ; cela ne démontre pas l'absence d'effet.",
+                tone="info",
                 icon="🌙",
                 priority=48,
             )
@@ -1209,8 +1267,8 @@ def boxing_insights(
             Insight(
                 "Vous boxez plus fort les matins verts" if strain_gap > 0 else "Vous boxez plus fort les matins non verts",
                 f"Écart de {_fr(strain_gap, 1, sign=True)} de strain par séance entre vos matins verts et les autres, "
-                "un écart qui résiste au test. Le score du matin précède la séance : c'est lui qui annonce "
-                "l'intensité, pas l'inverse.",
+                    "une association observée. Le score du matin précède la séance, mais le type et la durée "
+                    "des séances peuvent aussi expliquer cet écart.",
                 tone="info",
                 icon="🚦",
                 priority=66,
@@ -1219,7 +1277,7 @@ def boxing_insights(
 
     progression_table = progression.get("table", pd.DataFrame())
     if progression.get("ready") and not progression_table.empty:
-        moving = progression_table[progression_table["Lecture"] != "stable (non établi)"]
+        moving = progression_table[progression_table["Lecture"].isin(["en hausse", "en baisse"])]
         if not moving.empty:
             first = moving.iloc[0]
             unit = progression.get("units", {}).get(first["Mesure"], "")
@@ -1249,15 +1307,13 @@ def boxing_insights(
 
     share = float(energy.get("share_of_target", float("nan")))
     weekly = float(energy.get("net_weekly", float("nan")))
-    if not np.isfinite(weekly):
-        weekly = float(energy.get("gross_weekly", float("nan")))
     if energy.get("ready") and np.isfinite(share) and np.isfinite(weekly):
         found.append(
             Insight(
-                f"La boxe couvre environ {_fr(share)} % du déficit visé",
-                f"Environ {_fr(weekly)} kcal par semaine attribuables à la boxe, face à un déficit hebdomadaire "
+                f"Énergie nette estimée : {_fr(share)} % du déficit cible",
+                f"Environ {_fr(weekly)} kcal nettes estimées par semaine pour la boxe, face à un déficit hebdomadaire "
                 f"d'environ {_fr(energy.get('required_weekly_deficit'))} kcal que suppose la trajectoire cible. "
-                "Le reste se joue dans l'assiette et dans l'activité quotidienne.",
+                "Ce rapport théorique ne mesure pas le déficit réalisé ni une éventuelle compensation alimentaire ou d'activité.",
                 tone="info",
                 icon="🔥",
                 priority=56,

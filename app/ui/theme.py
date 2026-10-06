@@ -98,7 +98,7 @@ def apply_global_theme() -> None:
             text-transform: uppercase;
         }
         h1, h2, h3 {letter-spacing: -0.02em; color: var(--suivi-ink);}
-        h1 {font-size: clamp(2rem, 4vw, 3.25rem); margin: 0.1rem 0 0.25rem 0; line-height: 1.04;}
+        h1 {font-size: clamp(1.8rem, 3vw, 2.4rem); margin: 0.1rem 0 0.25rem 0; line-height: 1.15;}
         h2 {font-size: clamp(1.25rem, 2vw, 1.7rem); margin-top: 0.2rem;}
         h3 {font-size: 1.05rem;}
         .suivi-fade-in {animation: suiviFadeIn 0.35s ease-out both;}
@@ -107,7 +107,7 @@ def apply_global_theme() -> None:
             position: relative;
             overflow: hidden;
             margin: 0.15rem 0 1.15rem 0;
-            padding: 1.35rem 1.45rem;
+            padding: 1rem 1.2rem;
             border: 1px solid rgba(37, 99, 235, 0.14);
             border-radius: 28px;
             background:
@@ -130,6 +130,17 @@ def apply_global_theme() -> None:
             color: var(--suivi-muted);
             font-size: 1.02rem;
             line-height: 1.55;
+        }
+        button:focus-visible, a:focus-visible, summary:focus-visible,
+        input:focus-visible, textarea:focus-visible, [tabindex="0"]:focus-visible {
+            outline: 3px solid var(--suivi-blue);
+            outline-offset: 3px;
+        }
+        section[data-testid="stSidebar"] :focus-visible {
+            outline-color: #93c5fd;
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .suivi-fade-in {animation: none;}
         }
         .suivi-hero-meta {
             display: inline-flex;
