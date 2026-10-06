@@ -106,7 +106,7 @@ def test_boxing_page_renders_every_tab_with_its_analyses():
     for heading in (
         "Repère du jour",
         "Journal des séances",
-        "Ce que la boxe coûte au lendemain",
+        "Récupération observée après la boxe",
         "Séances tardives et sommeil",
         "Charge boxe",
         "Progression",
@@ -175,3 +175,33 @@ def test_main_navigation_exposes_the_boxing_page():
     source = Path("Suivi_V1.py").read_text(encoding="utf-8")
 
     assert 'st.Page("app/pages/Boxe.py", title="Boxe"' in source
+
+
+def test_weight_comparison_follows_the_boxing_period():
+    at = AppTest.from_file(PAGE)
+    _rich_state(at, days=60)
+    at.run(timeout=60)
+    at.radio[0].set_value("30 jours").run(timeout=60)
+
+    assert not at.exception
+    after = next(metric for metric in at.metric if metric.label == "Après une séance")
+    other = next(metric for metric in at.metric if metric.label == "Les autres jours")
+    assert after.help == "Sur 10 paires de pesées."
+    assert other.help == "Sur 19 paires de pesées."
+
+
+def test_constant_sleep_groups_are_displayed_as_unavailable_inference():
+    at = AppTest.from_file(PAGE)
+    _rich_state(at, days=60)
+    daily = at.session_state["whoop_daily"].copy()
+    # Sessions alternate midday/evening; all outcomes are constant within each group.
+    daily["Heure de coucher"] = -0.5
+    for column in ("Sommeil (heures)", "Efficacité sommeil (%)", "FC repos (bpm)", "HRV (ms)"):
+        daily[column] = 7.0 if column == "Sommeil (heures)" else 50.0
+    at.session_state["whoop_daily"] = daily
+    at.run(timeout=60)
+
+    assert not at.exception
+    table = next(frame.value for frame in at.dataframe if "Après séance tardive" in frame.value.columns)
+    assert table["Lecture"].eq("Test indisponible").all()
+    assert "n'abîment pas" not in _text(at)

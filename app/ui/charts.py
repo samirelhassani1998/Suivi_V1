@@ -82,9 +82,9 @@ def apply_layout(
             y=legend_offset,
             xanchor="left",
             x=0,
-            font=dict(size=11),
-            itemclick="toggleothers",
-            itemdoubleclick="toggle",
+            font=dict(size=12),
+            itemclick="toggle",
+            itemdoubleclick="toggleothers",
         ),
     )
     figure.update_yaxes(

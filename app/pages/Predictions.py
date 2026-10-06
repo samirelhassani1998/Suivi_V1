@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
-
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -18,7 +16,7 @@ from statsmodels.tsa.stattools import acf, pacf
 from app.core.analytics import detect_current_effort, prospective_scenarios, weight_velocity
 from app.core.evaluation import NAIVE_MODEL, TREND_MODEL, best_model, evaluate_forecasters, walk_forward_splits
 from app.core.features import build_features
-from app.core.forecasting import forecast_with_ml, forecast_with_sarimax
+from app.core.forecasting import MIN_ML_MEASUREMENTS, forecast_with_ml, forecast_with_sarimax, require_daily_sampling
 from app.core.formatting import format_fr_date, format_fr_kg, format_fr_kg_per_week, format_fr_number
 from app.core.insights import estimate_target_eta
 from app.core.projection_constraints import constrain_interval_dataframe
@@ -45,8 +43,6 @@ from app.ui.charts import (
     bar_figure,
 )
 from app.ui.components import alert_banner, empty_state, insight_card, kpi_card, page_hero, section_header
-
-warnings.filterwarnings("ignore")
 
 # Historique affiché à côté d'une prévision : au-delà, l'horizon devient un
 # trait illisible au bord droit du graphique.
@@ -82,6 +78,7 @@ def _cached_sarimax(df: pd.DataFrame, horizon: int) -> pd.DataFrame:
 def _cached_auto_arima(df: pd.DataFrame, horizon: int) -> pd.DataFrame:
     from pmdarima import auto_arima
 
+    require_daily_sampling(df)
     model = auto_arima(df["Poids (Kgs)"].to_numpy(dtype=float), seasonal=False, error_action="ignore", suppress_warnings=True)
     forecast, interval = model.predict(n_periods=horizon, return_conf_int=True)
     dates = pd.date_range(df["Date"].max() + pd.Timedelta(days=1), periods=horizon, freq="D")
@@ -263,12 +260,19 @@ def _primary_projection(df: pd.DataFrame, horizon: int, target_weight: float) ->
 def _leaderboard_section(df: pd.DataFrame, fast_mode: bool) -> None:
     section_header(
         "Leaderboard des modèles (backtest walk-forward)",
-        "Chaque modèle est réajusté sur le passé puis jugé sur la semaine suivante, plusieurs fois. La référence est la dernière pesée répétée.",
+        "Chaque modèle est réajusté sur le passé puis jugé sur les mesures suivantes, plusieurs fois. La référence est la dernière pesée répétée.",
         "🏁",
     )
     series = df[["Date", "Poids (Kgs)"]].reset_index(drop=True)
-    include_sarimax = len(series) >= MIN_ROWS_SARIMAX
-    include_auto_arima = (not fast_mode) and len(series) >= MIN_ROWS_AUTO_ARIMA
+    evaluate_sarimax = st.checkbox(
+        "Évaluer SARIMAX dans le classement",
+        value=False,
+        key="predictions-evaluate-sarimax",
+        disabled=len(series) < MIN_ROWS_SARIMAX,
+        help="Réajuste le modèle sur chaque bloc de test. Disponible à partir de 30 mesures ; le premier calcul peut prendre du temps.",
+    )
+    include_sarimax = evaluate_sarimax and len(series) >= MIN_ROWS_SARIMAX
+    include_auto_arima = (not fast_mode) and len(series) >= MIN_ROWS_AUTO_ARIMA and bool(st.session_state.get("predictions-run-auto-arima", False))
     with st.spinner("Backtest des modèles…"):
         table = _cached_leaderboard(series, include_sarimax, include_auto_arima)
     if table.empty:
@@ -291,7 +295,7 @@ def _leaderboard_section(df: pd.DataFrame, fast_mode: bool) -> None:
             )
         else:
             insight_card(
-                f"Modèle le plus fiable : {best['Modèle']}",
+                f"Plus faible erreur sur ces tests : {best['Modèle']}",
                 f"Erreur absolue moyenne {format_fr_kg(best['MAE'], decimals=2)} sur {folds} découpages, soit {_fr(gain, 0)} % de mieux que la dernière pesée répétée "
                 f"({format_fr_kg(naive_mae, decimals=2)})."
                 + (
@@ -319,11 +323,12 @@ def _leaderboard_section(df: pd.DataFrame, fast_mode: bool) -> None:
     display = display[["Modèle", "Verdict", "MAE", "Gain vs dernière valeur (%)", "Couverture IC 95 % (%)", "RMSE", "Biais", "Précision directionnelle (%)"]]
     st.dataframe(display, use_container_width=True, hide_index=True)
     st.caption(
-        f"Découpage chronologique en {folds} blocs de test d'une semaine de mesures, jamais de mélange aléatoire. "
+        f"Découpage chronologique en {folds} blocs de mesures, jamais de mélange aléatoire. "
+        "Le classement porte sur ces blocs et ne valide pas automatiquement l'horizon choisi ci-dessus. "
         "MAE : erreur absolue moyenne ; biais positif = le modèle surestime le poids ; précision directionnelle : part des variations dont le sens est prédit ; "
         "gain : réduction de la MAE par rapport à la dernière valeur ; couverture : part des pesées réelles tombées dans l'intervalle à 95 % annoncé "
         "(une couverture nettement sous 95 % signale un intervalle trop étroit)."
-        + (" Auto-ARIMA est ignoré en mode rapide." if fast_mode else "")
+        + (" Auto-ARIMA est ignoré en mode rapide." if fast_mode else " Auto-ARIMA est ajouté au classement lorsque son calcul est activé dans l'onglet ci-dessous.")
     )
 
 
@@ -340,8 +345,7 @@ def _model_comparison(df: pd.DataFrame) -> None:
 
     # Une colonne facultative entièrement vide (Notes) ne doit pas vider le jeu :
     # seules les variables dérivées du poids conditionnent les lignes gardées.
-    numeric_source = df[["Date", "Poids (Kgs)"] + [c for c in df.columns if c not in ("Date", "Poids (Kgs)") and pd.api.types.is_numeric_dtype(df[c])]]
-    feat = build_features(numeric_source, height_m=st.session_state.get("height_m", 1.82))
+    feat = build_features(df[["Date", "Poids (Kgs)"]], height_m=st.session_state.get("height_m", 1.82))
     lag_columns = [c for c in feat.columns if c.startswith("lag_")]
     feat = feat.dropna(subset=lag_columns)
     X = feat.drop(columns=["Date", "Poids (Kgs)"], errors="ignore").select_dtypes(include=["number"]).fillna(0.0)
@@ -371,8 +375,8 @@ def _model_comparison(df: pd.DataFrame) -> None:
         )
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     st.caption(
-        "ℹ️ Les variables incluent les pesées de la veille (retards, moyennes glissantes) : cette comparaison mesure la prédiction à un jour, "
-        "pas à trente. Un R² négatif signifie que le modèle fait moins bien que la moyenne du jeu de test."
+        "ℹ️ Les variables utilisent les pesées précédentes : cette comparaison évalue la prochaine mesure, dont l'espacement peut varier. "
+        "Elle ne valide pas une projection à trente jours. Un R² négatif signifie que le modèle fait moins bien que la moyenne du jeu de test."
     )
 
 
@@ -385,7 +389,7 @@ def _sarima_block(df: pd.DataFrame, horizon: int, target_weight: float) -> None:
             st.warning("SARIMAX indisponible : données insuffisantes (14 mesures requises).")
             return
         st.plotly_chart(
-            _forecast_figure(df, pred, name="Prévision SARIMAX", color=ACCENT_COLOR, fill="rgba(237,161,0,0.14)", title="Prévision SARIMAX avec intervalle à 90 %", target_weight=target_weight, band_label="Intervalle à 90 %"),
+            _forecast_figure(df, pred, name="Prévision SARIMAX", color=ACCENT_COLOR, fill="rgba(237,161,0,0.14)", title="Prévision SARIMAX avec intervalle nominal à 95 %", target_weight=target_weight, band_label="Intervalle nominal à 95 %"),
             use_container_width=True,
             key="predictions-sarimax",
         )
@@ -409,12 +413,15 @@ def _auto_arima_block(df: pd.DataFrame, horizon: int, target_weight: float) -> N
 
 def _ml_quantile_block(df: pd.DataFrame, horizon: int, target_weight: float) -> None:
     st.markdown("**Prévision ML quantile (P10 / P50 / P90)**")
-    st.caption("Régression quantile récursive sur variables dérivées — expérimentale.")
+    st.caption(
+        "Régression quantile régularisée — expérimentale. La bande P10–P90 est indicative : "
+        "sa couverture à plusieurs jours n'a pas été calibrée sur vos données."
+    )
     try:
         with st.spinner("Ajustement des régressions quantiles…"):
             pred = _cached_ml(df[["Date", "Poids (Kgs)"]].reset_index(drop=True), horizon, float(st.session_state.get("height_m", 1.82)))
         if pred.empty:
-            st.warning("Prévision ML indisponible : données insuffisantes (20 mesures requises).")
+            st.warning(f"Prévision ML indisponible : {MIN_ML_MEASUREMENTS} mesures quotidiennes consécutives requises, dont 30 pour construire les retards.")
             return
         st.plotly_chart(
             _forecast_figure(df, pred, name="Prévision ML (P50)", color=MEASURE_COLOR, fill=BAND_FILL, title="Prévision ML quantile", target_weight=target_weight, band_label="Intervalle P10 – P90"),
@@ -446,12 +453,17 @@ def _correlogram_figure(values: np.ndarray, *, kind: str, title: str) -> go.Figu
 
 
 def _stl_acf_pacf_block(df: pd.DataFrame) -> None:
-    st.caption("Décomposition STL (période 7 jours) sur la série interpolée au jour, puis autocorrélations.")
+    st.caption("Décomposition STL (période 7 jours) sur les moyennes journalières, avec interpolation des jours manquants, puis autocorrélations.")
     try:
-        series = df.set_index("Date")["Poids (Kgs)"].asfreq("D").interpolate()
-        if len(series) < 20:
-            st.warning("Données insuffisantes pour STL/ACF/PACF (20 jours requis).")
+        daily = df.groupby(df["Date"].dt.normalize())["Poids (Kgs)"].mean().dropna()
+        if len(daily) < 20:
+            st.warning("Données insuffisantes pour STL/ACF/PACF (20 jours réellement mesurés requis).")
             return
+        series = daily.asfreq("D")
+        missing = int(series.isna().sum())
+        if missing:
+            st.caption(f"{missing} jours sur {len(series)} sont interpolés : les trous peuvent créer une autocorrélation artificielle.")
+        series = series.interpolate()
         stl = STL(series, period=7, robust=True).fit()
         fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.08, subplot_titles=("Tendance", "Composante hebdomadaire", "Résidu"))
         fig.add_scatter(x=series.index, y=stl.trend, mode="lines", name="Tendance", line=dict(color=TREND_COLOR, width=2.2), row=1, col=1)
@@ -559,19 +571,21 @@ def main() -> None:
     section_header("Modèles avancés (expérimental)", "Des approches classiques de séries temporelles, à confronter au leaderboard avant d'y croire.", "🧪")
     t1, t2, t3, t4, t5 = st.tabs(["Régression ML", "SARIMA", "Auto-ARIMA", "STL / ACF-PACF", "Scénarios"])
     with t1:
-        _model_comparison(df)
-        _ml_quantile_block(df, horizon, target_weight)
+        if st.checkbox("Calculer les modèles ML", value=False, key="predictions-run-ml"):
+            _model_comparison(df)
+            _ml_quantile_block(df, horizon, target_weight)
     with t2:
-        _sarima_block(df, horizon, target_weight)
+        if st.checkbox("Calculer SARIMAX", value=False, key="predictions-run-sarimax"):
+            _sarima_block(df, horizon, target_weight)
     with t3:
         if fast_mode:
             st.warning("Auto-ARIMA sauté en mode rapide (tests).")
-        else:
+        elif st.checkbox("Rechercher un modèle Auto-ARIMA", value=False, key="predictions-run-auto-arima"):
             _auto_arima_block(df, horizon, target_weight)
     with t4:
         if fast_mode:
             st.warning("STL/ACF/PACF sauté en mode rapide (tests).")
-        else:
+        elif st.checkbox("Calculer STL et les autocorrélations", value=False, key="predictions-run-stl"):
             _stl_acf_pacf_block(df)
     with t5:
         _scenarios_block(df, target_weight)

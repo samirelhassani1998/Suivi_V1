@@ -1,5 +1,7 @@
 # Suivi V1 — Application Streamlit de suivi de mesures
 
+L’[audit complet du 6 octobre 2026](AUDIT_CURRENT_STATE.md) couvre les sept onglets, les corrections livrées et la feuille de route UI/UX, statistiques et ML/IA. La [fiche des modèles](docs/MODEL_CARD.md) précise les conditions de disponibilité et les limites des prévisions.
+
 ## 1. Présentation
 
 Suivi V1 est une application Streamlit générique permettant de suivre des mesures datées et d'analyser leur évolution dans le temps. Elle fournit un socle réutilisable pour charger des données, visualiser les tendances, comparer les mesures à des objectifs configurables et explorer des projections indicatives.
@@ -19,8 +21,8 @@ L'application permet notamment de :
 
 Le tableau de bord synthétise l'état courant des mesures chargées en session :
 
-- **Vue rapide** : poids du jour, **poids de tendance** (régression locale robuste LOWESS sur 14 jours), **rythme sur 14 jours avec son intervalle de confiance à 95 %**, variation 30 jours et écart à la trajectoire cible ;
-- **Lecture rapide** : la pesée du jour est située par rapport au bruit quotidien habituel (± 1,96 σ des écarts à la tendance) : une pesée dans la bande n'est pas un changement de poids ;
+- **Vue rapide** : dernière pesée datée, **poids de tendance** (LOWESS avec lissage d’environ 14 jours), **rythme sur 14 jours avec son intervalle à 95 % indicatif**, variation 30 jours et écart à la trajectoire cible ;
+- **Lecture rapide** : la dernière pesée est située par rapport à la dispersion indicative (± 1,96 σ des écarts à la tendance) ; une observation isolée ne suffit pas à établir une tendance ;
 - score de fiabilité des tendances fondé sur la couverture et la régularité des mesures ;
 - graphique d'évolution avec la tendance, sa **bande de bruit habituel**, les objectifs et la trajectoire cible, puis un zoom sur la période cible ;
 - indicateurs avancés : rythme de fond sur 28 jours, IMC avec le repère OMS, bruit quotidien, discipline, série en cours ;
@@ -50,9 +52,9 @@ Les variations sont calculées sur des fenêtres exprimées en jours calendaires
 
 Une pesée quotidienne varie de plusieurs centaines de grammes sous l'effet de l'eau, du glycogène et du contenu digestif. Le module `app/core/trend.py` fournit trois lectures qui résistent à ce bruit :
 
-- un **poids de tendance** par régression locale robuste (LOWESS, [Cleveland 1979](https://doi.org/10.1080/01621459.1979.10481038)) sur une fenêtre de 14 jours calendaires, insensible à une pesée isolée ;
-- le **bruit quotidien** : écart-type robuste (MAD × 1,4826) des écarts à la tendance, et sa demi-largeur à 95 % ;
-- le **rythme en kg/semaine** par moindres carrés sur les jours calendaires, avec intervalle de confiance de Student et valeur p : une pente dont l'intervalle contient zéro est dite « que le hasard suffit à produire », jamais « en baisse ».
+- un **poids de tendance** par régression locale robuste (LOWESS, [Cleveland 1979](https://doi.org/10.1080/01621459.1979.10481038)) avec un lissage d’environ 14 jours selon la fréquence des mesures, moins sensible aux pesées isolées ;
+- le **bruit quotidien** : écart-type robuste (MAD × 1,4826) des écarts à la tendance, et sa bande indicative de ± 1,96 σ, sans couverture de 95 % garantie ;
+- le **rythme en kg/semaine** par moindres carrés sur les jours calendaires, avec intervalle de confiance de Student et valeur p : une pente dont l’intervalle contient zéro a une direction non établie ; les hypothèses d’indépendance limitent l’interprétation.
 
 Les moyennes mobiles restent disponibles en option d'affichage.
 
@@ -93,13 +95,13 @@ Un moteur commun détecte les périodes de plateau ou de stagnation sur des fen�
 
 ### Projections simples
 
-La page Prévisions ouvre sur la **projection selon vos mesures** : le poids de tendance prolongé au rythme des 28 derniers jours, avec un cône d'incertitude à 95 % qui combine l'erreur sur la pente (croissante avec l'horizon), l'erreur sur le niveau de la tendance et le bruit d'une pesée. La date d'arrivée à l'objectif est encadrée par les deux bornes de la pente et n'est projetée que si la pente descend de façon établie. La projection est bornée à l'objectif final.
+La page Prévisions ouvre sur la **projection selon vos mesures** : le poids de tendance prolongé au rythme des 28 derniers jours, avec un cône d’incertitude nominal à 95 %, non calibré, qui combine l'erreur sur la pente (croissante avec l'horizon), l'erreur sur le niveau de la tendance et le bruit d'une pesée. La date d'arrivée à l'objectif est encadrée par les deux bornes de la pente et n'est projetée que si la pente descend de façon établie. La projection est bornée à l'objectif final.
 
 ### Modèles avancés et leaderboard
 
-Un **leaderboard walk-forward** réajuste chaque modèle sur le passé puis le juge sur la semaine de mesures suivante, sur plusieurs blocs chronologiques partagés (au moins 20 mesures d'apprentissage au premier bloc). Il compare la dernière valeur répétée, les moyennes mobiles, la tendance linéaire, la tendance robuste avec pente, SARIMAX et Auto-ARIMA. Chaque ligne porte la MAE, le **gain par rapport à la dernière valeur**, la **couverture empirique de l'intervalle à 95 %** et un verdict : un modèle qui ne bat pas « la dernière pesée répétée » est dit tel quel.
+Un **leaderboard walk-forward** réajuste chaque modèle sur le passé puis le juge sur les mesures suivantes, sur plusieurs blocs chronologiques partagés (blocs de 7 mesures avec au moins 20 mesures d’apprentissage quand le recul le permet ; repli proportionnel sur les historiques plus courts). Il compare la dernière valeur répétée, les moyennes mobiles, la tendance linéaire, la tendance robuste avec pente, SARIMAX et Auto-ARIMA. Chaque ligne porte la MAE, le **gain par rapport à la dernière valeur**, la **couverture empirique de l'intervalle à 95 %** et un verdict : un modèle qui ne bat pas « la dernière pesée répétée » est dit tel quel.
 
-Les modèles expérimentaux (régression sur variables dérivées, ML quantile, SARIMAX, Auto-ARIMA, STL, ACF/PACF, scénarios) restent disponibles ; les variables dérivées sont toutes **décalées d'au moins une mesure** afin qu'aucune ne contienne la cible du jour. Les ajustements coûteux sont mis en cache.
+Les modèles expérimentaux restent accessibles à la demande. Les dérivées du poids sont **décalées d’au moins une mesure**, et les colonnes numériques importées sont exclues des features par défaut. SARIMAX, Auto-ARIMA et les quantiles quotidiens exigent une pesée par jour sans trou ; le ML quantile régularisé exige au moins 40 mesures. Les projections instables sont refusées avant bornage. La [fiche des modèles](docs/MODEL_CARD.md) détaille la portée du classement et des intervalles.
 
 ### Insights
 
@@ -149,7 +151,7 @@ Lisibilité des dates : mois et jours écrits en français (`3 sept.`, `jeudi 3 
 
 Choix de visualisation appliqués : palette catégorielle validée pour la vision des couleurs, couleurs de statut réservées aux significations bon/mauvais, grille en filet, légende absente pour une série unique, jours sans mesure laissés vides plutôt que reliés, et **aucun graphique à double axe vertical** — le poids et une métrique WHOOP sont ramenés à une base 100 commune, car caler deux échelles verticales l'une sur l'autre fabrique une corrélation visuelle arbitraire. Chaque graphique coloré possède sa vue tableau. Un filtre de période unique (7 / 30 / 90 jours / tout) s'applique à tous les onglets.
 
-Garde-fous statistiques : les corrélations sont corrigées pour tests multiples (une vingtaine de métriques testées à trois décalages produit sinon une corrélation « forte » par pur hasard), la régression de récupération publie un R² **ajusté** au nombre de variables, le bilan énergétique affiche son intervalle à 95 %, le contraste entre bons et mauvais jours classe les facteurs par taille d'effet et non par écart brut, et le rapport de charge aigu/chronique se tait tant que les deux fenêtres portent sur les mêmes jours.
+Garde-fous statistiques : les corrélations sont corrigées pour tests multiples (une vingtaine de métriques testées à trois décalages produit sinon une corrélation « forte » par pur hasard), la régression de récupération publie un R² **ajusté** au nombre de variables, le bilan énergétique affiche une marge liée à l’incertitude de pente, sans englober l’erreur du bracelet, le contraste entre bons et mauvais jours classe les facteurs par taille d'effet et non par écart brut, et le rapport de charge aigu/chronique se tait tant que les deux fenêtres portent sur les mêmes jours.
 
 Chaque analyse annonce son effectif minimal et affiche le nombre de jours restants tant qu'il n'est pas atteint : sur un historique trop court, une corrélation ou une pente reflète le bruit de mesure plutôt qu'une tendance. Les graphiques laissent visibles les jours sans mesure au lieu de les relier par une droite, et les tableaux sont mis en forme (décimales maîtrisées, dates courtes, valeurs manquantes explicites).
 
@@ -160,7 +162,7 @@ Les données WHOOP vivent uniquement dans la session Streamlit : elles ne sont j
 L'onglet `Boxe` ne regarde que la boxe. Il lit les séances de la même synchronisation WHOOP (aucune autorisation supplémentaire) et peut lancer lui-même une synchronisation. Par défaut, il retient les séances enregistrées sous « Boxing » ; si aucune ne l'est, il propose les sports de combat détectés (kickboxing, muay-thaï, arts martiaux), et la sélection reste modifiable. Un filtre de période (30 / 90 jours / 6 mois / tout) s'applique aux six sous-onglets :
 
 - **Vue d'ensemble** : un **repère du jour** qui traduit la zone de récupération du matin en type de séance (vert : séance intense ; jaune : modérée ; rouge : technique légère ou repos), d'après la lecture des zones publiée par WHOOP ([WHOOP 101](https://developer.whoop.com/docs/whoop-101/)) — un repère, pas une prescription ; séances, durée, strain et intensité moyens ; constats rédigés et classés ; chaque séance à sa date, colorée selon la récupération du matin.
-- **Séances** : journal daté avec l'**intensité en % de réserve cardiaque** ((FC moyenne − FC de repos du matin) / (FC max − FC de repos), méthode de Karvonen dont WHOOP tire ses zones ; la FC max vient du profil WHOOP, `max_heart_rate` des mesures corporelles, ou à défaut de la plus haute FC observée), le **TRIMP** par zones d'Edwards ([Foster et al., 2001](https://pubmed.ncbi.nlm.nih.gov/11708692/) ; interchangeable avec le TRIMP de Banister en taekwondo, [Haddad et al., 2012](https://pubmed.ncbi.nlm.nih.gov/21904234)), la récupération du matin et celle du lendemain, la nuit suivante ; minutes faciles / modérées / dures par séance ; meilleures marques ; habitudes jour × moment de la journée ; export CSV.
+- **Séances** : journal daté avec l'**intensité en % de réserve cardiaque** ((FC moyenne − FC de repos du matin) / (FC max − FC de repos), méthode de Karvonen dont WHOOP tire ses zones ; la FC max vient du profil WHOOP, `max_heart_rate` des mesures corporelles, ou à défaut de la plus haute FC observée), le **TRIMP** par zones d'Edwards ([Foster et al., 2001](https://pubmed.ncbi.nlm.nih.gov/11708692/) ; corrélé au TRIMP de Banister dans une étude de taekwondo, [Haddad et al., 2012](https://pubmed.ncbi.nlm.nih.gov/21904234)), la récupération du matin et celle du lendemain, la nuit suivante ; minutes faciles / modérées / dures par séance ; meilleures marques ; habitudes jour × moment de la journée ; export CSV.
 - **Récupération** : **ce que la boxe coûte au lendemain** (récupération, HRV, FC de repos le matin qui suit une journée de boxe, face au matin qui suit les autres journées), avec un avertissement quand les matins de boxe partent déjà de plus haut ; **profil J0 → J+3** ; **boxez-vous plus fort les matins verts ?** (strain, intensité et minutes en zones 4–5 selon la zone du matin).
 - **Sommeil** : nuits qui suivent une séance terminée **moins de 4 h avant le coucher habituel**, seuil tiré d'une étude sur 14 689 porteurs de WHOOP ([Leota et al., Nature Communications 2025](https://doi.org/10.1038/s41467-025-58271-x)), mis en regard d'une méta-analyse qui ne trouve pas d'effet général de l'exercice du soir ([Stutz et al., Sports Med 2019](https://doi.org/10.1007/s40279-018-1015-0)). La séance est classée par rapport au coucher **habituel** (médiane) et non au coucher réel : sinon un coucher avancé suffirait à la rendre « tardive » et le test serait circulaire.
 - **Charge & progression** : charge boxe des 7 derniers jours face à la semaine type des 21 jours précédents (TRIMP, ou minutes à défaut de zones ; fenêtres découplées), régularité semaine par semaine **semaines vides comprises**, et pente de chaque mesure de séance par tranche de 30 jours avec intervalle de confiance.
@@ -296,7 +298,7 @@ source CSV distante ou fichier local
 - Les données source ne sont jamais dédupliquées silencieusement ; les vues analytiques appliquent leur propre règle documentée.
 - Les tendances et projections sont indicatives. Les modèles expérimentaux sont séparés des baselines et doivent être lus avec leur niveau de confiance.
 - Les moyennes mobiles nommées « N mesures » ne doivent pas être confondues avec les fenêtres calendaires « N jours ».
-- Une pente n'est annoncée « en baisse » ou « en hausse » que si son intervalle de confiance à 95 % exclut zéro ; sinon elle est dite stable.
+- Une pente n'est annoncée « en baisse » ou « en hausse » que si son intervalle de confiance à 95 % exclut zéro ; sinon sa direction est dite non établie.
 - Les variables dérivées des modèles ML sont décalées d'au moins une mesure : aucune ne contient la cible du jour.
 
 ## 5. Configuration métier

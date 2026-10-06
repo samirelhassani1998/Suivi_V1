@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from hmac import compare_digest
 from typing import Any
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 import numpy as np
 import pandas as pd
@@ -95,6 +97,8 @@ from app.core.session_state import (
     get_filtered_or_working_data,
 )
 from app.core.whoop_session import (
+    PENDING_KEY,
+    RESUME_KEY,
     clear_oauth_params,
     clear_pending_callback,
     default_redirect_uri,
@@ -198,9 +202,23 @@ def _consume_oauth_callback(credentials) -> None:
         _render_oauth_error(pending, credentials)
         return
 
-    expected_state = st.session_state.get("whoop_oauth_state")
+    # L'état n'est utilisable qu'une fois. Un retour dans une session perdue
+    # doit relancer le consentement, jamais contourner la vérification.
+    expected_state = st.session_state.pop("whoop_oauth_state", None)
     state = pending.get("state") or ""
-    if expected_state and state and state != expected_state:
+    if not expected_state and state and _stored_token() is None:
+        # Le bouton d'autorisation ouvre un nouvel onglet : son retour n'a pas
+        # accès à la session d'origine. Le code reste local à ce nouvel onglet
+        # jusqu'à sa saisie dans la session qui possède le nonce attendu.
+        st.session_state[RESUME_KEY] = {"code": str(pending.get("code", "")), "state": str(state)}
+        return
+    if not expected_state or not state:
+        st.error(
+            "Connexion WHOOP à relancer : l'état de connexion est absent ou la session a expiré. "
+            "Relancez la connexion depuis cette page."
+        )
+        return
+    if not compare_digest(str(state).encode("utf-8"), str(expected_state).encode("utf-8")):
         st.error(
             "État OAuth inattendu : la réponse ne correspond pas à la demande émise. "
             "Relancez la connexion depuis cette page."
@@ -217,8 +235,47 @@ def _consume_oauth_callback(credentials) -> None:
         return
 
     _store_token(token)
+    st.session_state.pop(RESUME_KEY, None)
     st.session_state["whoop_oauth_state"] = None
     st.success("Compte WHOOP connecté.")
+
+
+def _resume_oauth_callback(credentials) -> None:
+    """Consomme une URL copiée du nouvel onglet dans la session d'origine."""
+    callback_url = str(st.session_state.get("whoop_callback_url", "")).strip()
+    st.session_state["whoop_callback_url"] = ""
+    try:
+        parts = urlsplit(callback_url)
+        params = parse_qs(parts.query, keep_blank_values=True)
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            raise ValueError("URL invalide")
+        if any(len(params.get(key, [])) != 1 or not params[key][0] for key in ("code", "state")):
+            raise ValueError("Paramètres OAuth incomplets")
+    except ValueError:
+        st.error("Collez l'URL de retour complète contenant le code et l'état de connexion WHOOP.")
+        return
+    st.session_state[PENDING_KEY] = {"code": params["code"][0], "state": params["state"][0], "error": ""}
+    _consume_oauth_callback(credentials)
+
+
+def _render_callback_resume(credentials) -> bool:
+    """Guide le retour entre onglets sans échanger un code non lié à la session."""
+    resume = st.session_state.get(RESUME_KEY)
+    if not isinstance(resume, dict) or not resume.get("code") or not resume.get("state"):
+        return False
+    st.info(
+        "Autorisation reçue dans un nouvel onglet. Revenez à l'onglet qui a lancé la connexion, "
+        "ouvrez « Terminer une autorisation ouverte dans un autre onglet » et collez l'URL ci-dessous."
+    )
+    parts = urlsplit(credentials.redirect_uri)
+    callback_url = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(resume), ""))
+    st.code(callback_url, language="text")
+    st.caption("Cette URL termine votre connexion. Fermez cet onglet une fois la connexion confirmée dans l'onglet d'origine.")
+    if st.button("Recommencer dans cet onglet"):
+        st.session_state.pop(RESUME_KEY, None)
+        st.session_state["whoop_oauth_state"] = None
+        st.rerun()
+    return True
 
 
 def _render_oauth_error(pending: dict, credentials) -> None:
@@ -273,6 +330,8 @@ def _connection_panel(credentials) -> None:
         "Autorisez l'application à lire vos données WHOOP en lecture seule.",
         "🔗",
     )
+    if _render_callback_resume(credentials):
+        return
 
     with st.expander("Identifiants de l'application WHOOP", expanded=not credentials.is_complete):
         st.caption(
@@ -321,6 +380,12 @@ def _connection_panel(credentials) -> None:
         if st.button("Réinitialiser la connexion", use_container_width=True):
             clear_whoop_session()
             st.info("Session WHOOP réinitialisée.")
+
+    with st.expander("Terminer une autorisation ouverte dans un autre onglet", expanded=False):
+        st.caption("Collez ici l'URL proposée par l'onglet de retour WHOOP. Elle sera vérifiée puis effacée de ce champ.")
+        with st.form("whoop_callback_form"):
+            st.text_input("URL de retour WHOOP", type="password", key="whoop_callback_url")
+            st.form_submit_button("Terminer la connexion", on_click=_resume_oauth_callback, args=(credentials,))
 
     with st.expander("La redirection est refusée par WHOOP ?", expanded=False):
         _render_redirect_uri_help(credentials)
@@ -493,9 +558,11 @@ def _unlock_progress(daily: pd.DataFrame, merged: pd.DataFrame) -> None:
     """Ce qui est actif et ce qui reste à attendre, sous forme de progression."""
     for item in analysis_availability(daily, merged):
         if item.ready:
-            st.markdown(f"✅ **{item.name}** — active sur {_n(item.available, 'jour')}")
+            st.markdown(f"✅ **{item.name}** — disponible")
+            st.caption(item.detail)
             continue
-        st.markdown(f"⏳ **{item.name}** — encore {_n(item.missing, 'jour')} de mesure")
+        st.markdown(f"⏳ **{item.name}** — données encore insuffisantes")
+        st.caption(item.detail)
         st.progress(min(1.0, item.available / item.required))
 
 
@@ -766,6 +833,16 @@ def _vitals_panel(daily: pd.DataFrame) -> None:
         return
 
     badge = {"aucun signal": "🟢", "un signal isolé": "🟡", "plusieurs signaux concordants": "🔴"}
+    night = format_long_date(watch["date"], with_weekday=False)
+    st.caption(
+        f"Nuit du {night} : {watch['evaluated']} sur 5 signes vitaux évalués à cette même date."
+    )
+    if watch["missing_metrics"]:
+        st.caption(
+            "Mesure ou historique insuffisant pour cette nuit : "
+            + ", ".join(vital_name(metric) for metric in watch["missing_metrics"])
+            + "."
+        )
     cols = st.columns([1, 2])
     with cols[0]:
         kpi_card(
@@ -776,8 +853,8 @@ def _vitals_panel(daily: pd.DataFrame) -> None:
     with cols[1]:
         if watch["count"] == 0:
             insight_card(
-                "Aucun signe vital hors de votre habitude",
-                "Les cinq grandeurs mesurées cette nuit se situent dans votre plage usuelle.",
+                "Aucun signal parmi les signes évalués",
+                f"Aucun des {watch['evaluated']} signes évalués pour la nuit du {night} ne dépasse le seuil d'alerte.",
                 tone="success",
                 icon="🟢",
             )
@@ -786,7 +863,7 @@ def _vitals_panel(daily: pd.DataFrame) -> None:
             several = watch["count"] > 1
             insight_card(
                 f"{watch['count']} {'signes vitaux' if several else 'signe vital'} hors de votre habitude",
-                f"Cette nuit : {names}. "
+                f"Nuit du {night} : {names}. "
                 + (
                     "Plusieurs signes qui dévient ensemble méritent d'être signalés à un professionnel "
                     "de santé s'ils persistent."
@@ -979,7 +1056,7 @@ def _recovery_tab(daily: pd.DataFrame) -> None:
 
     _vitals_panel(daily)
 
-    section_header("Moteurs de la récupération", "Ce qui fait bouger votre score, chiffré plutôt que supposé.", "🔬")
+    section_header("Moteurs de la récupération", "Associations entre votre score, le sommeil et la charge de la veille.", "🔬")
     drivers = recovery_drivers(daily)
     if not drivers["ready"]:
         st.info(f"Analyse disponible à partir de {drivers['required_days']} jours complets (actuellement {drivers['days']}).")
@@ -1265,7 +1342,11 @@ def _effort_tab(daily: pd.DataFrame, workouts: pd.DataFrame) -> None:
             "qualifier votre charge récente. Deux séances isolées ne décrivent pas une semaine d'entraînement."
         )
     elif not np.isfinite(load["ratio"]):
-        st.info(f"Indicateur disponible à partir de {MIN_DAYS_TRAINING_LOAD} jours de mesure (actuellement {load['days']}).")
+        st.info(
+            "Indicateur disponible à partir de 4 jours mesurés dans la semaine récente et "
+            "10 dans les 21 jours précédents. "
+            f"Actuellement : {load['acute_days_measured']} jours récents et {load['chronic_days_measured']} jours antérieurs."
+        )
     else:
         cols = st.columns(3)
         with cols[0]:
@@ -1345,7 +1426,7 @@ def _effort_tab(daily: pd.DataFrame, workouts: pd.DataFrame) -> None:
             )
         if not opportunities.empty:
             # Une bonne journée rangée parmi les alertes brouillait la lecture.
-            section_header("Occasions manquées", "Récupération élevée alors que la charge est restée faible.", "🌤️")
+            section_header("Journées de faible charge en bonne récupération", "Récupération élevée et charge faible : un repos peut être planifié.", "🌤️")
             st.dataframe(
                 _format_table(opportunities.drop(columns=["Type"]), {"Récupération (%)": 0, "Strain": 1}),
                 use_container_width=True,
@@ -1595,7 +1676,7 @@ def _energy_balance_panel(merged: pd.DataFrame, weight_history: pd.DataFrame) ->
         kpi_card(
             "Apport estimé",
             f"{format_fr_number(balance['estimated_intake'], decimals=0)} kcal/j",
-            help_text=f"Intervalle à 95 % : {margin_text}.",
+            help_text=f"Marge indicative de la pente du poids : {margin_text}. Elle n'inclut pas l'erreur du bracelet ni celle de la conversion en calories.",
         )
 
     _target_pace_panel(merged)

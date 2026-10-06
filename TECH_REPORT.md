@@ -1,5 +1,7 @@
 # TECH_REPORT — Suivi V2
 
+> Note historique. Consulter l’[audit actuel](AUDIT_CURRENT_STATE.md) pour l’architecture complète et la [fiche des modèles](docs/MODEL_CARD.md) pour les méthodes, conditions de disponibilité et limites à jour.
+
 ## Architecture
 - `app/core/data.py`: nettoyage, validation, qualité des données, stratégie de doublons.
 - `app/core/features.py`: lags, rolling stats, variation, IMC, bilan calorique.

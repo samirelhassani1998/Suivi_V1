@@ -1,5 +1,7 @@
 # Audit applicatif : Suivi_V1 (Streamlit)
 
+> Archive d’un audit antérieur. L’état actuel, incluant WHOOP, Boxe et les corrections du 6 octobre 2026, est décrit dans [AUDIT_CURRENT_STATE.md](AUDIT_CURRENT_STATE.md).
+
 ## 1) Architecture actuelle
 
 - **Entrée Streamlit** : `Suivi_V1.py` configure l'application en mode wide, applique le thème global, vérifie l'authentification, charge la source Google Sheets/CSV et déclare la navigation multipage.

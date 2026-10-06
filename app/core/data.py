@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass, field
+from io import StringIO
 from typing import Any
 
 import numpy as np
@@ -61,18 +63,54 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
             mapping[c] = "Poids (Kgs)"
         else:
             mapping[c] = cleaned
-    return df.rename(columns=mapping)
+    normalized = df.rename(columns=mapping)
+    duplicates = normalized.columns[normalized.columns.duplicated()].unique().tolist()
+    if duplicates:
+        raise ValueError(f"Colonnes ambiguës après normalisation : {', '.join(duplicates)}. Renommez ou retirez les colonnes en double.")
+    return normalized
+
+
+def read_weight_csv(uploaded_file) -> pd.DataFrame:
+    """Lit un export CSV courant sans masquer les en-têtes ambigus."""
+    payload = uploaded_file.getvalue() if hasattr(uploaded_file, "getvalue") else uploaded_file.read()
+    if isinstance(payload, bytes):
+        try:
+            text = payload.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = payload.decode("cp1252")
+    else:
+        text = str(payload).lstrip("\ufeff")
+    if not text.strip():
+        raise ValueError("Le fichier CSV est vide.")
+    # Même comportement que pandas : les lignes blanches avant l'en-tête
+    # n'appartiennent pas au schéma, et ne doivent pas perturber le Sniffer.
+    offset = 0
+    for line in StringIO(text):
+        if line.strip():
+            break
+        offset += len(line)
+    text = text[offset:]
+    try:
+        dialect = csv.Sniffer().sniff(text[:65536], delimiters=",;\t")
+    except csv.Error as exc:
+        raise ValueError("Séparateur CSV introuvable : utilisez une virgule, un point-virgule ou une tabulation.") from exc
+    header = next(csv.reader(StringIO(text), dialect), [])
+    # Vérifier avant pandas, qui renommerait silencieusement les en-têtes dupliqués.
+    columns = _normalize_columns(pd.DataFrame(columns=header)).columns
+    missing = [column for column in REQUIRED_COLUMNS if column not in columns]
+    if missing:
+        raise ValueError(f"Colonne(s) obligatoire(s) absente(s) : {', '.join(missing)}.")
+    return pd.read_csv(StringIO(text), sep=dialect.delimiter)
 
 
 def _parse_dates(values: pd.Series) -> pd.Series:
-    parsed = normalize_datetime_series(values, dayfirst=True, normalize_day=True)
-    miss = parsed.isna()
-    if miss.any():
-        txt = values.astype(str).str.strip().str.replace("'", "", regex=False)
-        numeric = pd.to_numeric(txt, errors="coerce")
-        serial = parsed.isna() & numeric.notna() & numeric.between(20000, 80000)
-        if serial.any():
-            parsed.loc[serial] = pd.to_datetime(numeric.loc[serial], unit="D", origin="1899-12-30", errors="coerce").dt.normalize()
+    # Un entier Excel est sinon interprété comme des nanosecondes depuis 1970.
+    txt = values.astype(str).str.strip().str.replace("'", "", regex=False)
+    numeric = pd.to_numeric(txt, errors="coerce")
+    serial = numeric.notna() & numeric.between(20000, 80000)
+    parsed = normalize_datetime_series(values.where(~serial), dayfirst=True, normalize_day=True).copy()
+    if serial.any():
+        parsed.loc[serial] = pd.to_datetime(numeric.loc[serial], unit="D", origin="1899-12-30", errors="coerce").dt.normalize()
     return parsed
 
 
@@ -93,6 +131,8 @@ def _row_reasons(preview: pd.DataFrame) -> pd.Series:
             reasons.at[idx] = reasons.at[idx] + ["poids non numérique ou vide"]
         for idx in preview.index[preview["Poids (Kgs)"].notna() & (preview["Poids (Kgs)"] <= 0)]:
             reasons.at[idx] = reasons.at[idx] + ["poids nul ou négatif"]
+        for idx in preview.index[preview["Poids (Kgs)"].notna() & ~np.isfinite(preview["Poids (Kgs)"])]:
+            reasons.at[idx] = reasons.at[idx] + ["poids non fini"]
     return reasons
 
 
@@ -129,7 +169,10 @@ def clean_weight_dataframe(df: pd.DataFrame, drop_invalid: bool = True) -> pd.Da
 def validate_journal(df: pd.DataFrame) -> ValidationResult:
     errors: list[str] = []
     warnings: list[str] = []
-    normalized = _normalize_columns(df.copy())
+    try:
+        normalized = _normalize_columns(df.copy())
+    except ValueError as exc:
+        return ValidationResult(errors=[str(exc)], warnings=warnings, cleaned=df.copy())
     for col in REQUIRED_COLUMNS:
         if col not in normalized.columns:
             errors.append(f"Colonne obligatoire absente: {col}")
@@ -138,7 +181,7 @@ def validate_journal(df: pd.DataFrame) -> ValidationResult:
     cleaned, quality = clean_weight_dataframe_with_report(normalized, drop_invalid=True, source="journal")
     if quality.invalid_rows:
         rows = ", ".join(str(r.index) for r in quality.rejected_rows[:10])
-        warnings.append(f"{quality.invalid_rows} ligne(s) rejetée(s) pour données invalides (indices: {rows})")
+        errors.append(f"{quality.invalid_rows} ligne(s) invalide(s) à corriger avant l'enregistrement (indices : {rows}). Aucune mesure enregistrée ne sera supprimée.")
     if quality.duplicate_dates:
         warnings.append(f"{quality.duplicate_dates} mesure(s) avec date déjà présente conservée(s)")
     return ValidationResult(errors=errors, warnings=warnings, cleaned=cleaned, quality=quality)

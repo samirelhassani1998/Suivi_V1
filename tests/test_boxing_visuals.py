@@ -163,3 +163,14 @@ def test_recovery_profile_draws_the_overall_mean_as_a_reference():
 
     assert any(shape.get("y0") == 61.0 and shape.get("y1") == 61.0 for shape in spec["layout"].get("shapes", []))
     assert spec["data"][0]["error_y"]["type"] == "data"
+
+
+def test_sleep_chart_shows_one_night_after_the_latest_session_of_each_day():
+    _, table = _table()
+    earlier = table.copy()
+    earlier["Marge avant coucher habituel (h)"] += 5.0
+    figure = late_sessions_chart(pd.concat([earlier, table, table], ignore_index=True))
+    baseline = late_sessions_chart(table)
+
+    assert list(figure.data[0].x) == list(baseline.data[0].x)
+    assert list(figure.data[0].y) == list(baseline.data[0].y)

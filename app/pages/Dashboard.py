@@ -46,6 +46,7 @@ from app.core.trend import (
     RATE_WINDOW_DAYS,
     TREND_WINDOW_DAYS,
     bmi_category,
+    eta_to_target,
     noise_level,
     rate_of_change,
     reading_vs_trend,
@@ -152,11 +153,11 @@ def _rate_sentence(rate: dict) -> str:
     verdict = {
         "baisse": "une baisse établie",
         "hausse": "une hausse établie",
-        "stable": "une pente que le hasard suffit à produire",
+        "stable": "une direction qui reste à confirmer",
     }.get(rate["direction"], "une pente indéterminée")
     return (
         f"Sur {rate['n']} pesées en {rate['span_days']} jours, le rythme est de {_rate_text(rate)} "
-        f"(IC 95 % : {_rate_interval_text(rate)}) : {verdict}."
+        f"(IC 95 % indicatif : {_rate_interval_text(rate)}) : {verdict}."
     )
 
 
@@ -226,7 +227,7 @@ def _quick_reading_sentence(context: dict, summary: dict, target_weight: float) 
     parts: list[str] = []
     if reading.get("ready"):
         parts.append(
-            f"Pesée du jour : {format_fr_kg(reading['reading'], decimals=1)}, poids de tendance : "
+            f"Dernière pesée ({format_fr_date(reading['date'])}) : {format_fr_kg(reading['reading'], decimals=1)}, poids de tendance : "
             f"{format_fr_kg(reading['trend'], decimals=1)}. L'écart de {format_fr_kg(reading['deviation'], decimals=1, sign=True)} "
             f"est {reading['verdict']} (± {format_fr_kg(reading['band'], decimals=1)})."
         )
@@ -280,14 +281,16 @@ def _render_daily_overview(summary: dict, target_weight: float, trajectory_statu
             help_text=(
                 f"Pente par moindres carrés sur les {RATE_WINDOW_DAYS} derniers jours calendaires. "
                 + (
-                    f"Intervalle de confiance à 95 % : {_rate_interval_text(rate)} · p = {format_fr_number(rate['p_value'], decimals=3)}."
+                    f"IC 95 % indicatif : {_rate_interval_text(rate)} · p = {format_fr_number(rate['p_value'], decimals=3)}. "
+                    "Le calcul suppose des résidus indépendants ; des fluctuations corrélées peuvent sous-estimer l'incertitude."
                     if rate.get("ready")
                     else f"Indisponible : {rate.get('reason')}."
                 )
             ),
         )
         if rate.get("ready"):
-            st.caption(("🟢 " if rate["direction"] == "baisse" else "🟠 " if rate["direction"] == "hausse" else "⚪ ") + f"{rate['direction'].capitalize()} · IC {_rate_interval_text(rate)}")
+            direction = "Direction non établie" if rate["direction"] == "stable" else rate["direction"].capitalize()
+            st.caption(("🟢 " if rate["direction"] == "baisse" else "🟠 " if rate["direction"] == "hausse" else "⚪ ") + f"{direction} · IC indicatif {_rate_interval_text(rate)}")
     with cols[3]:
         st.metric(
             "Variation 30 jours",
@@ -392,7 +395,8 @@ def _render_advanced_kpis(
             f"Rythme {LONG_RATE_WINDOW_DAYS} jours",
             _rate_text(rate_long),
             help_text=(
-                f"Pente de fond sur {LONG_RATE_WINDOW_DAYS} jours. IC 95 % : {_rate_interval_text(rate_long)}."
+                f"Pente de fond sur {LONG_RATE_WINDOW_DAYS} jours. IC 95 % indicatif : {_rate_interval_text(rate_long)}. "
+                "Le calcul suppose des résidus indépendants."
                 if rate_long.get("ready")
                 else f"Indisponible : {rate_long.get('reason')}."
             ),
@@ -419,8 +423,8 @@ def _render_advanced_kpis(
             "Bruit quotidien",
             f"± {format_fr_kg(noise['band'], decimals=1)}" if noise.get("ready") else "—",
             help_text=(
-                f"Demi-largeur à 95 % des écarts entre pesées et tendance (σ robuste {format_fr_kg(noise['sigma'], decimals=2)}). "
-                "Un écart plus petit que cela d'un jour à l'autre n'est pas un changement de poids."
+                f"Bande indicative des écarts entre pesées et tendance (1,96 × σ robuste, σ = {format_fr_kg(noise['sigma'], decimals=2)}). "
+                "Sa couverture réelle n'est pas calibrée ; elle ne mesure pas directement la variation entre deux pesées."
                 if noise.get("ready")
                 else "Disponible après cinq mesures."
             ),
@@ -489,7 +493,9 @@ def _render_advanced_kpis(
 
     plateau = detect_plateau(analysis_df, window=14)
     nb_mesures_plateau = plateau.get("nb_mesures", 0)
-    if nb_mesures_plateau >= STAGNATION_MIN_MEASUREMENTS:
+    if plateau["status"] == "indisponible":
+        st.caption(f"📊 Signal de plateau indisponible : {plateau.get('reason')} ({nb_mesures_plateau} mesures sur 14 j).")
+    elif nb_mesures_plateau >= STAGNATION_MIN_MEASUREMENTS:
         if plateau["status"] == "plateau probable":
             alert_banner(f"➡️ Plateau probable détecté ({nb_mesures_plateau} mesures, pente = {format_fr_number(plateau['slope'], decimals=3, sign=True)} kg/sem)", "warning")
         elif plateau["status"] == "baisse active":
@@ -751,9 +757,9 @@ def _render_main_weight_chart(
     )
     st.plotly_chart(fig, use_container_width=True, key=TARGET_TRAJECTORY_CHART_KEY)
     st.caption(
-        "Le poids de tendance est une régression locale robuste (LOWESS, Cleveland 1979) sur une fenêtre de "
-        f"{TREND_WINDOW_DAYS} jours calendaires ; la bande orange couvre 95 % des écarts habituels entre une pesée et cette tendance. "
-        "Une pesée dans la bande n'est pas un changement de poids."
+        "Le poids de tendance est une régression locale robuste (LOWESS, Cleveland 1979), avec un lissage d'environ "
+        f"{TREND_WINDOW_DAYS} jours selon la fréquence des pesées. La bande orange représente une dispersion indicative "
+        "(1,96 × écart-type robuste), sans garantie de couverture de 95 %. Une pesée isolée ne suffit pas à établir une tendance."
     )
 
     section_header(
@@ -823,30 +829,27 @@ def _render_forecast_tab(df: pd.DataFrame, daily_summary: dict, trajectory_statu
     rate = context["rate_long"]
     frame = context["frame"]
     if rate.get("ready") and not frame.empty:
-        trend_now = float(frame["Tendance"].iloc[-1])
-        remaining = trend_now - target_weight
-        if remaining > 0 and rate["direction"] == "baisse":
-            last_date = frame["Date"].iloc[-1]
-            central_days = remaining / abs(rate["slope_kg_week"] / 7.0)
-            fast_days = remaining / abs(rate["ci_low"] / 7.0)
-            eta_text = f"vers le **{format_fr_date(last_date + pd.Timedelta(days=int(round(central_days))))}**"
-            if rate["ci_high"] < 0:
-                slow_days = remaining / abs(rate["ci_high"] / 7.0)
+        estimate = eta_to_target(df, target_weight)
+        if estimate["ready"] and not estimate["reached"]:
+            eta_text = f"vers le **{format_fr_date(estimate['eta'])}**"
+            if estimate["eta_early"] is not None and estimate["eta_late"] is not None:
                 eta_text += (
-                    f" (plage plausible : {format_fr_date(last_date + pd.Timedelta(days=int(round(fast_days))))} → "
-                    f"{format_fr_date(last_date + pd.Timedelta(days=int(round(slow_days))))})"
+                    f" (plage indicative : {format_fr_date(estimate['eta_early'])} → "
+                    f"{format_fr_date(estimate['eta_late'])})"
                 )
+            elif estimate["eta_late"] is None:
+                eta_text += " (borne tardive au-delà de l'horizon de trois ans)"
             st.success(
-                f"📐 Au rythme des {LONG_RATE_WINDOW_DAYS} derniers jours ({_rate_text(rate)}, IC 95 % {_rate_interval_text(rate)}), "
+                f"📐 Au rythme des {LONG_RATE_WINDOW_DAYS} derniers jours ({_rate_text(rate)}, IC 95 % indicatif {_rate_interval_text(rate)}), "
                 f"le poids de tendance atteindrait {format_fr_kg(target_weight, decimals=1)} {eta_text}. "
-                "Extrapolation linéaire : une réponse à « et si cela continuait », pas une prédiction."
+                "Extrapolation linéaire sous hypothèse de résidus indépendants : une réponse à « et si cela continuait », pas une prédiction."
             )
-        elif remaining <= 0:
+        elif estimate["reached"]:
             st.success("📐 Le poids de tendance est déjà sous l'objectif principal.")
         else:
             st.info(
-                f"📐 Sur {LONG_RATE_WINDOW_DAYS} jours, la pente ({_rate_text(rate)}, IC 95 % {_rate_interval_text(rate)}) ne se distingue pas "
-                "d'une stagnation ou remonte : aucune date d'arrivée n'est projetée."
+                f"📐 Aucune date d'arrivée projetée : {estimate['reason']}. "
+                f"Rythme sur {LONG_RATE_WINDOW_DAYS} jours : {_rate_text(rate)} (IC 95 % indicatif {_rate_interval_text(rate)})."
             )
     else:
         st.caption(f"📐 Projection sur le rythme de fond disponible après cinq pesées réparties sur au moins sept jours ({rate.get('reason', 'recul insuffisant')}).")
@@ -916,8 +919,8 @@ def _render_history_tab(df: pd.DataFrame, targets: tuple[float, ...], height_m: 
             fig_res.add_vrect(x0=-noise["band"], x1=noise["band"], fillcolor=TREND_BAND_FILL, line_width=0, layer="below", annotation_text="bruit habituel", annotation_position="top left")
             st.plotly_chart(fig_res, use_container_width=True)
             st.caption(
-                f"σ robuste : {format_fr_kg(noise['sigma'], decimals=2)} ; 95 % des pesées tombent à moins de "
-                f"{format_fr_kg(noise['band'], decimals=1)} de la tendance. Ces écarts tiennent surtout à l'eau, au glycogène et au contenu digestif."
+                f"σ robuste : {format_fr_kg(noise['sigma'], decimals=2)} ; bande indicative de ± "
+                f"{format_fr_kg(noise['band'], decimals=1)} autour de la tendance. L'eau, le glycogène et le contenu digestif peuvent contribuer à ces écarts."
             )
         else:
             st.info("Disponible après cinq pesées.")

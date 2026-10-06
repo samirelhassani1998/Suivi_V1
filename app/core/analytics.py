@@ -118,13 +118,14 @@ def discipline_score(df: pd.DataFrame, window_days: int = 30) -> dict[str, Any]:
 
     Retourne un score 0-100, le taux de mesures, et une interprétation.
     """
+    window_days = max(1, int(window_days))
     if df.empty:
         return {"score": 0, "rate": 0.0, "interpretation": "aucune donnée", "measured_days": 0, "expected_days": window_days}
     data = df.sort_values("Date")
-    last_date = data["Date"].max()
-    start = last_date - pd.Timedelta(days=window_days)
-    recent = data[data["Date"] >= start]
-    measured = recent["Date"].nunique()
+    days = data["Date"].dt.normalize()
+    last_date = days.max()
+    start = last_date - pd.Timedelta(days=window_days - 1)
+    measured = days[(days >= start) & (days <= last_date)].nunique()
     rate = measured / window_days * 100
     score = min(100, int(rate))
     if score >= 85:
@@ -288,15 +289,14 @@ def segment_phases(df: pd.DataFrame, min_days: int = 7, gap_threshold_days: int 
     # Dernier bloc
     if len(data) - block_start >= min_days:
         blocks.append(data.iloc[block_start:].reset_index(drop=True))
-    elif not blocks and len(data) >= 3:
-        # Si aucun bloc assez grand, prendre tout
-        blocks.append(data)
 
     all_phases: list[Phase] = []
     for block in blocks:
-        all_phases.extend(_segment_block(block, min_days))
+        # Deux phases séparées par une interruption ne décrivent pas une
+        # évolution observée continue, même lorsqu'elles ont le même sens.
+        all_phases.extend(_merge_consecutive_phases(_segment_block(block, min_days)))
 
-    return _merge_consecutive_phases(all_phases)
+    return all_phases
 
 
 def _segment_block(data: pd.DataFrame, min_days: int = 7) -> list[Phase]:
@@ -379,7 +379,7 @@ def _merge_consecutive_phases(phases: list[Phase]) -> list[Phase]:
 # ---------------------------------------------------------------------------
 
 def period_comparison(df: pd.DataFrame) -> dict[str, Any]:
-    """Compare la semaine courante à la précédente, puis le mois courant au précédent."""
+    """Compare deux fenêtres de sept jours, puis le mois courant au précédent."""
     if len(df) < 7:
         return {"week": None, "month": None}
     data = df.sort_values("Date")
@@ -1312,4 +1312,3 @@ def next_milestone(current_weight: float, targets: tuple[float, ...], velocity: 
         "eta_days": eta_days,
         "eta_confidence": eta_confidence,
     }
-

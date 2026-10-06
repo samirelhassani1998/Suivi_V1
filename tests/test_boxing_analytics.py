@@ -388,7 +388,7 @@ def test_next_morning_weight_only_pairs_weigh_ins_one_day_apart():
     assert result["boxing_pairs"] + result["other_pairs"] < len(weights) - 1
 
 
-def test_progression_is_called_stable_unless_the_slope_survives_the_corrected_test():
+def test_progression_is_uncertain_unless_the_slope_survives_the_corrected_test():
     dates = pd.date_range("2026-07-01", periods=20, freq="3D")
     rng = np.random.default_rng(5)
     table = pd.DataFrame(
@@ -404,7 +404,7 @@ def test_progression_is_called_stable_unless_the_slope_survives_the_corrected_te
 
     readings = dict(zip(progression["table"]["Mesure"], progression["table"]["Lecture"]))
     assert readings["Intensité (% FCR)"] == "en hausse"
-    assert readings["Strain séance"] == "stable (non établi)"
+    assert readings["Strain séance"] == "tendance non déterminée"
     slope = progression["table"].set_index("Mesure").loc["Intensité (% FCR)", "Pente / 30 jours"]
     assert slope == pytest.approx(0.8 * 10, rel=0.2)
 
@@ -490,7 +490,7 @@ def test_insights_stay_silent_on_untested_comparisons_and_rank_warnings_first():
 
     titles = [insight.title for insight in insights]
     assert titles[0].startswith("Pas de boxe depuis 14 jours")
-    assert any("vous coûte" in title for title in titles)
+    assert any("points de moins après la boxe" in title for title in titles)
     priorities = [insight.priority for insight in insights]
     assert priorities == sorted(priorities, reverse=True)
 
@@ -551,3 +551,150 @@ def test_sync_window_ends_today_in_utc():
 
     assert end == pd.Timestamp("2026-10-03")
     assert (end - start).days == 30
+
+
+@pytest.mark.parametrize("missing_offset", [1, 16])
+def test_load_uses_complete_minutes_on_both_windows_when_a_trimp_is_missing(missing_offset):
+    sessions = [_session(TODAY - pd.Timedelta(days=offset), zones=None if offset == missing_offset else (0, 0, 0, 0, 25, 0)) for offset in (1, 9, 16, 23)]
+    table = session_table(None, boxing_sessions(pd.DataFrame(sessions)))
+
+    result = boxing_load(table, reference=TODAY, data_start=TODAY - pd.Timedelta(days=60))
+
+    assert result["unit"] == "minutes"
+    assert result["acute"] == 60
+    assert result["chronic_weekly"] == 60
+    assert result["ratio"] == 1
+    assert result["trimp_sessions"] == 3 and result["total_sessions"] == 4
+
+
+def test_load_stays_unavailable_without_a_common_complete_measure():
+    table = pd.DataFrame({"Date": [TODAY - pd.Timedelta(days=offset) for offset in (1, 9, 16, 23)], "TRIMP": [np.nan, 100, 100, 100], "Durée (min)": [60, np.nan, 60, 60]})
+
+    result = boxing_load(table, reference=TODAY, data_start=TODAY - pd.Timedelta(days=60))
+
+    assert result["status"] == "données incomplètes"
+    assert np.isnan(result["ratio"]) and np.isnan(result["acute"])
+    assert result["trimp_sessions"] == result["duration_sessions"] == 3
+
+
+def test_load_chooses_its_unit_only_from_the_comparison_windows():
+    sessions = [_session(TODAY - pd.Timedelta(days=offset), zones=None if offset == 50 else (0, 0, 0, 0, 25, 0)) for offset in (1, 9, 16, 23, 50)]
+    table = session_table(None, boxing_sessions(pd.DataFrame(sessions)))
+
+    result = boxing_load(table, reference=TODAY, data_start=TODAY - pd.Timedelta(days=60))
+
+    assert result["unit"] == "TRIMP" and result["ratio"] == 1
+    assert result["total_sessions"] == 4
+
+
+def test_a_partially_missing_zone_does_not_become_a_complete_trimp():
+    row = _session(TODAY)
+    row["Zone 4 (min)"] = np.nan
+    table = session_table(None, boxing_sessions(pd.DataFrame([row])))
+    assert np.isnan(table.loc[0, "TRIMP"])
+
+
+def test_weight_comparison_limits_exposure_dates_and_keeps_their_next_morning():
+    dates = pd.date_range(end=TODAY, periods=60)
+    weights = pd.DataFrame({"Date": dates, "Poids (Kgs)": 100 + np.random.default_rng(4).normal(0, 0.3, 60)})
+    sessions = pd.DataFrame({"Date": dates[::3]})
+    result = next_morning_weight(weights, sessions, exposure_start=dates[30], exposure_end=dates[58])
+    trimmed = next_morning_weight(weights.iloc[30:], sessions, exposure_start=dates[30], exposure_end=dates[58])
+
+    assert (result["boxing_pairs"], result["other_pairs"]) == (10, 19)
+    assert result["gap"] == pytest.approx(trimmed["gap"])
+    assert result["p_value"] == pytest.approx(trimmed["p_value"])
+    # The outcome on date 59 is retained for the final exposure on date 58.
+    without_last = next_morning_weight(weights.iloc[:-1], sessions, exposure_start=dates[30], exposure_end=dates[58])
+    assert without_last["other_pairs"] == 18
+    # Later outcomes are not new exposure dates in this comparison.
+    extra = pd.DataFrame({"Date": [TODAY + pd.Timedelta(days=1)], "Poids (Kgs)": [120]})
+    extended = next_morning_weight(pd.concat([weights, extra]), sessions, exposure_start=dates[30], exposure_end=dates[58])
+    assert extended["gap"] == pytest.approx(result["gap"])
+
+
+def _sleep_comparison_table():
+    return pd.DataFrame({
+        "Date": pd.date_range(end=TODAY, periods=8),
+        "Marge avant coucher habituel (h)": [2.0] * 4 + [6.0] * 4,
+        "Coucher suivant": [0.0] * 8,
+        "Sommeil suivant (heures)": [5.0] * 4 + [8.0] * 4,
+        "Efficacité sommeil suivant (%)": [90.0] * 8,
+        "FC repos du lendemain (bpm)": [60.0] * 8,
+        "HRV du lendemain (ms)": [50.0] * 8,
+    })
+
+
+def test_sleep_comparison_counts_one_night_per_day_and_uses_the_latest_session():
+    table = _sleep_comparison_table()
+    additional_early = table.iloc[:4].copy()
+    additional_early["Marge avant coucher habituel (h)"] = 10.0
+    duplicated = pd.concat([additional_early, table, table], ignore_index=True)
+
+    result = late_session_sleep(duplicated)
+
+    assert result["late"] == result["early"] == 4
+    assert len(result["nights"]) == result["nights"]["Date"].nunique() == 8
+    assert result["table"]["Effectifs"].eq("4 / 4").all()
+    assert result["table"].set_index("Mesure").loc["Sommeil suivant (heures)", "Écart"] == -3
+
+
+def test_many_sessions_on_two_days_do_not_unlock_a_sleep_comparison():
+    table = _sleep_comparison_table()
+    table["Date"] = [TODAY - pd.Timedelta(days=1)] * 4 + [TODAY] * 4
+    result = late_session_sleep(table)
+    assert not result["ready"]
+    assert result["late"] == result["early"] == 1
+
+
+def test_sleep_does_not_classify_a_day_with_an_unknown_session_end():
+    table = _sleep_comparison_table()
+    unknown = table.iloc[[0]].copy()
+    unknown["Marge avant coucher habituel (h)"] = np.nan
+    result = late_session_sleep(pd.concat([table, unknown], ignore_index=True))
+    assert result["late"] == 3 and result["early"] == 4
+    assert not result["ready"]
+
+
+def test_unavailable_sleep_inference_never_becomes_a_reassuring_insight():
+    result = late_session_sleep(_sleep_comparison_table())
+    assert result["ready"]  # Descriptive means remain useful.
+    assert result["table"]["Inférence"].eq("indisponible").all()
+    assert not result["table"]["Écart établi"].any()
+    insights = boxing_insights(summary={"sessions": 8}, load={}, cost={}, readiness={}, late=result, weight={}, progression={}, energy={})
+    assert not any(insight.icon == "🌙" for insight in insights)
+
+
+def test_non_significant_sleep_result_does_not_claim_an_absence_of_effect():
+    table = _sleep_comparison_table()
+    table["Sommeil suivant (heures)"] = [6, 7, 8, 9] * 2
+    result = late_session_sleep(table)
+    insights = boxing_insights(summary={"sessions": 8}, load={}, cost={}, readiness={}, late=result, weight={}, progression={}, energy={})
+    sleep = next(insight for insight in insights if insight.icon == "🌙")
+    assert sleep.tone == "info"
+    assert "incertain" in sleep.title and "ne démontre pas l'absence" in sleep.body
+
+
+def test_energy_never_substitutes_gross_calories_for_a_missing_net_estimate():
+    table = session_table(None, boxing_sessions(pd.DataFrame([_session(TODAY)])))
+    result = boxing_energy(None, None, table, window_days=7, required_daily_kg=0.02)
+    assert result["gross_weekly"] == 600
+    assert np.isnan(result["net_weekly"])
+    assert np.isnan(result["share_of_target"]) and np.isnan(result["kg_per_month"])
+
+
+def test_weekly_unknown_measurements_stay_missing_in_weeks_with_sessions():
+    table = session_table(None, boxing_sessions(pd.DataFrame([_session("2026-09-07", **{"Calories séance (kcal)": np.nan, "Durée (min)": np.nan})])))
+    result = weekly_sessions(table, start="2026-09-07", end="2026-09-20")
+    assert np.isnan(result.loc[0, "Calories (kcal)"])
+    assert np.isnan(result.loc[0, "Durée totale (min)"])
+    assert result.loc[1, "Calories (kcal)"] == result.loc[1, "Durée totale (min)"] == 0
+
+
+def test_missing_session_duration_does_not_become_zero_net_energy():
+    daily = pd.DataFrame({"Date": pd.date_range(end=TODAY, periods=14), "Calories (kcal)": 2880.0})
+    workouts = pd.DataFrame([_session(TODAY, **{"Durée (min)": np.nan})])
+    table = session_table(daily, boxing_sessions(workouts))
+    result = boxing_energy(daily, workouts, table, window_days=14, required_daily_kg=0.02)
+    assert result["rest_days"] >= 3
+    assert np.isnan(result["net_weekly"]) and np.isnan(result["share_of_target"])

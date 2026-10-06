@@ -30,6 +30,16 @@ def evaluate_plateau_window(df: pd.DataFrame, config: StagnationConfig | None = 
     duration = (data["Date"].iloc[-1] - data["Date"].iloc[0]).total_seconds() / 86400
     if duration <= 0:
         return base | {"reason": "durée insuffisante", "nb_mesures": len(data), "slope": 0.0, "slope_kg_week": 0.0, "slope_kg_day": 0.0}
+    min_span_days = max(1, config.window_days - 2)
+    if duration < min_span_days:
+        return base | {
+            "reason": f"recul de {duration:g} jours, {min_span_days} requis",
+            "nb_mesures": len(data),
+            "period_days": duration,
+            "slope": 0.0,
+            "slope_kg_week": 0.0,
+            "slope_kg_day": 0.0,
+        }
     x_days = (data["Date"] - data["Date"].min()).dt.total_seconds() / 86400
     slope_day = float(np.polyfit(x_days, data["Poids (Kgs)"], 1)[0])
     slope_week = slope_day * 7

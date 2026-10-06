@@ -68,6 +68,8 @@ def clear_whoop_session() -> None:
     st.session_state["whoop_profile"] = {}
     st.session_state["whoop_body"] = {}
     st.session_state["whoop_last_sync"] = None
+    for key in ("whoop_callback_to_resume", "whoop_callback_url", "whoop_pending_auth"):
+        st.session_state.pop(key, None)
 
 
 def store_whoop_sync(result) -> None:
@@ -77,6 +79,12 @@ def store_whoop_sync(result) -> None:
     st.session_state["whoop_profile"] = result.profile
     st.session_state["whoop_body"] = result.body
     st.session_state["whoop_last_sync"] = pd.Timestamp.utcnow().tz_localize(None)
+
+
+def _reset_journal_editor() -> None:
+    """Une nouvelle base de données ne doit jamais réappliquer les anciens edits."""
+    st.session_state["journal_editor_revision"] = int(st.session_state.get("journal_editor_revision", 0)) + 1
+    st.session_state["journal_has_unsaved_changes"] = False
 
 
 def set_source_data(df: pd.DataFrame, source_name: str, quality: dict | None = None) -> None:
@@ -89,6 +97,8 @@ def set_source_data(df: pd.DataFrame, source_name: str, quality: dict | None = N
     st.session_state["analysis_data"] = _empty_df()
     st.session_state["raw_data"] = clean.copy(deep=True)
     st.session_state["data_source"] = source_name
+    st.session_state["data_initialized"] = True
+    _reset_journal_editor()
     if quality is not None:
         q = dict(quality)
         q["source"] = source_name
@@ -102,6 +112,7 @@ def reset_working_to_source() -> None:
     st.session_state["filter_active"] = False
     st.session_state["analysis_data"] = _empty_df()
     st.session_state["raw_data"] = source.copy(deep=True)
+    _reset_journal_editor()
 
 
 def set_working_data(df: pd.DataFrame) -> None:
@@ -111,6 +122,7 @@ def set_working_data(df: pd.DataFrame) -> None:
     st.session_state["filter_active"] = False
     st.session_state["analysis_data"] = _empty_df()
     st.session_state["raw_data"] = work.copy(deep=True)
+    _reset_journal_editor()
 
 
 def set_filtered_data(df: pd.DataFrame) -> None:

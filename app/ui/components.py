@@ -86,7 +86,7 @@ def progress_panel(title: str, percent: float, caption: str, tone: str = "primar
                 <strong>{title}</strong>
                 <span>{safe_percent:.1f}%</span>
             </div>
-            <div class="suivi-progress-track"><div style="width:{safe_percent:.1f}%"></div></div>
+            <div class="suivi-progress-track" role="progressbar" aria-label="{escape(title, quote=True)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{safe_percent:.1f}"><div style="width:{safe_percent:.1f}%"></div></div>
             <p>{caption}</p>
         </div>
         """,

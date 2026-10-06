@@ -238,12 +238,46 @@ def test_fetch_collection_follows_pagination_and_sends_bearer_token():
     assert transport.calls[1]["params"]["nextToken"] == "page-2"
 
 
-def test_fetch_collection_stops_on_repeated_next_token():
+def test_fetch_collection_rejects_repeated_next_token_instead_of_returning_partial_data():
     page = HttpResponse(200, {"records": [_recovery_record("2026-09-09T12:00:00.000Z", 60)], "next_token": "same"})
     transport = FakeTransport([page, page])
-    records = fetch_collection("recovery", WhoopToken(access_token="at"), start="2026-09-01", end="2026-09-10", transport=transport)
-    assert len(records) == 2
+    with pytest.raises(WhoopError, match="Pagination"):
+        fetch_collection("recovery", WhoopToken(access_token="at"), start="2026-09-01", end="2026-09-10", transport=transport)
     assert len(transport.calls) == 2
+
+
+def test_fetch_collection_rejects_a_truncated_page_budget():
+    transport = FakeTransport([HttpResponse(200, {"records": [], "next_token": "more"})])
+    with pytest.raises(WhoopError, match="incomplet"):
+        fetch_collection("cycle", WhoopToken("fake"), start="2026-09-01", end="2026-09-10", transport=transport, max_pages=1)
+
+
+@pytest.mark.parametrize("payload", [None, {}, {"records": "invalid"}, {"records": [None]}])
+def test_fetch_collection_rejects_malformed_payloads(payload):
+    transport = FakeTransport([HttpResponse(200, payload)])
+    with pytest.raises(WhoopError, match="Réponse WHOOP"):
+        fetch_collection("cycle", WhoopToken("fake"), start="2026-09-01", end="2026-09-10", transport=transport)
+
+
+def test_crossed_energy_analysis_keeps_open_cycles_out_of_the_valid_days():
+    from app.core.whoop_analytics import energy_balance
+
+    dates = pd.date_range("2026-09-01", periods=14)
+    weights = pd.DataFrame({"Date": dates, "Poids (Kgs)": 100 - np.arange(14) * 0.05})
+    daily = pd.DataFrame({
+        "Date": dates,
+        "Calories (kcal)": [2500.] * 13 + [100.],
+        "Cycle en cours": [False] * 13 + [True],
+        "Calibration": [True] + [False] * 13,
+    })
+
+    crossed = merge_with_weight(weights, daily)
+    balance = energy_balance(crossed)
+
+    assert crossed["Calibration"].tolist() == daily["Calibration"].tolist()
+    assert balance["days"] == 13
+    assert balance["mean_burn"] == 2500.
+    assert not balance["ready"]
 
 
 def test_fetch_collection_caps_limit_to_api_maximum():

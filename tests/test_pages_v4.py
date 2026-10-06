@@ -101,6 +101,8 @@ def test_predictions_page_shows_a_validated_projection_and_a_leaderboard_verdict
     _state(at)
     at.run()
     assert not at.exception
+    next(widget for widget in at.checkbox if widget.label == "Évaluer SARIMAX dans le classement").check().run()
+    assert not at.exception
     rendered = _markdown(at)
     assert "Projection selon vos mesures" in rendered
     assert "Leaderboard" in rendered
@@ -108,7 +110,12 @@ def test_predictions_page_shows_a_validated_projection_and_a_leaderboard_verdict
     tables = [frame.value for frame in at.dataframe]
     leaderboard = next(table for table in tables if "Verdict" in table.columns)
     assert "Dernière valeur" in set(leaderboard["Modèle"])
-    assert leaderboard["Verdict"].str.contains("dernière valeur").all()
+    assert leaderboard["Verdict"].str.contains("dernière valeur|non évalué").all()
+    # La fixture comporte une interruption : un pas ARIMA ne doit pas devenir
+    # implicitement un jour quand les mesures ne sont pas quotidiennes.
+    sarimax = leaderboard[leaderboard["Modèle"].str.contains("SARIMAX")]
+    assert not sarimax.empty
+    assert sarimax["Verdict"].str.contains("non évalué").all()
     # Le cône d'incertitude est dessiné autour de la projection principale.
     specs = [json.loads(chart.proto.spec) for chart in at.get("plotly_chart")]
     names = {trace.get("name", "") for spec in specs for trace in spec.get("data", [])}
