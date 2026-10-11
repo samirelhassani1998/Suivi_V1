@@ -54,6 +54,7 @@ def ensure_whoop_defaults() -> None:
     st.session_state.setdefault("whoop_profile", {})
     st.session_state.setdefault("whoop_body", {})
     st.session_state.setdefault("whoop_last_sync", None)
+    st.session_state.setdefault("whoop_sync_warnings", [])
     st.session_state.setdefault("whoop_sync_days", DEFAULT_WHOOP_SYNC_DAYS)
     st.session_state.setdefault("whoop_manual_credentials", {})
     st.session_state.setdefault("whoop_request_offline", True)
@@ -68,6 +69,7 @@ def clear_whoop_session() -> None:
     st.session_state["whoop_profile"] = {}
     st.session_state["whoop_body"] = {}
     st.session_state["whoop_last_sync"] = None
+    st.session_state["whoop_sync_warnings"] = []
     for key in ("whoop_callback_to_resume", "whoop_callback_url", "whoop_pending_auth"):
         st.session_state.pop(key, None)
 
@@ -79,12 +81,20 @@ def store_whoop_sync(result) -> None:
     st.session_state["whoop_profile"] = result.profile
     st.session_state["whoop_body"] = result.body
     st.session_state["whoop_last_sync"] = pd.Timestamp.utcnow().tz_localize(None)
+    st.session_state["whoop_sync_warnings"] = list(result.warnings)
 
 
 def _reset_journal_editor() -> None:
     """Une nouvelle base de données ne doit jamais réappliquer les anciens edits."""
     st.session_state["journal_editor_revision"] = int(st.session_state.get("journal_editor_revision", 0)) + 1
     st.session_state["journal_has_unsaved_changes"] = False
+    st.session_state.pop("journal_editor_base", None)
+    st.session_state.pop("journal_draft", None)
+
+
+def discard_journal_draft() -> None:
+    """Discard only unsaved editor changes; retain the saved working data."""
+    _reset_journal_editor()
 
 
 def set_source_data(df: pd.DataFrame, source_name: str, quality: dict | None = None) -> None:

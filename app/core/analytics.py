@@ -21,6 +21,7 @@ Fonctions pures, sans dépendance Streamlit, pour :
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from typing import Any
 
 import numpy as np
@@ -29,6 +30,7 @@ import pandas as pd
 from app.core.projection_constraints import truncate_projection_at_floor
 
 from app.core.business import FINAL_TARGET_WEIGHT_KG
+from app.core.weight_summary import prepare_weight_series
 
 
 # ---------------------------------------------------------------------------
@@ -41,9 +43,9 @@ def weight_velocity(df: pd.DataFrame, windows: tuple[int, ...] = (7, 14, 30, 90)
     Retourne un dict {window_days: kg_per_week} pour chaque fenêtre.
     None si données insuffisantes pour la fenêtre.
     """
-    if df.empty:
+    data = prepare_weight_series(df)
+    if data.empty:
         return {w: None for w in windows}
-    data = df.sort_values("Date")
     current = data["Poids (Kgs)"].iloc[-1]
     result: dict[int, float | None] = {}
     for w in windows:
@@ -51,14 +53,9 @@ def weight_velocity(df: pd.DataFrame, windows: tuple[int, ...] = (7, 14, 30, 90)
             result[w] = None
             continue
         target_date = data["Date"].iloc[-1] - pd.Timedelta(days=w)
-        past = data[data["Date"] <= target_date]
-        if past.empty:
-            # Utiliser la première mesure si la fenêtre est plus large que l'historique
-            past_weight = data["Poids (Kgs)"].iloc[0]
-            actual_days = (data["Date"].iloc[-1] - data["Date"].iloc[0]).days
-        else:
-            past_weight = past["Poids (Kgs)"].iloc[-1]
-            actual_days = (data["Date"].iloc[-1] - past["Date"].iloc[-1]).days
+        recent = data[data["Date"] >= target_date]
+        past_weight = recent["Poids (Kgs)"].iloc[0]
+        actual_days = (data["Date"].iloc[-1] - recent["Date"].iloc[0]).days
         if actual_days <= 0:
             result[w] = None
         else:
@@ -157,8 +154,9 @@ def consistency_score(df: pd.DataFrame, n_weeks: int = 4) -> dict[str, Any]:
     if len(df) < 7:
         return {"score": 0, "avg_weekly_std": 0.0, "interpretation": "données insuffisantes"}
     data = df.sort_values("Date").copy()
-    data["week"] = data["Date"].dt.isocalendar().week.astype(int)
-    data["year"] = data["Date"].dt.year
+    iso_calendar = data["Date"].dt.isocalendar()
+    data["week"] = iso_calendar.week.astype(int)
+    data["year"] = iso_calendar.year.astype(int)
     recent_weeks = data.drop_duplicates(subset=["year", "week"]).tail(n_weeks)
     if recent_weeks.empty:
         return {"score": 0, "avg_weekly_std": 0.0, "interpretation": "données insuffisantes"}
@@ -431,13 +429,13 @@ def period_comparison(df: pd.DataFrame) -> dict[str, Any]:
 
 def prospective_scenarios(df: pd.DataFrame, target_weight: float) -> dict[str, dict[str, Any]]:
     """Génère 3 scénarios (optimiste/réaliste/pessimiste) basés sur les tendances récentes."""
-    if len(df) < 14:
+    data = detect_current_effort(prepare_weight_series(df))["effort_df"]
+    if len(data) < 14:
         return {}
-    data = df.sort_values("Date")
     current = float(data["Poids (Kgs)"].iloc[-1])
     last_date = data["Date"].max()
 
-    velocities = weight_velocity(df, windows=(7, 14, 30))
+    velocities = weight_velocity(data, windows=(7, 14, 30))
     v7 = velocities.get(7)
     v14 = velocities.get(14)
     v30 = velocities.get(30)
@@ -514,8 +512,6 @@ def streak_analysis(df: pd.DataFrame) -> dict[str, Any]:
             current_streak += 1
             current_type = "gain"
         else:
-            if current_type == "neutre":
-                continue
             break
 
     # Plus longues séries
@@ -690,7 +686,7 @@ def progression_score(df: pd.DataFrame, target_weight: float) -> dict[str, Any]:
     if total_to_lose > 0:
         progress_pct = max(0, min(100, (initial - current) / total_to_lose * 100))
     else:
-        progress_pct = 100.0
+        progress_pct = 100.0 if current <= target_weight else 0.0
     progress_pts = progress_pct * 0.4
 
     # Composante vitesse (0-25 pts)
@@ -819,8 +815,8 @@ def detect_current_effort(df: pd.DataFrame, gap_threshold_days: int = 21) -> dic
 def compute_trend_ema(df: pd.DataFrame, span: int = 7) -> pd.DataFrame:
     """Calcule une tendance EMA (Exponential Moving Average) robuste.
 
-    Fonctionne correctement même avec des données éparses car EWM
-    s'adapte naturellement aux intervalles irréguliers.
+    Le paramètre span compte des mesures, pas des jours calendaires.
+    Pour une tendance calendaire, utiliser trend_weight.
     """
     data = df.sort_values("Date").copy()
     data["Tendance_EMA"] = data["Poids (Kgs)"].ewm(span=max(span, 2), adjust=False).mean()
@@ -859,7 +855,12 @@ def pace_comparison(df: pd.DataFrame, target_weight: float, target_date: pd.Time
     remaining = current - target_weight
     if target_date is None:
         target_date = last_date + pd.Timedelta(days=180)  # 6 mois par défaut
-    days_left = max((target_date - last_date).days, 1)
+    days_left = (target_date - last_date).days
+    if days_left <= 0:
+        return {"current_pace": current_pace, "required_pace": None,
+                "remaining_kg": round(remaining, 1), "days_left": days_left,
+                "interpretation": "La date cible est atteinte ou dépassée ; aucun rythme futur n'est calculé.",
+                "ratio": None}
     weeks_left = days_left / 7
     required_pace = -(remaining / weeks_left)  # négatif = perte nécessaire
 
@@ -873,13 +874,13 @@ def pace_comparison(df: pd.DataFrame, target_weight: float, target_date: pd.Time
     else:
         ratio = abs(current_pace) / abs(required_pace) if abs(required_pace) > 0.001 else 999.0
         if ratio >= 2.0:
-            interp = f"Excellent ! Vous perdez **{abs(current_pace):.2f} kg/sem**, soit {ratio:.1f}x le rythme nécessaire ({abs(required_pace):.2f} kg/sem)."
+            interp = f"Baisse observée : **{abs(current_pace):.2f} kg/sem**, soit {ratio:.1f}x le rythme théorique de la cible ({abs(required_pace):.2f} kg/sem). Une baisse plus rapide n'établit pas qu'elle soit souhaitable ou durable."
         elif ratio >= 1.0:
-            interp = f"Bon rythme ! Vous perdez **{abs(current_pace):.2f} kg/sem**, aligné avec le rythme nécessaire ({abs(required_pace):.2f} kg/sem)."
+            interp = f"Baisse observée : **{abs(current_pace):.2f} kg/sem**, au moins égale au rythme théorique de la cible ({abs(required_pace):.2f} kg/sem)."
         elif ratio >= 0.5:
-            interp = f"Rythme un peu lent : **{abs(current_pace):.2f} kg/sem** par rapport à {abs(required_pace):.2f} kg/sem nécessaire."
+            interp = f"Baisse observée : **{abs(current_pace):.2f} kg/sem**, sous le rythme théorique de la cible ({abs(required_pace):.2f} kg/sem)."
         else:
-            interp = f"Rythme insuffisant : **{abs(current_pace):.2f} kg/sem** par rapport à {abs(required_pace):.2f} kg/sem nécessaire."
+            interp = f"Baisse observée : **{abs(current_pace):.2f} kg/sem**, sous la moitié du rythme théorique de la cible ({abs(required_pace):.2f} kg/sem)."
 
     return {
         "current_pace": current_pace,
@@ -918,6 +919,11 @@ def generate_insights_text(df: pd.DataFrame, target_weight: float) -> list[str]:
     effort_measurements = effort["measurements"]
     effort_days = effort["days"]
 
+    if effort["is_subset"] and len(effort_df) == 1:
+        return [
+            f"📅 Reprise du suivi le {effort_start.strftime('%d/%m/%Y')} : une seule mesure disponible.",
+            "Ajoutez une nouvelle mesure pour interpréter l'évolution depuis cette reprise.",
+        ]
     if effort["is_subset"] and len(effort_df) >= 2:
         effort_initial = float(effort_df["Poids (Kgs)"].iloc[0])
         effort_delta = effort_initial - current
@@ -955,9 +961,9 @@ def generate_insights_text(df: pd.DataFrame, target_weight: float) -> list[str]:
     v7 = vel.get(7)
     if v7 is not None:
         if v7 < -1.0:
-            insights.append(f"🚀 Perte rapide ces 7 derniers jours : **{v7:.2f} kg/sem**.")
+            insights.append(f"📊 Baisse rapide observée dans les 7 derniers jours : **{v7:.2f} kg/sem**. Ce rythme n'est pas une recommandation.")
         elif v7 < -0.3:
-            insights.append(f"🏃 Bonne vitesse de perte : **{v7:.2f} kg/sem** sur 7 jours.")
+            insights.append(f"📉 Baisse observée : **{v7:.2f} kg/sem** dans les 7 derniers jours.")
         elif v7 < 0:
             insights.append(f"👍 Perte progressive : **{v7:.2f} kg/sem** sur 7 jours.")
         elif v7 > 0.5:
@@ -967,7 +973,7 @@ def generate_insights_text(df: pd.DataFrame, target_weight: float) -> list[str]:
     vol = weight_volatility(effort_df, window=14)
     if vol["nb_mesures"] >= 3:
         if vol["cv"] > 1.5:
-            insights.append(f"📊 Poids fluctuant (amplitude {vol['range']:.1f} kg sur 14j). C'est normal, la tendance compte plus.")
+            insights.append(f"📊 Poids fluctuant (amplitude {vol['range']:.1f} kg sur 14j). Vérifiez les mesures et comparez-les à la tendance.")
         elif vol["cv"] < 0.5:
             insights.append("✅ Poids très stable récemment.")
 
@@ -1042,6 +1048,13 @@ def generate_action_summary(df: pd.DataFrame, target_weight: float) -> dict[str,
     effort_measurements = effort["measurements"]
     is_startup = effort_days < 7
 
+    if effort["is_subset"] and effort_measurements == 1:
+        return {
+            "situation": f"Reprise du suivi le {effort['start_date'].strftime('%d/%m/%Y')} : une mesure enregistrée.",
+            "interpretation": "Une seule pesée ne permet pas de calculer une variation depuis la reprise.",
+            "action": "Ajoutez de nouvelles mesures pour établir la tendance de cette période de suivi.",
+        }
+
     if effort["is_subset"] and len(effort_df) >= 2:
         effort_initial = float(effort_df["Poids (Kgs)"].iloc[0])
         delta = effort_initial - current  # positif = perte
@@ -1074,9 +1087,9 @@ def generate_action_summary(df: pd.DataFrame, target_weight: float) -> dict[str,
     if is_startup:
         if delta > 1.5:
             interpretation = (
-                f"Cette perte rapide ({_format_fr_kg(delta)} en {effort_days} jours) est probablement liée "
-                f"en partie aux variations d'eau et de digestion. La tendance réelle se confirmera "
-                f"à partir de 7 à 10 jours de suivi."
+                f"Baisse observée : {_format_fr_kg(delta)} en {effort_days} jours. Les pesées seules "
+                f"ne distinguent pas l'eau, le contenu digestif et la masse grasse. "
+                f"Le recul reste insuffisant pour extrapoler cette variation."
             )
         elif delta > 0:
             interpretation = (
@@ -1102,7 +1115,7 @@ def generate_action_summary(df: pd.DataFrame, target_weight: float) -> dict[str,
         elif v7 is not None and v7 < -0.3:
             interpretation = (
                 f"Votre rythme récent est d’environ {_format_fr_weekly_pace(v7)}. "
-                f"C’est une tendance progressive et plus facile à maintenir."
+                f"Continuez le suivi pour voir si cette tendance persiste."
             )
         elif v7 is not None and v7 < 0:
             interpretation = (
@@ -1115,7 +1128,7 @@ def generate_action_summary(df: pd.DataFrame, target_weight: float) -> dict[str,
                 f"Vérifiez si cela correspond à quelques fluctuations ou à une tendance qui s’installe."
             )
         elif v7 is not None and v7 > 0:
-            interpretation = "Légère remontée récente — probablement des fluctuations naturelles."
+            interpretation = "Légère remontée récente ; poursuivez le suivi pour distinguer fluctuation et tendance."
         else:
             interpretation = "Tendance neutre. Continuez le suivi pour des insights plus précis."
 
@@ -1155,14 +1168,14 @@ def generate_action_summary(df: pd.DataFrame, target_weight: float) -> dict[str,
 
 
 # ---------------------------------------------------------------------------
-# 19. Analyse historique des efforts (détection yo-yo)
+# 19. Analyse des variations entre périodes de suivi
 # ---------------------------------------------------------------------------
 
 def analyze_effort_history(df: pd.DataFrame, gap_threshold_days: int = 21) -> dict[str, Any]:
-    """Analyse l'historique des périodes d'effort pour détecter le pattern yo-yo.
+    """Compare les valeurs observées de part et d'autre des interruptions.
 
-    Retourne un résumé des efforts passés, le rebond moyen après chaque pause,
-    et un insight textuel sur le pattern global.
+    Retourne les périodes passées, la variation moyenne entre ces périodes
+    et un constat descriptif, sans déduire les comportements non observés.
     """
     if len(df) < 5:
         return {"efforts": [], "pattern": "données insuffisantes", "insight": None}
@@ -1216,25 +1229,25 @@ def analyze_effort_history(df: pd.DataFrame, gap_threshold_days: int = 21) -> di
 
     # Déterminer le pattern
     if pct_rebounds >= 70 and avg_rebound > 2:
-        pattern = "yo-yo confirmé"
+        pattern = "hausses entre périodes de suivi"
         insight = (
-            f"⚠️ **Pattern yo-yo détecté** : après chaque pause de suivi, "
-            f"votre poids remonte en moyenne de **+{avg_rebound:.1f} kg** "
-            f"({len(positive_rebounds)}/{len(rebounds)} reprises). "
-            f"Le maintien du suivi régulier est votre plus grande arme contre ce cycle."
+            f"📊 **Hausses entre périodes observées** : variation moyenne de **{avg_rebound:+.1f} kg** "
+            f"entre la dernière pesée d'une période et la première de la suivante "
+            f"({len(positive_rebounds)}/{len(rebounds)} variations positives). "
+            f"Les jours sans mesure ne permettent pas d'en déterminer la cause ni le déroulement."
         )
     elif pct_rebounds >= 50:
-        pattern = "tendance au rebond"
+        pattern = "variations positives entre périodes"
         insight = (
-            f"📊 Vos données montrent un rebond moyen de **+{avg_rebound:.1f} kg** "
-            f"après les pauses de suivi ({len(positive_rebounds)}/{len(rebounds)} cas). "
-            f"Maintenir la régularité est essentiel."
+            f"📊 Variation moyenne entre périodes de suivi : **{avg_rebound:+.1f} kg** "
+            f"({len(positive_rebounds)}/{len(rebounds)} variations positives). "
+            f"L'évolution pendant les jours sans mesure reste inconnue."
         )
     elif avg_rebound < 0:
         pattern = "progression maintenue"
         insight = (
-            f"✅ Bonne nouvelle : vous maintenez globalement vos acquis entre les périodes "
-            f"de suivi (variation moyenne : {avg_rebound:+.1f} kg)."
+            f"📊 Le poids est en moyenne plus bas à la première pesée de la période suivante "
+            f"(variation moyenne entre périodes : {avg_rebound:+.1f} kg)."
         )
     else:
         pattern = "neutre"
@@ -1264,15 +1277,21 @@ def next_milestone(current_weight: float, targets: tuple[float, ...], velocity: 
 
     Cherche d'abord les objectifs configurés, sinon le prochain chiffre rond en dessous.
     Ne retourne un ETA que si les données sont suffisantes (>= 7 mesures)
-    et la vitesse est physiologiquement plausible (<= 2 kg/sem).
+    et la vitesse reste dans le garde-fou d'extrapolation (<= 2 kg/sem).
     """
+    # Reaching the final configured goal must not suggest further weight loss.
+    if targets and current_weight <= min(targets):
+        return {"target": float(min(targets)), "remaining": 0.0,
+                "label": "Objectif final atteint", "eta_days": None,
+                "eta_confidence": None, "reached": True}
+
     # Chercher parmi les objectifs configurés
     reachable_targets = sorted([t for t in targets if t < current_weight], reverse=True)
 
     if reachable_targets:
         next_target = reachable_targets[0]
         remaining = current_weight - next_target
-        label = f"Objectif {next_target:.0f} kg"
+        label = f"Objectif {next_target:g} kg"
     else:
         # Prochain chiffre rond en dessous
         next_target = float(int(current_weight))  # ex: 102.6 → 102
@@ -1296,13 +1315,12 @@ def next_milestone(current_weight: float, targets: tuple[float, ...], velocity: 
         # Garde-fou 1: pas d'ETA si < 7 mesures
         if measurements < 7:
             eta_confidence = "fragile"
-        # Garde-fou 2: si la vitesse implique > 2 kg/sem, c'est du bruit
+        # Garde-fou 2 : ne pas extrapoler au-delà de 2 kg/sem ; la cause
+        # de cette variation ne peut pas être déduite des seules pesées.
         elif abs(velocity) > 2.0:
-            eta_confidence = "optimiste"
-            # Utiliser une vitesse plafonnée réaliste de 0.75 kg/sem
-            eta_days = int(remaining / 0.75 * 7)
+            eta_confidence = "non extrapolée"
         else:
-            eta_days = int(remaining / abs(velocity) * 7)
+            eta_days = math.ceil(remaining / abs(velocity) * 7)
             eta_confidence = "solide" if measurements >= 14 else "modérée"
 
     return {

@@ -21,10 +21,11 @@ from app.core.analytics import (
     weight_velocity,
     weight_volatility,
 )
-from app.core.data import data_quality_report
+from app.core.data import data_quality_report, prepare_analysis_data
 from app.core.formatting import format_fr_date, format_fr_kg, format_fr_kg_per_week, format_fr_number
 from app.core.insights import detect_anomalies_robust, detect_plateau
 from app.core.session_state import get_filtered_or_working_data
+from app.core.time_utils import normalize_calendar_dates
 from app.core.trend import noise_level, trend_weight
 from app.ui.charts import (
     ACCENT_COLOR,
@@ -68,9 +69,9 @@ def _score_badge(score: float, *, good: float = 70, fair: float = 40) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _quality_section(analysis_df: pd.DataFrame) -> None:
+def _quality_section(analysis_df: pd.DataFrame, source_df: pd.DataFrame | None = None) -> None:
     section_header("Qualité des données & plateau", "Ce que valent les mesures avant d'en tirer quoi que ce soit.", "📊")
-    quality = data_quality_report(analysis_df)
+    quality = data_quality_report(source_df if source_df is not None else analysis_df)
     q_cols = st.columns(4)
     with q_cols[0]:
         kpi_card("Score qualité", f"{_score_badge(quality['score'], good=70, fair=50)} {quality['score']}/100", help_text="Couverture, régularité, valeurs atypiques et doublons combinés.")
@@ -377,7 +378,9 @@ def _fluctuations_section(df: pd.DataFrame) -> None:
 
 
 def main() -> None:
-    df = _df()
+    source_df = _df()
+    duplicate_strategy = st.session_state.get("duplicate_strategy", "garder_la_derniere")
+    df = prepare_analysis_data(source_df, duplicate_strategy)
     page_hero(
         "Analyse",
         "Insights",
@@ -390,7 +393,7 @@ def main() -> None:
 
     df = df.sort_values("Date").copy()
     effort = detect_current_effort(df, gap_threshold_days=21)
-    has_effort = effort["is_subset"] and len(effort["effort_df"]) >= 2
+    has_effort = effort["is_subset"]
 
     if has_effort:
         scope = st.radio(
@@ -409,8 +412,12 @@ def main() -> None:
         analysis_df = df
 
     st.caption(f"Périmètre de toutes les analyses : {format_fr_date(analysis_df['Date'].min())} → {format_fr_date(analysis_df['Date'].max())} · {len(analysis_df)} mesures.")
+    aggregation_label = {"garder_la_derniere": "dernière mesure", "moyenne_journaliere": "moyenne", "mediane_journaliere": "médiane"}.get(duplicate_strategy, duplicate_strategy)
+    st.caption(f"Calculs : {aggregation_label} par jour. La qualité est évaluée sur les lignes source du périmètre ; le Journal conserve toutes les pesées.")
 
-    _quality_section(analysis_df)
+    source_days = normalize_calendar_dates(source_df["Date"])
+    source_scope = source_df[source_days.between(analysis_df["Date"].min(), analysis_df["Date"].max())]
+    _quality_section(analysis_df, source_scope)
     _scores_section(analysis_df)
     _phases_section(analysis_df)
     _breaks_section(analysis_df)

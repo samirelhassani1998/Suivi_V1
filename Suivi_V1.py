@@ -75,13 +75,14 @@ def init_data_once() -> None:
 
 def sidebar_controls() -> None:
     confirmation_revision = int(st.session_state.get("replacement_confirmation_revision", 0))
+    source_name = {"google_sheets": "Google Sheets", "csv_local": "CSV importé"}.get(st.session_state.get("data_source"), "Aucune source chargée")
     st.sidebar.markdown(
         """
         <div class="suivi-sidebar-card">
-            <span class="suivi-sidebar-eyebrow">Source active</span>
+            <span class="suivi-sidebar-eyebrow">Source des pesées</span>
             <strong>{source}</strong>
         </div>
-        """.format(source=st.session_state.get("data_source", "n/a")),
+        """.format(source=source_name),
         unsafe_allow_html=True,
     )
 

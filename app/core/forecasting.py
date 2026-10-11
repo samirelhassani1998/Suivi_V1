@@ -9,9 +9,54 @@ from statsmodels.tsa.statespace.sarimax import SARIMAX
 from app.core.features import LAGS, build_features
 from app.core.models import get_quantile_models
 from app.core.projection_constraints import constrain_interval_dataframe
+from app.core.time_utils import normalize_calendar_dates
 
 MIN_ML_TRAIN_ROWS = 10
 MIN_ML_MEASUREMENTS = max(LAGS) + MIN_ML_TRAIN_ROWS
+
+
+def future_daily_dates(last_date: pd.Timestamp, horizon: int) -> pd.DatetimeIndex:
+    """Jours locaux suivants, y compris quand une journée dure 23 ou 25 h."""
+    return pd.date_range(pd.Timestamp(last_date).normalize(), periods=horizon + 1, freq="D")[1:]
+
+
+def require_converged_fit(fitted, model_name: str) -> None:
+    """Une sortie numérique ne suffit pas si l'optimiseur signale un échec."""
+    result = getattr(fitted, "mle_retvals", {})
+    if result and result.get("converged") is not None and not result["converged"]:
+        raise ValueError(f"{model_name} : ajustement non convergé ; prévision indisponible.")
+
+
+def validate_prediction(central, low, high, size: int) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None]:
+    """Vérifie les sorties brutes avant tout bornage ou calcul de métrique."""
+    try:
+        central = np.asarray(central, dtype=float)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("prédiction invalide") from exc
+    if central.shape != (size,) or not np.isfinite(central).all():
+        raise ValueError("prédiction incomplète ou non finie")
+    if low is None and high is None:
+        return central, None, None
+    try:
+        low = np.asarray(low, dtype=float)
+        high = np.asarray(high, dtype=float)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("intervalle incomplet") from exc
+    if low.shape != (size,) or high.shape != (size,) or not (np.isfinite(low).all() and np.isfinite(high).all()):
+        raise ValueError("intervalle incomplet")
+    if np.any(low > high):
+        raise ValueError("bornes d'intervalle inversées")
+    return central, low, high
+
+
+def _model_history(df: pd.DataFrame) -> pd.DataFrame:
+    data = df[["Date", "Poids (Kgs)"]].copy()
+    data["Date"] = normalize_calendar_dates(data["Date"])
+    data["Poids (Kgs)"] = pd.to_numeric(data["Poids (Kgs)"], errors="coerce")
+    require_daily_sampling(data)
+    if not np.isfinite(data["Poids (Kgs)"]).all():
+        raise ValueError("Ce modèle exige des poids numériques finis pour chaque jour.")
+    return data.sort_values("Date", kind="mergesort").reset_index(drop=True)
 
 
 def require_daily_sampling(df: pd.DataFrame) -> None:
@@ -42,8 +87,7 @@ def _training_matrix(df: pd.DataFrame, height_m: float) -> tuple[pd.DataFrame, p
 def forecast_with_ml(df: pd.DataFrame, horizon: int, height_m: float) -> pd.DataFrame:
     if len(df) < MIN_ML_MEASUREMENTS or horizon <= 0:
         return pd.DataFrame()
-    require_daily_sampling(df)
-    df = df.sort_values("Date", kind="mergesort").reset_index(drop=True)
+    df = _model_history(df)
     X, y = _training_matrix(df, height_m)
     if len(X) < MIN_ML_TRAIN_ROWS:
         return pd.DataFrame()
@@ -52,7 +96,7 @@ def forecast_with_ml(df: pd.DataFrame, horizon: int, height_m: float) -> pd.Data
     for m in models.values():
         m.fit(X, y)
 
-    future_dates = pd.date_range(df["Date"].max() + pd.Timedelta(days=1), periods=horizon, freq="D")
+    future_dates = future_daily_dates(df["Date"].max(), horizon)
     base = df[["Date", "Poids (Kgs)"]].copy()
     rows: list[dict[str, object]] = []
     # Garde numérique, pas limite physiologique ni garantie de calibration.
@@ -90,18 +134,38 @@ def forecast_with_ml(df: pd.DataFrame, horizon: int, height_m: float) -> pd.Data
 def forecast_with_sarimax(df: pd.DataFrame, horizon: int) -> pd.DataFrame:
     if len(df) < 14 or horizon <= 0:
         return pd.DataFrame()
-    require_daily_sampling(df)
-    df = df.sort_values("Date", kind="mergesort").reset_index(drop=True)
+    df = _model_history(df)
     model = SARIMAX(df["Poids (Kgs)"], order=(1, 1, 1), seasonal_order=(1, 0, 1, 7), enforce_stationarity=False, enforce_invertibility=False)
     fitted = model.fit(disp=False)
+    require_converged_fit(fitted, "SARIMAX")
     pred = fitted.get_forecast(steps=horizon)
     ci = pred.conf_int(alpha=0.05)
-    dates = pd.date_range(df["Date"].max() + pd.Timedelta(days=1), periods=horizon, freq="D")
+    central, low, high = validate_prediction(pred.predicted_mean, ci.iloc[:, 0], ci.iloc[:, 1], horizon)
+    dates = future_daily_dates(df["Date"].max(), horizon)
     raw = pd.DataFrame({
         "Date": dates,
-        "prevision": pred.predicted_mean.values,
-        "borne_basse": ci.iloc[:, 0].values,
-        "borne_haute": ci.iloc[:, 1].values,
+        "prevision": central,
+        "borne_basse": low,
+        "borne_haute": high,
         "confiance": 0.95,
     })
     return constrain_interval_dataframe(raw)
+
+
+def forecast_with_auto_arima(df: pd.DataFrame, horizon: int) -> pd.DataFrame:
+    if len(df) < 20 or horizon <= 0:
+        return pd.DataFrame()
+    from pmdarima import auto_arima
+
+    data = _model_history(df)
+    model = auto_arima(data["Poids (Kgs)"].to_numpy(dtype=float), seasonal=False, error_action="ignore", suppress_warnings=True)
+    require_converged_fit(model.arima_res_, "Auto-ARIMA")
+    forecast, interval = model.predict(n_periods=horizon, return_conf_int=True, alpha=0.05)
+    central, low, high = validate_prediction(forecast, interval[:, 0], interval[:, 1], horizon)
+    raw = pd.DataFrame({
+        "Date": future_daily_dates(data["Date"].max(), horizon),
+        "prevision": central, "borne_basse": low, "borne_haute": high, "confiance": 0.95,
+    })
+    out = constrain_interval_dataframe(raw)
+    out.attrs["order"] = str(model.order)
+    return out

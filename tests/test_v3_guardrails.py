@@ -5,7 +5,7 @@ Couvre :
 - Score complet retourne confidence: solide
 - ETA refusé si < 7 mesures dans l'effort
 - Milestone sans ETA si < 7 mesures
-- Milestone ETA réaliste si vitesse > 2 kg/sem
+- Milestone sans ETA si vitesse > 2 kg/sem
 - Résumé actionnable adapté à la phase de démarrage
 """
 
@@ -68,20 +68,17 @@ def test_milestone_no_eta_if_few_measurements():
     assert result["eta_confidence"] == "fragile"
 
 
-# ── Test 5: Milestone ETA réaliste si vitesse > 2 kg/sem ──
+# ── Test 5: Une vitesse hors garde-fou ne justifie pas un rythme inventé ──
 
-def test_milestone_capped_eta_if_velocity_too_fast():
+def test_milestone_no_assumed_eta_if_velocity_too_fast():
     result = next_milestone(
         current_weight=100.0,
         targets=(95.0, 90.0, 85.0, 80.0),
-        velocity=-9.0,  # vitesse absurde (perte hydrique)
+        velocity=-9.0,  # vitesse au-delà du garde-fou de projection
         measurements=14,  # assez de mesures
     )
-    assert result["eta_days"] is not None, "ETA doit exister avec 14 mesures"
-    assert result["eta_confidence"] == "optimiste"
-    # ETA doit être basé sur 0.75 kg/sem, pas 9 kg/sem
-    # remaining = 5 kg, à 0.75 kg/sem = 5/0.75*7 = 46.7j
-    assert result["eta_days"] >= 40, f"ETA doit être réaliste (>= 40j), got {result['eta_days']}"
+    assert result["eta_days"] is None
+    assert result["eta_confidence"] == "non extrapolée"
 
 
 # ── Test 6: Résumé actionnable adapté à la phase de démarrage ──

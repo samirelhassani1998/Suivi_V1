@@ -25,6 +25,7 @@ from app.core.whoop import (
     fetch_profile,
     recoveries_to_frame,
     sleeps_to_frame,
+    sleep_date_lookups,
     workouts_to_frame,
 )
 
@@ -40,12 +41,14 @@ class WhoopSyncResult:
     # ses zones, et c'est contre elle qu'une intensité de séance se lit.
     body: dict[str, Any] = field(default_factory=dict)
     counts: dict[str, int] = field(default_factory=dict)
+    warnings: tuple[str, ...] = ()
 
     def summary(self) -> str:
-        return (
+        summary = (
             f"{self.counts.get('recovery', 0)} récupérations, {self.counts.get('sleep', 0)} nuits, "
             f"{self.counts.get('cycle', 0)} cycles et {self.counts.get('workout', 0)} séances importés."
         )
+        return " ".join((summary, *self.warnings))
 
 
 def sync_window(days: int, *, now: Any = None) -> tuple[pd.Timestamp, pd.Timestamp]:
@@ -69,9 +72,26 @@ def fetch_whoop_data(
     # Une récupération ne porte pas de fuseau : sans celui de son cycle, un
     # score créé à 23 h 30 UTC se retrouvait daté de la veille.
     offsets = {record.get("id"): record.get("timezone_offset") for record in cycle_records}
-    recovery = recoveries_to_frame(fetch_collection("recovery", token, start=start, end=end, transport=transport), offsets)
-    sleep = sleeps_to_frame(fetch_collection("sleep", token, start=start, end=end, transport=transport))
-    cycle = cycles_to_frame(cycle_records)
+    recovery_records = fetch_collection("recovery", token, start=start, end=end, transport=transport)
+    sleep_records = fetch_collection("sleep", token, start=start, end=end, transport=transport)
+    sleep_dates, cycle_dates = sleep_date_lookups(sleep_records)
+    # Une date de collecte ou de coucher ne remplace pas le jour du réveil.
+    # Les convertisseurs autonomes gardent leur repli historique, mais l'import
+    # destiné aux croisements n'accepte que des dates rattachées à une nuit.
+    aligned_recoveries = [record for record in recovery_records if record.get("sleep_id") in sleep_dates]
+    aligned_cycles = [record for record in cycle_records if record.get("id") in cycle_dates]
+    missing_recovery = len(recovery_records) - len(aligned_recoveries)
+    missing_cycle = len(cycle_records) - len(aligned_cycles)
+    warnings = ()
+    if missing_recovery or missing_cycle:
+        warnings = (
+            f"{missing_recovery} récupération(s) et {missing_cycle} cycle(s) exclus des analyses journalières : "
+            "aucune nuit principale associée avec date de réveil exploitable dans cet import. "
+            "Élargissez la période puis resynchronisez pour compléter le rapprochement.",
+        )
+    recovery = recoveries_to_frame(aligned_recoveries, offsets, sleep_dates=sleep_dates)
+    sleep = sleeps_to_frame(sleep_records)
+    cycle = cycles_to_frame(aligned_cycles, cycle_dates=cycle_dates)
     workouts = workouts_to_frame(fetch_collection("workout", token, start=start, end=end, transport=transport))
     profile = fetch_profile(token, transport=transport)
     body = fetch_body_measurement(token, transport=transport)
@@ -80,5 +100,7 @@ def fetch_whoop_data(
         workouts=workouts,
         profile=profile,
         body=body,
-        counts={"recovery": len(recovery), "sleep": len(sleep), "cycle": len(cycle), "workout": len(workouts)},
+        counts={"recovery": len(recovery), "sleep": len(sleep), "cycle": len(cycle), "workout": len(workouts),
+                "recovery_unaligned": missing_recovery, "cycle_unaligned": missing_cycle},
+        warnings=warnings,
     )

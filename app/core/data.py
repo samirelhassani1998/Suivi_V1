@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 from app.config import OPTIONAL_COLUMNS, REQUIRED_COLUMNS
-from app.core.time_utils import normalize_datetime_series
+from app.core.time_utils import normalize_calendar_dates, normalize_datetime_series
 
 
 @dataclass
@@ -103,14 +103,16 @@ def read_weight_csv(uploaded_file) -> pd.DataFrame:
     return pd.read_csv(StringIO(text), sep=dialect.delimiter)
 
 
-def _parse_dates(values: pd.Series) -> pd.Series:
+def _parse_dates(values: pd.Series, *, normalize_day: bool = True) -> pd.Series:
     # Un entier Excel est sinon interprété comme des nanosecondes depuis 1970.
     txt = values.astype(str).str.strip().str.replace("'", "", regex=False)
     numeric = pd.to_numeric(txt, errors="coerce")
     serial = numeric.notna() & numeric.between(20000, 80000)
-    parsed = normalize_datetime_series(values.where(~serial), dayfirst=True, normalize_day=True).copy()
+    parsed = normalize_calendar_dates(values.where(~serial), normalize_day=normalize_day).copy()
     if serial.any():
-        parsed.loc[serial] = pd.to_datetime(numeric.loc[serial], unit="D", origin="1899-12-30", errors="coerce").dt.normalize()
+        parsed.loc[serial] = pd.to_datetime(numeric.loc[serial], unit="D", origin="1899-12-30", errors="coerce")
+    if normalize_day:
+        parsed = parsed.dt.normalize()
     return parsed
 
 
@@ -138,7 +140,10 @@ def _row_reasons(preview: pd.DataFrame) -> pd.Series:
 
 def clean_weight_dataframe_with_report(df: pd.DataFrame, drop_invalid: bool = True, source: str = "unknown") -> tuple[pd.DataFrame, CleaningReport]:
     """Nettoie un dataframe sans dédupliquer et avec rapport des rejets explicites."""
-    out = _normalize_columns(df.copy())
+    # Labels need not be unique (for example after concatenating two imports).
+    # Validate by row position, retaining the original labels in the report.
+    source_indices = list(df.index)
+    out = _normalize_columns(df.copy()).reset_index(drop=True)
     raw_rows = len(out)
 
     for col in REQUIRED_COLUMNS:
@@ -146,14 +151,15 @@ def clean_weight_dataframe_with_report(df: pd.DataFrame, drop_invalid: bool = Tr
             out[col] = np.nan
 
     out["Poids (Kgs)"] = pd.to_numeric(out["Poids (Kgs)"].astype(str).str.replace(",", ".", regex=False), errors="coerce")
-    out["Date"] = _parse_dates(out["Date"])
+    out["Date"] = _parse_dates(out["Date"], normalize_day=False)
 
     reasons = _row_reasons(out)
     invalid_mask = reasons.map(bool)
-    rejected = [RejectedRow(index=i, reasons=list(reasons.at[i])) for i in out.index[invalid_mask]]
+    rejected = [RejectedRow(index=source_indices[i], reasons=list(reasons.at[i])) for i in out.index[invalid_mask]]
 
     cleaned = out.loc[~invalid_mask].copy() if drop_invalid else out.copy()
     cleaned = cleaned.sort_values("Date", kind="mergesort").reset_index(drop=True)
+    cleaned["Date"] = cleaned["Date"].dt.normalize()
     cleaned = cleaned[_ordered_columns(cleaned)]
     duplicate_dates = int(cleaned.duplicated(subset=["Date"]).sum()) if "Date" in cleaned else 0
     extras = [c for c in cleaned.columns if c not in REQUIRED_COLUMNS and c not in OPTIONAL_COLUMNS]
@@ -214,7 +220,7 @@ def _moment_order_key(values: pd.Series) -> pd.Series:
 def _timestamp_sort_columns(data: pd.DataFrame) -> list[str]:
     for col in ["Timestamp", "Horodatage", "DateTime", "Datetime"]:
         if col in data.columns:
-            data["__suivi_time_key"] = pd.to_datetime(data[col], errors="coerce", dayfirst=True)
+            data["__suivi_time_key"] = normalize_datetime_series(data[col])
             return ["Date", "__suivi_time_key", "__suivi_order"]
     for col in ["Moment", "Heure", "Time"]:
         if col in data.columns:
@@ -228,8 +234,9 @@ def resolve_duplicates(df: pd.DataFrame, strategy: str) -> pd.DataFrame:
     if data.empty:
         return data
     if "Date" in data.columns:
-        data["Date"] = _parse_dates(data["Date"])
-        data = data.dropna(subset=["Date"]).copy()
+        data["Date"] = _parse_dates(data["Date"], normalize_day=False)
+        data = data.dropna(subset=["Date"]).sort_values("Date", kind="mergesort").copy()
+        data["Date"] = data["Date"].dt.normalize()
     if data.empty:
         return data.drop(columns=["__suivi_order", "__suivi_time_key"], errors="ignore")
     data["__suivi_order"] = np.arange(len(data))
@@ -253,18 +260,19 @@ def prepare_analysis_data(df: pd.DataFrame, duplicate_strategy: str = "garder_la
 
 
 def data_quality_report(df: pd.DataFrame) -> dict[str, Any]:
-    if df.empty:
+    series = clean_weight_dataframe(df)
+    if series.empty:
         return {"score": 0, "duplicates": 0, "missing_days": 0, "coverage_pct": 0.0, "weekly_measurements": 0.0, "irregularity": 1.0, "last_entry": None, "anomalies": 0}
-    series = df.sort_values("Date", kind="mergesort")
     duplicates = int(series.duplicated(subset=["Date"]).sum())
-    span = max((series["Date"].max() - series["Date"].min()).days, 1)
-    expected_days = span + 1
-    unique_days = int(series["Date"].nunique())
+    dates = series["Date"].drop_duplicates().sort_values()
+    expected_days = int((dates.max() - dates.min()).days) + 1
+    unique_days = len(dates)
     missing_days = max(expected_days - unique_days, 0)
     coverage_pct = unique_days / expected_days * 100
-    weekly = unique_days / max(span / 7, 1)
-    deltas = series["Date"].diff().dt.days.dropna()
-    irregularity = float(deltas.std() / (deltas.mean() + 1e-9)) if not deltas.empty else 1.0
+    # Count both endpoints and never extrapolate a short history to a week.
+    weekly = unique_days / max(expected_days / 7, 1)
+    deltas = dates.diff().dt.days.dropna()
+    irregularity = float(deltas.std(ddof=0) / deltas.mean()) if not deltas.empty else 1.0
     mad = np.median(np.abs(series["Poids (Kgs)"] - series["Poids (Kgs)"].median())) + 1e-9
     robust_z = np.abs((series["Poids (Kgs)"] - series["Poids (Kgs)"].median()) / (1.4826 * mad))
     anomalies = int((robust_z > 3.5).sum())

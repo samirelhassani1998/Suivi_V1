@@ -11,7 +11,7 @@ import pandas as pd
 
 from app.core.business import StagnationConfig
 from app.core.plateau import evaluate_plateau_window
-from app.core.time_utils import normalize_datetime_series
+from app.core.time_utils import normalize_calendar_dates, normalize_datetime_series
 
 WEIGHT_COL = "Poids (Kgs)"
 DATE_COL = "Date"
@@ -44,18 +44,22 @@ def prepare_weight_series(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=[DATE_COL, WEIGHT_COL])
 
     out = df[[DATE_COL, WEIGHT_COL]].copy()
+    out["_calendar_date"] = normalize_calendar_dates(out[DATE_COL], dayfirst=True)
     out[DATE_COL] = normalize_datetime_series(out[DATE_COL], dayfirst=True, normalize_day=False)
     out[WEIGHT_COL] = pd.to_numeric(
         out[WEIGHT_COL].astype(str).str.replace(",", ".", regex=False),
         errors="coerce",
     )
     out = out.dropna(subset=[DATE_COL, WEIGHT_COL])
-    out = out[out[WEIGHT_COL] > 0]
+    out = out[np.isfinite(out[WEIGHT_COL]) & (out[WEIGHT_COL] > 0)]
     if out.empty:
-        return out.reset_index(drop=True)
+        return out.drop(columns="_calendar_date").reset_index(drop=True)
 
-    # Keep the last edited measure for a duplicated day, matching the app import policy.
-    out = out.sort_values(DATE_COL).drop_duplicates(subset=[DATE_COL], keep="last")
+    # Callers apply the configured daily aggregation first. As a defensive
+    # fallback, keep the latest timestamp, with stable source order on ties.
+    out = out.sort_values(DATE_COL, kind="mergesort")
+    out[DATE_COL] = out.pop("_calendar_date")
+    out = out.drop_duplicates(subset=[DATE_COL], keep="last")
     return out.reset_index(drop=True)
 
 
@@ -235,9 +239,8 @@ def projection_to_target(df: pd.DataFrame, target_weight: float, max_years: int 
     if current <= target_weight:
         return {"available": True, "reached": True, "message": "Objectif atteint ou très proche."}
 
-    recent = data[data[DATE_COL] >= last_date - pd.Timedelta(days=30)]
-    if len(recent) < 5:
-        recent = data.tail(min(len(data), 14))
+    recent = _current_tracking_period(data)
+    recent = recent[recent[DATE_COL] >= last_date - pd.Timedelta(days=30)]
     span_days = (recent[DATE_COL].iloc[-1] - recent[DATE_COL].iloc[0]).days
     if len(recent) < 5 or span_days < 7:
         return {"available": False, "message": "Projection non affichée : recul récent insuffisant."}
@@ -248,7 +251,7 @@ def projection_to_target(df: pd.DataFrame, target_weight: float, max_years: int 
     if slope_per_day >= -0.01:
         return {"available": False, "message": "Projection non affichée : la tendance récente ne va pas clairement vers l'objectif."}
 
-    days_needed = int((current - target_weight) / abs(slope_per_day))
+    days_needed = math.ceil((current - target_weight) / abs(slope_per_day))
     if days_needed > max_years * 365:
         return {"available": False, "message": "Projection trop lointaine pour être fiable."}
 
@@ -349,7 +352,9 @@ def generate_daily_insights(df: pd.DataFrame, target_weight: float) -> list[str]
     has_significant_drop = (delta_7.value is not None and delta_7.value <= -0.3) or (
         delta_30.value is not None and delta_30.value <= -0.5
     )
-    periods = detect_stagnation_periods(data)
+    # A historical plateau is not evidence of current stability after a restart.
+    periods = detect_stagnation_periods(recent_period)
+    periods = [period for period in periods if period["end"] == data[DATE_COL].iloc[-1]]
     if periods and trend != "Baisse" and not has_significant_drop:
         last = periods[-1]
         insights.append(

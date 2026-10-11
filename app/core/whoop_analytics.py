@@ -20,7 +20,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from app.core.whoop import available_metrics, mask_in_progress_cycle, sport_label
+from app.core.whoop import available_metrics, mask_calibrating_recovery, mask_in_progress_cycle, sport_label
 
 # Équivalent énergétique d'un kilogramme de masse corporelle perdue ou prise.
 # Valeur de référence usuelle en nutrition (~7700 kcal pour 1 kg de tissu adipeux).
@@ -82,7 +82,7 @@ def _clean_daily(frame: pd.DataFrame | None) -> pd.DataFrame:
         return pd.DataFrame()
     # Le cycle du jour, encore ouvert, ne porte qu'un strain partiel : toutes
     # les analyses le voient vide, et lui seul garde sa valeur provisoire.
-    data = mask_in_progress_cycle(frame.copy(deep=True))
+    data = mask_calibrating_recovery(mask_in_progress_cycle(frame.copy(deep=True)))
     data["Date"] = pd.to_datetime(data["Date"], errors="coerce").dt.normalize()
     return data.dropna(subset=["Date"]).sort_values("Date", kind="mergesort").reset_index(drop=True)
 
@@ -142,7 +142,7 @@ def filter_period(frame: pd.DataFrame | None, days: int | None, *, today: Any = 
         return data
     reference = (pd.Timestamp(today) if today is not None else pd.Timestamp.now()).normalize()
     cutoff = reference - pd.Timedelta(days=int(days) - 1)
-    return data[data["Date"] >= cutoff].reset_index(drop=True)
+    return data[(data["Date"] >= cutoff) & (data["Date"] < reference + pd.Timedelta(days=1))].reset_index(drop=True)
 
 
 def previous_days(frame: pd.DataFrame | None, days: int, *, today: Any = None) -> pd.DataFrame:
@@ -1126,7 +1126,8 @@ def personal_baseline(frame: pd.DataFrame | None, metric: str, *, days: int = BA
     latest_date = measured["Date"].iloc[-1]
     history = measured.iloc[:-1]
     history = history[history["Date"] >= latest_date - pd.Timedelta(days=max(1, int(days)))]
-    if history.empty:
+    result["days"] = int(len(history))
+    if len(history) < MIN_DAYS_BASELINE:
         return result
     baseline = float(history[metric].median())
     latest = float(series.iloc[-1])
@@ -2494,7 +2495,7 @@ def vital_deviations(
             continue
         history = measured.iloc[:-1]
         history = history[history["Date"] >= latest_date - pd.Timedelta(days=max(1, int(days)))]
-        if len(history) < 3:
+        if len(history) < max(3, int(min_nights)):
             continue
 
         baseline = float(history[metric].median())
@@ -2829,11 +2830,11 @@ def session_log(
     for column in ("Durée (min)", "Strain séance", "FC moyenne (bpm)", "FC max (bpm)", "Calories séance (kcal)", "Distance (km)", "Dénivelé (m)", "Part enregistrée (%)"):
         table[column] = pd.to_numeric(sessions[column], errors="coerce") if column in sessions.columns else float("nan")
     hard_zones = [column for column in ("Zone 4 (min)", "Zone 5 (min)") if column in sessions.columns]
-    if hard_zones:
+    if len(hard_zones) == 2:
         hard = sessions[hard_zones].apply(pd.to_numeric, errors="coerce")
         # Une séance sans aucune zone renseignée reste vide plutôt qu'à zéro :
         # zéro minute en zone haute est une information, l'absence n'en est pas une.
-        table["Zones 4–5 (min)"] = hard.sum(axis=1, min_count=1)
+        table["Zones 4–5 (min)"] = hard.sum(axis=1, min_count=2)
     else:
         table["Zones 4–5 (min)"] = float("nan")
     following = [recovery_by_day.get(pd.Timestamp(date) + pd.Timedelta(days=1), float("nan")) for date in table["Date"]]
@@ -2866,13 +2867,14 @@ def hr_zone_profile(workouts: pd.DataFrame | None, *, min_sessions: int = MIN_SE
     columns = ["Sport", "Séances", "Minutes en zones", *[label for label, _ in INTENSITY_BANDS]]
     if workouts is None or workouts.empty or "Sport" not in workouts.columns:
         return pd.DataFrame(columns=columns)
-    zone_columns = [column for _, members in INTENSITY_BANDS for column in members if column in workouts.columns]
-    if not zone_columns:
+    zone_columns = [column for _, members in INTENSITY_BANDS for column in members]
+    if not all(column in workouts.columns for column in zone_columns):
         return pd.DataFrame(columns=columns)
 
     sessions = workouts.copy()
     sessions[zone_columns] = sessions[zone_columns].apply(pd.to_numeric, errors="coerce")
-    sessions = sessions.dropna(subset=zone_columns, how="all")
+    sessions[zone_columns] = sessions[zone_columns].where(np.isfinite(sessions[zone_columns]) & (sessions[zone_columns] >= 0))
+    sessions = sessions.dropna(subset=zone_columns)
     if sessions.empty:
         return pd.DataFrame(columns=columns)
 
@@ -3254,27 +3256,36 @@ def training_energy_share(
         "mean_session_burn": float("nan"),
         "share_pct": float("nan"),
         "session_days": 0,
+        "excluded_days": 0,
     }
     grid = daily_grid(daily)
     if grid.empty or "Calories (kcal)" not in grid.columns:
         return result
 
-    burn = grid[["Date", "Calories (kcal)"]].dropna()
+    burn = grid.set_index("Date")["Calories (kcal)"].apply(pd.to_numeric, errors="coerce")
+    burn = burn[np.isfinite(burn) & (burn > 0)]
+    session_total = pd.Series(0.0, index=burn.index, dtype=float)
+    if workouts is not None and not workouts.empty and "Date" in workouts.columns:
+        sessions = workouts.copy()
+        sessions["Date"] = pd.to_datetime(sessions["Date"], errors="coerce").dt.normalize()
+        sessions = sessions[sessions["Date"].isin(burn.index)]
+        if not sessions.empty:
+            sessions["Calories séance (kcal)"] = pd.to_numeric(sessions.get("Calories séance (kcal)", np.nan), errors="coerce")
+            values = sessions["Calories séance (kcal)"]
+            sessions.loc[~np.isfinite(values) | (values < 0), "Calories séance (kcal)"] = np.nan
+            # Une séance non chiffrée rend le total du jour inconnu, y compris
+            # lorsqu'une autre séance possède un score. Le même jour sort des
+            # deux sommes pour garder un numérateur et un dénominateur appariés.
+            grouped = sessions.groupby("Date")["Calories séance (kcal)"].agg(lambda values: values.sum(min_count=len(values)))
+            session_total.loc[grouped.index] = grouped
+            result["session_days"] = int(grouped.notna().sum())
+    result["excluded_days"] = int(session_total.isna().sum())
+    paired = session_total.notna()
+    burn, session_total = burn[paired], session_total[paired]
     result["days"] = int(len(burn))
     if len(burn) < max(3, int(min_days)):
         return result
-    result["mean_daily_burn"] = float(burn["Calories (kcal)"].mean())
-
-    session_total = pd.Series(0.0, index=burn["Date"].to_numpy(), dtype=float)
-    if workouts is not None and not workouts.empty and "Calories séance (kcal)" in workouts.columns:
-        sessions = workouts.copy()
-        sessions["Date"] = pd.to_datetime(sessions["Date"], errors="coerce").dt.normalize()
-        sessions = sessions.dropna(subset=["Date", "Calories séance (kcal)"])
-        if not sessions.empty:
-            grouped = sessions.groupby("Date")["Calories séance (kcal)"].sum()
-            session_total = session_total.add(grouped.reindex(session_total.index).fillna(0.0), fill_value=0.0)
-            result["session_days"] = int((grouped > 0).sum())
-
+    result["mean_daily_burn"] = float(burn.mean())
     result["mean_session_burn"] = float(session_total.mean())
     if result["mean_daily_burn"] > 0:
         result["share_pct"] = result["mean_session_burn"] / result["mean_daily_burn"] * 100.0

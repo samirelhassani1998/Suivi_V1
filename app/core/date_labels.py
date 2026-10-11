@@ -8,6 +8,7 @@ réapparaître « Sep » au lieu de « sept. ».
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import pandas as pd
@@ -151,7 +152,7 @@ def format_duration_minutes(minutes: Any) -> str:
         numeric = float(minutes)
     except (TypeError, ValueError):
         return MISSING_LABEL
-    if not pd.notna(numeric) or numeric < 0:
+    if not math.isfinite(numeric) or numeric < 0:
         return MISSING_LABEL
     total = int(round(numeric))
     hours, remainder = divmod(total, 60)
@@ -166,7 +167,7 @@ def format_clock_hour(value: Any) -> str:
         numeric = float(value)
     except (TypeError, ValueError):
         return MISSING_LABEL
-    if not pd.notna(numeric):
+    if not math.isfinite(numeric):
         return MISSING_LABEL
     # Les couchers avant minuit sont stockés en négatif pour rester continus.
     hour = numeric + 24.0 if numeric < 0 else numeric

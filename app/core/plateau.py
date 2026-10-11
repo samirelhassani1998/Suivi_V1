@@ -6,16 +6,21 @@ import numpy as np
 import pandas as pd
 
 from app.core.business import StagnationConfig
-from app.core.time_utils import normalize_datetime_series
+from app.core.time_utils import normalize_calendar_dates, normalize_datetime_series
 
 
 def prepare_plateau_series(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty or "Date" not in df.columns or "Poids (Kgs)" not in df.columns:
         return pd.DataFrame(columns=["Date", "Poids (Kgs)"])
     out = df[["Date", "Poids (Kgs)"]].copy()
+    out["_calendar_date"] = normalize_calendar_dates(out["Date"])
     out["Date"] = normalize_datetime_series(out["Date"], normalize_day=False)
     out["Poids (Kgs)"] = pd.to_numeric(out["Poids (Kgs)"].astype(str).str.replace(",", ".", regex=False), errors="coerce")
-    out = out.dropna(subset=["Date", "Poids (Kgs)"]).sort_values("Date")
+    out = out.dropna(subset=["Date", "Poids (Kgs)"])
+    out = out[np.isfinite(out["Poids (Kgs)"]) & (out["Poids (Kgs)"] > 0)]
+    out = out.sort_values("Date", kind="mergesort")
+    out["Date"] = out.pop("_calendar_date")
+    out = out.drop_duplicates(subset=["Date"], keep="last")
     return out.reset_index(drop=True)
 
 

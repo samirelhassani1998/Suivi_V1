@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-11 — Calculs fiables, brouillons et rapprochements WHOOP
+
+- Dates civiles, semaines ISO, fenêtres de suivi et doublons cohérents dans les analyses ; suppression des projections fondées sur des périodes obsolètes ou des taux supposés.
+- Journal : conservation des brouillons entre les pages, capture des dernières éditions, annulation et sauvegarde cohérentes.
+- Prévisions : contrôles des sorties et de convergence, comparaison à une référence simple, effectifs et horizons évalués visibles.
+- WHOOP : rattachement au réveil de la nuit associée, exclusions signalées, calibration et séances non scorées prises en compte.
+- Boxe : totaux incomplets laissés inconnus, séances distinguées dans les graphiques, strain jamais additionné ; insights descriptifs.
+- [Audit, preuves et limites](docs/AUDIT_2026-10-11.md). Une nouvelle synchronisation WHOOP reconstruit les dates après mise à jour.
+
 ## 2026-10-03 — Onglet Boxe : les séances de boxe lues à travers WHOOP
 
 Nouvel onglet `Boxe` (🥊), dédié à la seule boxe. Il lit les séances de la synchronisation WHOOP existante et va plus loin que l'application WHOOP, qui range une séance de boxe parmi toutes les autres activités.

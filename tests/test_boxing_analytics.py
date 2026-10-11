@@ -437,7 +437,7 @@ def test_energy_removes_what_the_body_would_have_burnt_anyway():
 
 @pytest.mark.parametrize(
     ("recovery", "expected_tone", "keyword"),
-    [(20.0, "warning", "rouge"), (50.0, "info", "jaune"), (80.0, "success", "Feu vert")],
+    [(20.0, "warning", "rouge"), (50.0, "info", "jaune"), (80.0, "success", "vert")],
 )
 def test_today_guidance_follows_the_whoop_zone(recovery, expected_tone, keyword):
     daily = pd.DataFrame({"Date": [TODAY], "Récupération (%)": [recovery]})

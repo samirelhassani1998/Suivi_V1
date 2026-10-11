@@ -115,3 +115,54 @@ def test_insights_scope_applies_to_anomalies_and_fluctuations():
     anomalies = _chart(at, "Pesées atypiques face à la tendance")
     observed_dates = [pd.Timestamp(x) for trace in anomalies["data"] for x in trace.get("x", [])]
     assert min(observed_dates) == pd.Timestamp("2026-04-01")
+
+
+@pytest.mark.parametrize("page", ["Dashboard", "Insights"])
+@pytest.mark.parametrize("strategy, expected", [
+    ("garder_la_derniere", 110.0),
+    ("moyenne_journaliere", 104.0),
+    ("mediane_journaliere", 102.0),
+])
+def test_pages_apply_configured_daily_aggregation_without_changing_journal(page, strategy, expected):
+    # Deliberately unsorted moments: the last row is not the evening reading.
+    data = _weights(["2026-10-01"] * 3, [110.0, 100.0, 102.0])
+    data["Moment"] = ["soir", "matin", "midi"]
+    at = AppTest.from_file(f"app/pages/{page}.py", default_timeout=120)
+    for key in ("source_data", "working_data", "raw_data"):
+        at.session_state[key] = data.copy()
+    at.session_state["filtered_data"] = pd.DataFrame()
+    at.session_state["filter_active"] = False
+    at.session_state["duplicate_strategy"] = strategy
+    at.run()
+    assert not at.exception
+    pd.testing.assert_frame_equal(at.session_state["working_data"], data)
+    pd.testing.assert_frame_equal(at.session_state["source_data"], data)
+    charts = [json.loads(chart.proto.spec) for chart in at.get("plotly_chart")]
+    trace_name = "Poids mesuré" if page == "Dashboard" else "Pesées"
+    trace = next(trace for chart in charts for trace in chart["data"] if trace.get("name") == trace_name)
+    values = trace["y"]
+    if isinstance(values, dict):
+        values = np.frombuffer(base64.b64decode(values["bdata"]), dtype=values["dtype"])
+    assert list(values) == [expected]
+    assert any("par jour" in caption.value for caption in at.caption)
+
+
+def test_dashboard_latest_trend_delta_does_not_bridge_a_tracking_interruption():
+    data = _weights(
+        pd.date_range("2026-04-01", periods=8).append(pd.DatetimeIndex(["2026-09-01"])),
+        [100 - i * .1 for i in range(8)] + [95],
+    )
+    at = _page("Dashboard", data)
+    assert not at.exception
+    metric = next(item for item in at.metric if item.label == "Poids de tendance")
+    assert metric.delta == ""
+    assert not any("en 1 jours" in str(item.value) and "perdu" in str(item.value) for item in at.markdown)
+
+
+def test_weekly_chart_does_not_color_a_gap_as_a_weekly_change():
+    from app.ui.charts import NEUTRAL_LINE
+    data = _weights(["2026-10-01", "2026-11-01"], [105, 99])
+    at = _page("Dashboard", data)
+    assert not at.exception
+    chart = _chart(at, "Poids moyen par semaine (vert = baisse, rouge = hausse par rapport à la semaine précédente)")
+    assert chart["data"][0]["marker"]["color"] == [NEUTRAL_LINE, NEUTRAL_LINE]

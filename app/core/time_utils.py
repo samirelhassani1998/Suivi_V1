@@ -7,7 +7,7 @@ import pandas as pd
 _ISO_DATE_RE = re.compile(r"^\s*\d{4}-\d{1,2}-\d{1,2}(?:[T\s].*)?$")
 
 
-def _to_utc_naive(value, *, dayfirst: bool) -> pd.Timestamp:
+def _to_utc_naive(value, *, dayfirst: bool, preserve_local_day: bool = False) -> pd.Timestamp:
     if pd.isna(value):
         return pd.NaT
     if isinstance(value, str):
@@ -15,14 +15,31 @@ def _to_utc_naive(value, *, dayfirst: bool) -> pd.Timestamp:
         if not text:
             return pd.NaT
         if _ISO_DATE_RE.match(text):
-            parsed = pd.to_datetime(text, errors="coerce", yearfirst=True, utc=True)
+            parsed = pd.to_datetime(text, errors="coerce", yearfirst=True, utc=not preserve_local_day)
         else:
-            parsed = pd.to_datetime(text, errors="coerce", dayfirst=dayfirst, utc=True)
+            parsed = pd.to_datetime(text, errors="coerce", dayfirst=dayfirst, utc=not preserve_local_day)
     else:
-        parsed = pd.to_datetime(value, errors="coerce", utc=True)
+        parsed = pd.to_datetime(value, errors="coerce", utc=not preserve_local_day)
     if pd.isna(parsed):
         return pd.NaT
+    if preserve_local_day:
+        return pd.Timestamp(parsed).tz_localize(None)
     return pd.Timestamp(parsed).tz_convert(None)
+
+
+def normalize_calendar_dates(values, *, dayfirst: bool = True, normalize_day: bool = True) -> pd.Series:
+    """Keep the civil date chosen for a weighing, without shifting it to UTC.
+
+    API instants should still use ``normalize_datetime_series``. A journal's
+    Date is a day label, including when an export represents it as local midnight.
+    ``normalize_day=False`` retains local wall time for fractional projections.
+    """
+    series = pd.Series(values)
+    parsed = pd.Series(
+        (_to_utc_naive(v, dayfirst=dayfirst, preserve_local_day=True) for v in series),
+        index=series.index, dtype="datetime64[ns]",
+    )
+    return parsed.dt.normalize() if normalize_day else parsed
 
 
 def normalize_datetime_series(values, *, dayfirst: bool = True, normalize_day: bool = False) -> pd.Series:

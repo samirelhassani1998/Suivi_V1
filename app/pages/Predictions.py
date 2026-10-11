@@ -7,16 +7,13 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from statsmodels.tsa.seasonal import STL
 from statsmodels.tsa.stattools import acf, pacf
 
 from app.core.analytics import detect_current_effort, prospective_scenarios, weight_velocity
-from app.core.evaluation import NAIVE_MODEL, TREND_MODEL, best_model, evaluate_forecasters, walk_forward_splits
-from app.core.features import build_features
-from app.core.forecasting import MIN_ML_MEASUREMENTS, forecast_with_ml, forecast_with_sarimax, require_daily_sampling
+from app.core.data import prepare_analysis_data
+from app.core.evaluation import NAIVE_MODEL, best_model, evaluate_forecasters, evaluate_regressors
+from app.core.forecasting import MIN_ML_MEASUREMENTS, forecast_with_auto_arima, forecast_with_ml, forecast_with_sarimax
 from app.core.formatting import format_fr_date, format_fr_kg, format_fr_kg_per_week, format_fr_number
 from app.core.insights import estimate_target_eta
 from app.core.projection_constraints import constrain_interval_dataframe
@@ -47,12 +44,15 @@ from app.ui.components import alert_banner, empty_state, insight_card, kpi_card,
 # Historique affiché à côté d'une prévision : au-delà, l'horizon devient un
 # trait illisible au bord droit du graphique.
 HISTORY_DAYS_SHOWN = 120
-MIN_ROWS_SARIMAX = 30
+MIN_ROWS_SARIMAX = 34
 MIN_ROWS_AUTO_ARIMA = 40
 
 
 def _df() -> pd.DataFrame:
-    return get_filtered_or_working_data()
+    return prepare_analysis_data(
+        get_filtered_or_working_data(),
+        duplicate_strategy=st.session_state.get("duplicate_strategy", "garder_la_derniere"),
+    )
 
 
 def _fr(value, decimals: int = 2, *, sign: bool = False) -> str:
@@ -76,16 +76,7 @@ def _cached_sarimax(df: pd.DataFrame, horizon: int) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def _cached_auto_arima(df: pd.DataFrame, horizon: int) -> pd.DataFrame:
-    from pmdarima import auto_arima
-
-    require_daily_sampling(df)
-    model = auto_arima(df["Poids (Kgs)"].to_numpy(dtype=float), seasonal=False, error_action="ignore", suppress_warnings=True)
-    forecast, interval = model.predict(n_periods=horizon, return_conf_int=True)
-    dates = pd.date_range(df["Date"].max() + pd.Timedelta(days=1), periods=horizon, freq="D")
-    raw = pd.DataFrame({"Date": dates, "prevision": np.asarray(forecast), "borne_basse": interval[:, 0], "borne_haute": interval[:, 1]})
-    out = constrain_interval_dataframe(raw)
-    out.attrs["order"] = str(model.order)
-    return out
+    return forecast_with_auto_arima(df, horizon)
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -240,16 +231,14 @@ def _primary_projection(df: pd.DataFrame, horizon: int, target_weight: float) ->
         legacy = estimate_target_eta(df, target_weight, effort_df=effort_df)
         if legacy.get("credible") and legacy.get("eta"):
             st.write(f"Estimation par pente simple : objectif autour du **{format_fr_date(legacy['eta'])}**.")
-            if legacy.get("eta_min") and legacy.get("eta_max"):
-                st.caption(f"Plage plausible : {format_fr_date(legacy['eta_min'])} → {format_fr_date(legacy['eta_max'])} | Confiance {format_fr_number(legacy.get('confidence', 0) * 100, 0)} %")
         else:
             alert_banner(str(legacy.get("message", "Estimation indisponible")), "warning")
         for name, sc in legacy.get("scenarios", {}).items():
-            icon = {"optimiste": "🟢", "réaliste": "🟡", "pessimiste": "🔴"}.get(name, "⚪")
             if sc.get("credible"):
-                st.caption(f"{icon} **{name.title()}** : autour du {format_fr_date(sc['eta'])} ({sc['days_remaining']} j) — rythme : {format_fr_kg_per_week(sc['kg_per_week'], decimals=3, sign=True)}")
+                st.caption(f"**Fenêtre {name}** : autour du {format_fr_date(sc['eta'])} ({sc['days_remaining']} j) — rythme : {format_fr_kg_per_week(sc['kg_per_week'], decimals=3, sign=True)}")
             else:
-                st.caption(f"{icon} **{name.title()}** : {sc.get('message', 'N/A')} (pente : {format_fr_kg_per_week(sc.get('slope', 0) * 7, decimals=3, sign=True)})")
+                st.caption(f"**Fenêtre {name}** : {sc.get('message', 'N/A')}")
+        st.caption("Extrapolations descriptives par fenêtre ; aucune probabilité ni plage d'arrivée n'est calibrée pour ces scénarios.")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -264,23 +253,24 @@ def _leaderboard_section(df: pd.DataFrame, fast_mode: bool) -> None:
         "🏁",
     )
     series = df[["Date", "Poids (Kgs)"]].reset_index(drop=True)
+    measured_days = series["Date"].dt.normalize().nunique()
     evaluate_sarimax = st.checkbox(
         "Évaluer SARIMAX dans le classement",
         value=False,
         key="predictions-evaluate-sarimax",
-        disabled=len(series) < MIN_ROWS_SARIMAX,
-        help="Réajuste le modèle sur chaque bloc de test. Disponible à partir de 30 mesures ; le premier calcul peut prendre du temps.",
+        disabled=measured_days < MIN_ROWS_SARIMAX,
+        help="Réajuste le modèle sur chaque bloc de test. À partir de 34 journées mesurées : au moins 20 d'apprentissage et deux blocs de 7. Le premier calcul peut prendre du temps.",
     )
-    include_sarimax = evaluate_sarimax and len(series) >= MIN_ROWS_SARIMAX
-    include_auto_arima = (not fast_mode) and len(series) >= MIN_ROWS_AUTO_ARIMA and bool(st.session_state.get("predictions-run-auto-arima", False))
+    include_sarimax = evaluate_sarimax and measured_days >= MIN_ROWS_SARIMAX
+    include_auto_arima = (not fast_mode) and measured_days >= MIN_ROWS_AUTO_ARIMA and bool(st.session_state.get("predictions-run-auto-arima", False))
     with st.spinner("Backtest des modèles…"):
         table = _cached_leaderboard(series, include_sarimax, include_auto_arima)
     if table.empty:
-        st.info("Backtest disponible à partir de 8 mesures.")
+        st.info("Backtest disponible à partir de 8 jours distincts de mesure.")
         return
 
     best = best_model(table)
-    folds = len(walk_forward_splits(len(series)))
+    folds = int(table["Blocs évalués"].max())
     if best is not None:
         naive_row = table[table["Modèle"] == NAIVE_MODEL]
         naive_mae = float(naive_row["MAE"].iloc[0]) if not naive_row.empty else float("nan")
@@ -315,19 +305,27 @@ def _leaderboard_section(df: pd.DataFrame, fast_mode: bool) -> None:
         "non évalué": "—",
     }
     display["Verdict"] = [f"{verdict_icons.get(v, '')} {v}" if d else f"— non évalué ({detail})" for v, d, detail in zip(display["Verdict"], display["Disponible"], display["Détail"])]
-    for column, decimals in (("MAE", 2), ("RMSE", 2), ("Biais", 2)):
+    for column, decimals in (("MAE", 2), ("RMSE", 2), ("Biais", 2), ("Largeur moyenne IC (kg)", 2)):
         display[column] = display[column].apply(lambda v, d=decimals: f"{format_fr_number(v, decimals=d, sign=(column == 'Biais'))} kg" if pd.notna(v) else "—")
     for column in ("Précision directionnelle (%)", "Gain vs dernière valeur (%)", "Couverture IC 95 % (%)"):
         display[column] = display[column].apply(lambda v: format_fr_number(v, decimals=0, sign=(column.startswith("Gain"))) if pd.notna(v) else "—")
     display = display.drop(columns=["Disponible", "Détail"])
-    display = display[["Modèle", "Verdict", "MAE", "Gain vs dernière valeur (%)", "Couverture IC 95 % (%)", "RMSE", "Biais", "Précision directionnelle (%)"]]
+    display = display[["Modèle", "Verdict", "MAE", "Gain vs dernière valeur (%)", "Pesées testées", "Horizon max (j)", "Couverture IC 95 % (%)", "Largeur moyenne IC (kg)", "RMSE", "Biais", "Précision directionnelle (%)"]]
     st.dataframe(display, use_container_width=True, hide_index=True)
+    if best is not None:
+        st.caption(
+            f"Portée réelle : {best['Pesées testées']} pesées de test sur {folds} blocs ; "
+            f"horizons de J+{int(best['Horizon min (j)'])} à J+{int(best['Horizon max (j)'])} depuis la dernière pesée d'apprentissage. "
+            "Les pesées d'une même journée restent dans le même bloc."
+        )
     st.caption(
         f"Découpage chronologique en {folds} blocs de mesures, jamais de mélange aléatoire. "
         "Le classement porte sur ces blocs et ne valide pas automatiquement l'horizon choisi ci-dessus. "
         "MAE : erreur absolue moyenne ; biais positif = le modèle surestime le poids ; précision directionnelle : part des variations dont le sens est prédit ; "
         "gain : réduction de la MAE par rapport à la dernière valeur ; couverture : part des pesées réelles tombées dans l'intervalle à 95 % annoncé "
-        "(une couverture nettement sous 95 % signale un intervalle trop étroit)."
+        "(une couverture nettement sous 95 % suggère une sous-estimation de l'incertitude, à interpréter selon l'effectif). "
+        "La largeur moyenne complète la couverture : couvrir davantage avec une bande très large n'est pas une prévision plus précise. "
+        "Si la référence a une erreur nulle, le gain relatif d'un modèle moins bon n'est pas calculable."
         + (" Auto-ARIMA est ignoré en mode rapide." if fast_mode else " Auto-ARIMA est ajouté au classement lorsque son calcul est activé dans l'onglet ci-dessous.")
     )
 
@@ -337,46 +335,37 @@ def _leaderboard_section(df: pd.DataFrame, fast_mode: bool) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+@st.cache_data(show_spinner=False, ttl=3600)
+def _cached_regressors(df: pd.DataFrame, height_m: float) -> pd.DataFrame:
+    return evaluate_regressors(df, height_m)
+
+
 def _model_comparison(df: pd.DataFrame) -> None:
-    st.markdown("**Régression sur variables dérivées (découpage chronologique 80/20)**")
-    if len(df) < 10:
-        st.warning("Données insuffisantes pour comparer les modèles.")
+    st.markdown("**Prévoir la prochaine mesure (découpage chronologique 80/20)**")
+    table = _cached_regressors(df[["Date", "Poids (Kgs)"]], float(st.session_state.get("height_m", 1.82)))
+    if table.empty:
+        st.info(table.attrs.get("reason", "Données insuffisantes pour comparer les modèles."))
         return
-
-    # Une colonne facultative entièrement vide (Notes) ne doit pas vider le jeu :
-    # seules les variables dérivées du poids conditionnent les lignes gardées.
-    feat = build_features(df[["Date", "Poids (Kgs)"]], height_m=st.session_state.get("height_m", 1.82))
-    lag_columns = [c for c in feat.columns if c.startswith("lag_")]
-    feat = feat.dropna(subset=lag_columns)
-    X = feat.drop(columns=["Date", "Poids (Kgs)"], errors="ignore").select_dtypes(include=["number"]).fillna(0.0)
-    y = feat["Poids (Kgs)"]
-
-    split = int(len(X) * 0.8)
-    X_train, X_test, y_train, y_test = X.iloc[:split], X.iloc[split:], y.iloc[:split], y.iloc[split:]
-    if len(X_test) < 2:
-        st.warning("Pas assez de données de test.")
-        return
-
-    models = {
-        "Régression linéaire": LinearRegression(),
-        "Random Forest": RandomForestRegressor(n_estimators=200, random_state=42),
-    }
-    rows = []
-    for name, model in models.items():
-        model.fit(X_train, y_train)
-        pred = model.predict(X_test)
-        rows.append(
-            {
-                "Modèle": name,
-                "MAE": f"{format_fr_number(mean_absolute_error(y_test, pred), decimals=3)} kg",
-                "RMSE": f"{format_fr_number(np.sqrt(mean_squared_error(y_test, pred)), decimals=3)} kg",
-                "R²": format_fr_number(r2_score(y_test, pred), decimals=3),
-            }
-        )
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    details = table.attrs
     st.caption(
-        "ℹ️ Les variables utilisent les pesées précédentes : cette comparaison évalue la prochaine mesure, dont l'espacement peut varier. "
-        "Elle ne valide pas une projection à trente jours. Un R² négatif signifie que le modèle fait moins bien que la moyenne du jeu de test."
+        f"Apprentissage : {details['train_rows']} mesures sur {details['train_days']} jours, jusqu'au {format_fr_date(details['train_end'])}. "
+        f"Test : {details['test_rows']} mesures sur {details['test_days']} jours, du {format_fr_date(details['test_start'])} au {format_fr_date(details['test_end'])}."
+    )
+    display = table.drop(columns=["Disponible", "Détail"]).copy()
+    for column in ("MAE", "RMSE"):
+        display[column] = display[column].map(lambda value: format_fr_kg(value, decimals=3) if pd.notna(value) else "—")
+    display["R²"] = display["R²"].map(lambda value: format_fr_number(value, decimals=3) if pd.notna(value) else "—")
+    display["Gain vs dernière valeur (%)"] = display["Gain vs dernière valeur (%)"].map(
+        lambda value: format_fr_number(value, decimals=1, sign=True) if pd.notna(value) else "—"
+    )
+    st.dataframe(display, use_container_width=True, hide_index=True)
+    for row in table.loc[~table["Disponible"]].itertuples(index=False):
+        st.warning(f"{row[0]} : {row[-1]}")
+    st.caption(
+        "À chaque mesure de test, les pesées antérieures réellement observées sont disponibles, pour les modèles comme pour la référence. "
+        "Les modèles restent ajustés uniquement sur l'apprentissage. Cette comparaison ne valide pas un chemin récursif à trente jours. "
+        "Un R² négatif signifie une erreur quadratique supérieure à celle de la moyenne du test ; il n'est pas défini sur un poids constant. "
+        "Le gain de MAE et le verdict comparent directement à la dernière pesée."
     )
 
 
@@ -402,6 +391,9 @@ def _auto_arima_block(df: pd.DataFrame, horizon: int, target_weight: float) -> N
     try:
         with st.spinner("Recherche du meilleur ARIMA…"):
             out = _cached_auto_arima(df[["Date", "Poids (Kgs)"]].reset_index(drop=True), horizon)
+        if out.empty:
+            st.info("Auto-ARIMA indisponible : au moins 20 mesures quotidiennes consécutives requises.")
+            return
         st.plotly_chart(
             _forecast_figure(df, out, name="Prévision Auto-ARIMA", color="#7c3aed", fill="rgba(124,58,237,0.14)", title=f"Prévision Auto-ARIMA {out.attrs.get('order', '')} avec intervalle à 95 %", target_weight=target_weight),
             use_container_width=True,
@@ -499,7 +491,7 @@ def _scenarios_block(df: pd.DataFrame, target_weight: float) -> None:
     st.caption("Trois rythmes observés (fenêtres 7 / 14 / 30 jours) prolongés sur 90 jours ; guidance, pas certitude.")
     scenarios = prospective_scenarios(df, target_weight)
     if not scenarios:
-        st.info("Scénarios disponibles à partir de 14 mesures.")
+        st.info("Scénarios disponibles après 14 mesures dans la période de suivi actuelle.")
         return
 
     scenario_icons = {"optimiste": "🟢", "réaliste": "🟡", "pessimiste": "🔴"}

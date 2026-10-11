@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from app.core.business import FINAL_TARGET_WEIGHT_KG
-from app.core.time_utils import normalize_datetime_series
+from app.core.time_utils import normalize_calendar_dates
 
 
 @dataclass(frozen=True)
@@ -21,7 +21,7 @@ def _clean_points(dates: Iterable, values: Iterable) -> pd.DataFrame:
     out = pd.DataFrame({"Date": list(dates), "value": list(values)})
     if out.empty:
         return pd.DataFrame(columns=["Date", "value"])
-    out["Date"] = normalize_datetime_series(out["Date"], normalize_day=False)
+    out["Date"] = normalize_calendar_dates(out["Date"], normalize_day=False)
     out["value"] = pd.to_numeric(out["value"], errors="coerce")
     out = out.replace([np.inf, -np.inf], np.nan).dropna(subset=["Date", "value"])
     return out.sort_values("Date", kind="mergesort").reset_index(drop=True)
@@ -70,7 +70,7 @@ def constrain_interval_dataframe(df: pd.DataFrame, *, central_col: str = "previs
         return df.iloc[0:0].copy()
     out = pd.DataFrame({"Date": truncated.dates, central_col: truncated.values})
     source = df.copy()
-    source["Date"] = normalize_datetime_series(source["Date"], normalize_day=False)
+    source["Date"] = normalize_calendar_dates(source["Date"], normalize_day=False)
     for col in [c for c in [lower_col, upper_col] if c in source.columns]:
         s = source[["Date", col]].dropna().sort_values("Date")
         vals = []
