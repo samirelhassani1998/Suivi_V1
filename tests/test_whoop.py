@@ -16,6 +16,7 @@ from app.core.whoop import (
     HttpResponse,
     WhoopCredentials,
     WhoopError,
+    WhoopReauthorizationRequired,
     WhoopToken,
     available_metrics,
     build_authorization_url,
@@ -44,6 +45,23 @@ CREDENTIALS = WhoopCredentials(
 )
 
 NOW = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize("status", [400, 401])
+def test_refresh_invalid_grant_requires_reauthorization_without_echoing_payload(status):
+    transport = FakeTransport([HttpResponse(status, {"error": "invalid_grant", "error_description": "private-value"})])
+    token = WhoopToken("access", "refresh", NOW)
+    with pytest.raises(WhoopReauthorizationRequired, match="reliez votre compte") as exc:
+        refresh_access_token(CREDENTIALS, token, transport=transport, now=NOW)
+    assert "private-value" not in str(exc.value)
+
+
+@pytest.mark.parametrize("status,error", [(429, "rate_limit"), (503, "unavailable"), (401, "invalid_client")])
+def test_temporary_or_client_errors_are_not_misreported_as_revoked_consent(status, error):
+    transport = FakeTransport([HttpResponse(status, {"error": error})])
+    with pytest.raises(WhoopError) as exc:
+        refresh_access_token(CREDENTIALS, WhoopToken("access", "refresh", NOW), transport=transport, now=NOW)
+    assert not isinstance(exc.value, WhoopReauthorizationRequired)
 
 
 class FakeTransport:

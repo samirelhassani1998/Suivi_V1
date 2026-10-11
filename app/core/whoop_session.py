@@ -10,12 +10,13 @@ tout rendu de page, puis consommées par la page Whoop.
 from __future__ import annotations
 
 import os
+from hashlib import sha256
 from typing import Any
 
 import streamlit as st
 from streamlit.errors import NoSessionContext, StreamlitAPIException
 
-from app.core.session_state import store_whoop_sync
+from app.core.session_state import clear_whoop_session, store_whoop_sync
 from app.core.whoop import (
     DEFAULT_REDIRECT_URI,
     WhoopCredentials,
@@ -26,6 +27,7 @@ from app.core.whoop import (
     ensure_fresh_token,
 )
 from app.core.whoop_sync import fetch_whoop_data, sync_window
+from app.core.whoop_token_store import PostgresTokenStore, SavedConnection, TokenStoreError
 
 PENDING_KEY = "whoop_pending_auth"
 RESUME_KEY = "whoop_callback_to_resume"
@@ -164,17 +166,87 @@ def default_redirect_uri() -> str:
 
 
 def resolve_credentials() -> WhoopCredentials:
-    overrides = dict(st.session_state.get("whoop_manual_credentials", {}) or {})
+    secrets = secrets_mapping()
+    persistent = secrets.get("whoop_persistence", {}).get("enabled", False)
+    # A durable connection belongs to the configured application, not to
+    # credentials entered in one tab. Its refresh scope is mandatory.
+    overrides = {} if persistent else dict(st.session_state.get("whoop_manual_credentials", {}) or {})
     return credentials_from_sources(
-        secrets_mapping(),
+        secrets,
         os.environ,
         overrides,
         default_redirect_uri=default_redirect_uri(),
-        scopes=build_scopes(offline=bool(st.session_state.get("whoop_request_offline", True))),
+        scopes=build_scopes(offline=True if persistent else bool(st.session_state.get("whoop_request_offline", True))),
     )
 
 
+def persistence_enabled() -> bool:
+    return bool(secrets_mapping().get("whoop_persistence", {}).get("enabled", False))
+
+
+def _persistent_store() -> PostgresTokenStore | None:
+    secrets = secrets_mapping()
+    config = secrets.get("whoop_persistence", {})
+    if not config.get("enabled", False):
+        return None
+    if config.get("enabled") is not True or config.get("mode") != "personal":
+        raise TokenStoreError("La connexion durable WHOOP nécessite le mode personnel explicite.")
+    auth = secrets.get("auth", {})
+    password = str(auth.get("password") or secrets.get("password") or "")
+    if auth.get("required", True) is not True or not password or st.session_state.get("password_correct") is not True:
+        raise TokenStoreError("Connectez-vous à l’application protégée pour retrouver votre liaison WHOOP.")
+    credentials = resolve_credentials()
+    if not credentials.is_complete:
+        raise TokenStoreError("Configurez les identifiants WHOOP du serveur pour conserver la connexion.")
+    namespace = sha256((str(config.get("namespace", "suivi-personal")) + ":" + credentials.client_id).encode()).hexdigest()
+    return PostgresTokenStore(
+        database_url=str(config.get("database_url", "")),
+        encryption_key=str(config.get("encryption_key", "")),
+        namespace=namespace,
+    )
+
+
+def _connection_error(message: str) -> None:
+    # Never reuse an old per-tab token when the authoritative store is unavailable.
+    clear_whoop_session()
+    st.session_state.pop("whoop_persistence_generation", None)
+    st.session_state.pop("whoop_connection_restored", None)
+    st.session_state["whoop_persistence_error"] = message
+
+
+def _adopt_connection(connection: SavedConnection | None) -> WhoopToken | None:
+    if connection is None:
+        # Reading an empty vault while initiating OAuth must not erase the
+        # nonce in this session. Purge only a previously connected account.
+        if st.session_state.get("whoop_token") or st.session_state.get("whoop_persistence_generation"):
+            clear_whoop_session()
+        st.session_state.pop("whoop_persistence_generation", None)
+        st.session_state.pop("whoop_connection_restored", None)
+        return None
+    if st.session_state.get("whoop_persistence_generation") != connection.generation:
+        clear_whoop_session()
+        st.session_state["whoop_connection_restored"] = True
+    st.session_state["whoop_persistence_generation"] = connection.generation
+    st.session_state["whoop_token"] = connection.token.to_dict()
+    return connection.token
+
+
 def stored_token() -> WhoopToken | None:
+    try:
+        store = _persistent_store()
+        if store is not None:
+            connection = store.read()
+            st.session_state.pop("whoop_persistence_error", None)
+            return _adopt_connection(connection)
+    except TokenStoreError as exc:
+        _connection_error(str(exc))
+        return None
+    if st.session_state.get("whoop_persistence_generation"):
+        # Turning off persistence (especially in demo mode) cannot expose a
+        # previously restored private connection through the legacy fallback.
+        _adopt_connection(None)
+    st.session_state.pop("whoop_persistence_error", None)
+    st.session_state.pop("whoop_link_error", None)
     raw = st.session_state.get("whoop_token")
     if not raw:
         return None
@@ -185,8 +257,63 @@ def stored_token() -> WhoopToken | None:
     return token if token.access_token else None
 
 
-def store_token(token: WhoopToken) -> None:
+def store_token(token: WhoopToken) -> bool:
+    """Save an explicitly authorized connection; never used to persist a refresh."""
+    try:
+        store = _persistent_store()
+        if store is not None:
+            _adopt_connection(store.save_new(token))
+            st.session_state.pop("whoop_persistence_error", None)
+            st.session_state.pop("whoop_link_error", None)
+            return True
+    except TokenStoreError as exc:
+        _connection_error(str(exc))
+        st.session_state["whoop_link_error"] = str(exc)
+        return False
     st.session_state["whoop_token"] = token.to_dict()
+    return True
+
+
+def disconnect_whoop() -> bool:
+    """Remove the stored connection before reporting a successful disconnect."""
+    try:
+        store = _persistent_store()
+        if store is not None:
+            store.delete()
+    except TokenStoreError as exc:
+        _connection_error(str(exc))
+        return False
+    clear_whoop_session()
+    _adopt_connection(None)
+    st.session_state.pop("whoop_persistence_error", None)
+    st.session_state.pop("whoop_link_error", None)
+    return True
+
+
+def render_connection_status() -> None:
+    error = st.session_state.get("whoop_persistence_error") or st.session_state.get("whoop_link_error")
+    if error:
+        st.error(error)
+    elif persistence_enabled():
+        if st.session_state.get("whoop_token"):
+            st.caption("Connexion WHOOP conservée entre vos visites. Le renouvellement est automatique.")
+        else:
+            st.caption("Autorisez WHOOP une première fois pour conserver la connexion entre vos visites.")
+    else:
+        st.caption("Connexion WHOOP limitée à cette session. Le stockage durable peut être activé dans la configuration de l’application.")
+
+
+def sync_restored_connection(credentials: WhoopCredentials) -> None:
+    """One attempt per restored connection, never an automatic retry loop."""
+    if not st.session_state.pop("whoop_connection_restored", False):
+        return
+    generation = st.session_state.get("whoop_persistence_generation")
+    if generation and st.session_state.get("whoop_autosync_attempted_generation") == generation:
+        return
+    st.session_state["whoop_autosync_attempted_generation"] = generation
+    raw = st.session_state.get("whoop_token")
+    if raw:
+        run_whoop_sync(credentials, WhoopToken.from_dict(raw), int(st.session_state.get("whoop_sync_days", 90)))
 
 
 def run_whoop_sync(credentials: WhoopCredentials, token: WhoopToken, days: int) -> bool:
@@ -197,11 +324,34 @@ def run_whoop_sync(credentials: WhoopCredentials, token: WhoopToken, days: int) 
     """
     start, end = sync_window(days)
     try:
-        fresh = ensure_fresh_token(credentials, token)
-        if fresh.access_token != token.access_token:
-            store_token(fresh)
+        store = _persistent_store()
+        connection = None
+        if store is not None:
+            # The database lock covers reading the latest rotating refresh
+            # token, calling WHOOP and committing the replacement pair.
+            connection = store.freshen(lambda latest: ensure_fresh_token(credentials, latest))
+            if connection is None:
+                _adopt_connection(None)
+                st.info("La liaison WHOOP a été retirée. Reliez votre compte pour synchroniser.")
+                return False
+            fresh = _adopt_connection(connection)
+            st.session_state.pop("whoop_connection_restored", None)
+        else:
+            fresh = ensure_fresh_token(credentials, token)
+            # Refresh tokens and expiry can change even if access_token does not.
+            st.session_state["whoop_token"] = fresh.to_dict()
         with st.spinner("Récupération des données WHOOP…"):
             result = fetch_whoop_data(fresh, start=start, end=end)
+        if store is not None:
+            current = store.read()
+            if current is None or current.generation != connection.generation:
+                _adopt_connection(current)
+                st.info("La liaison WHOOP a changé pendant la synchronisation. Les données reçues ont été écartées.")
+                return False
+    except TokenStoreError as exc:
+        _connection_error(str(exc))
+        st.error(str(exc))
+        return False
     except WhoopError as exc:
         st.error(str(exc))
         return False
