@@ -33,7 +33,8 @@ def apply_global_theme() -> None:
             color: var(--suivi-ink);
         }
         .block-container {
-            padding-top: 1.1rem;
+            /* Leave room for Streamlit's fixed 60px toolbar. */
+            padding-top: 4.5rem;
             padding-bottom: 2.5rem;
             max-width: 1240px;
         }

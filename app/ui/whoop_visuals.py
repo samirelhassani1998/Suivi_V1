@@ -534,6 +534,42 @@ def smoothed_baseline_chart(series: pd.DataFrame, metric: str, title: str, unit:
     return _calendar_axis(_base_layout(figure, title, y_title=unit, show_legend=True), series["Date"])
 
 
+def _session_positions(table: pd.DataFrame) -> tuple[pd.Series, float]:
+    """Heures réelles, ou catégories distinctes si deux positions coïncident."""
+    dates = pd.to_datetime(table["Date"], errors="coerce")
+    starts = pd.to_datetime(table["Début"], errors="coerce") if "Début" in table.columns else dates
+    positions = starts.fillna(dates)
+    if positions.duplicated().any():
+        # L'heure absente ou identique ne permet pas de séparer les barres
+        # sur une chronologie. Numéroter les séances plutôt qu'inventer une
+        # heure, ou additionner leurs zones/strains au même emplacement.
+        ordered = pd.DataFrame({"date": dates, "position": positions}).sort_values(
+            ["date", "position"], kind="mergesort"
+        )
+        number = ordered.groupby(ordered["date"].dt.normalize()).cumcount() + 1
+        labels = ordered["date"].dt.strftime("%d/%m/%Y") + " · séance " + number.astype(str)
+        positions = labels.reindex(table.index)
+        positions.attrs["category_order"] = labels.tolist()
+        return positions, 0.7
+    gaps = positions.dropna().drop_duplicates().sort_values().diff().dropna().dt.total_seconds() * 1000
+    max_width = 0.7 * 24 * 3600 * 1000
+    width = min(max_width, float(gaps.min()) * 0.7) if not gaps.empty else max_width
+    return positions, width
+
+
+def _session_axis(figure: go.Figure, positions: pd.Series) -> go.Figure:
+    if "category_order" not in positions.attrs:
+        return _calendar_axis(figure, positions)
+    labels = positions.attrs["category_order"]
+    step = max(1, int(np.ceil(len(labels) / 8)))
+    figure.update_xaxes(
+        type="category", categoryorder="array", categoryarray=labels,
+        tickmode="array", tickvals=labels[::step], ticktext=labels[::step],
+        title_text="Séances distinctes · heures absentes ou identiques", tickangle=-30, automargin=True,
+    )
+    return figure
+
+
 def sessions_timeline_chart(sessions: pd.DataFrame) -> go.Figure | None:
     """Chaque séance à sa date, hauteur = strain de la séance, couleur = sport.
 
@@ -546,27 +582,33 @@ def sessions_timeline_chart(sessions: pd.DataFrame) -> go.Figure | None:
     if usable.empty:
         return None
     figure = go.Figure()
+    positions, width = _session_positions(usable)
     labelled = usable["Sport"].map(sport_label)
     sports = list(dict.fromkeys(labelled))
     for index, sport in enumerate(sports):
         chunk = usable[labelled == sport]
         following = chunk["Récupération du lendemain (%)"] if "Récupération du lendemain (%)" in chunk.columns else pd.Series(np.nan, index=chunk.index)
+        starts = chunk["Début"] if "Début" in chunk.columns else pd.Series(pd.NaT, index=chunk.index)
         hover = [
-            f"{format_long_date(date)}<br>{sport} : strain {strain:.1f}"
+            f"{format_long_date(date)}"
+            + (f" à {pd.Timestamp(start).strftime('%H:%M')}" if pd.notna(start) else "")
+            + f"<br>{sport} : strain {strain:.1f}"
             + (f"<br>Lendemain : {value:.0f} %" if np.isfinite(value) else "<br>Lendemain : non noté")
-            for date, strain, value in zip(chunk["Date"], chunk["Strain séance"], following.fillna(np.nan))
+            for date, start, strain, value in zip(chunk["Date"], starts, chunk["Strain séance"], following.fillna(np.nan))
         ]
         figure.add_bar(
-            x=chunk["Date"],
+            x=positions.loc[chunk.index],
             y=chunk["Strain séance"],
+            width=width,
             name=sport,
             marker=dict(color=SERIES_COLORS[index % len(SERIES_COLORS)], line=dict(width=1, color=SURFACE)),
             customdata=hover,
             hovertemplate="%{customdata}<extra></extra>",
         )
     figure = _base_layout(figure, "Séances dans le temps", y_title="Strain de la séance", show_legend=True)
-    figure.update_layout(barmode="stack", bargap=0.3, hovermode="closest")
-    return _calendar_axis(figure, usable["Date"])
+    figure.update_layout(barmode="group", bargap=0.3, hovermode="closest")
+    figure.update_yaxes(range=[0, 21])
+    return _session_axis(figure, positions)
 
 
 INTENSITY_COLORS: tuple[str, ...] = ("#9ec3ec", "#eda100", "#d03b3b")

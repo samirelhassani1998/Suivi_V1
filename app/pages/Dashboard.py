@@ -22,7 +22,7 @@ from app.core.analytics import (
     weight_volatility,
 )
 from app.core.business import TARGET_TRAJECTORY_TOTAL_DURATION_DAYS, STAGNATION_MIN_MEASUREMENTS
-from app.core.data import data_quality_report
+from app.core.data import data_quality_report, prepare_analysis_data
 from app.core.formatting import format_fr_date, format_fr_kg, format_fr_number, format_fr_unit
 from app.core.insights import detect_plateau
 from app.core.session_state import (
@@ -53,7 +53,7 @@ from app.core.trend import (
     trend_weight,
     weight_for_bmi,
 )
-from app.core.weight_summary import moving_average_by_days, summarize_weight_journey
+from app.core.weight_summary import delta_since_days, moving_average_by_days, summarize_weight_journey
 from app.core.targets import get_target_weights
 from app.ui.charts import (
     MEASURE_COLOR,
@@ -206,10 +206,10 @@ def _trend_context(df: pd.DataFrame) -> dict:
     trend_now = float(frame["Tendance"].iloc[-1]) if not frame.empty else float("nan")
     trend_week_delta = float("nan")
     if not frame.empty:
-        last_date = frame["Date"].iloc[-1]
-        earlier = frame[frame["Date"] <= last_date - pd.Timedelta(days=7)]
-        if not earlier.empty:
-            trend_week_delta = trend_now - float(earlier["Tendance"].iloc[-1])
+        trend_data = frame[["Date", "Tendance"]].rename(columns={"Tendance": "Poids (Kgs)"})
+        recent_delta = delta_since_days(trend_data, 7)
+        if recent_delta.value is not None:
+            trend_week_delta = recent_delta.value
     return {
         "frame": frame,
         "noise": noise,
@@ -271,7 +271,7 @@ def _render_daily_overview(summary: dict, target_weight: float, trajectory_statu
             delta_color="inverse",
             help=(
                 f"Régression locale robuste (LOWESS) sur une fenêtre de {TREND_WINDOW_DAYS} jours : "
-                "elle suit le poids réel sans être tirée par une pesée isolée. Le delta compare à la tendance sept jours plus tôt."
+                "elle réduit l'influence d'une pesée isolée. Le delta compare les points disponibles dans les sept derniers jours."
             ),
         )
     with cols[2]:
@@ -444,7 +444,7 @@ def _render_advanced_kpis(
     with c8:
         confidence_label = prog.get("confidence", "solide")
         conf_icon = "⚠️ " if confidence_label == "fragile" else ""
-        kpi_card("Score global", f"{conf_icon}{prog['score']}/100 ({prog['grade']})", help_text=f"Score composite. {'Signal fragile (< 7 mesures)' if confidence_label == 'fragile' else 'Signal fiable'}")
+        kpi_card("Score global", f"{conf_icon}{prog['score']}/100 ({prog['grade']})", help_text="Score descriptif combinant progression, vitesse et régularité. Ses pondérations sont heuristiques ; ce n'est pas une probabilité de réussite.")
     with c9:
         streak_icon = "🔥" if streaks["current_type"] == "perte" else "📈" if streaks["current_type"] == "gain" else "➡️"
         streak_txt = f"{streak_icon} {streaks['current_streak']} mesures en {streaks['current_type']}"
@@ -465,12 +465,12 @@ def _render_advanced_kpis(
             total = effort_initial_weight - target_weight
             progress = ((effort_initial_weight - current) / total * 100) if total > 0 else 0.0
         else:
-            progress = 100.0
+            progress = 100.0 if current <= target_weight else 0.0
         progress_label = f"Progression effort actuel vers {_format_fr_kg(target_weight)}"
     else:
         initial = df["Poids (Kgs)"].iloc[0]
         total = initial - target_weight
-        progress = ((initial - current) / total * 100) if total > 0 else 0.0
+        progress = ((initial - current) / total * 100) if total > 0 else (100.0 if current <= target_weight else 0.0)
         progress_label = f"Progression vers l'objectif final ({_format_fr_kg(target_weight)})"
 
     progress_panel(
@@ -482,13 +482,17 @@ def _render_advanced_kpis(
 
     v14 = vel.get(14)
     milestone = next_milestone(current, targets, velocity=v14, measurements=effort_measurements)
-    ms_text = f"🎯 **Prochain palier** : {milestone['label']} (reste **{milestone['remaining']:.1f} kg**)"
+    ms_text = ("🎯 **Objectif final atteint** : suivi du maintien."
+               if milestone.get("reached") else
+               f"🎯 **Prochain palier** : {milestone['label']} (reste **{milestone['remaining']:.1f} kg**)")
     if milestone.get("eta_days") is not None:
         conf = milestone.get("eta_confidence", "")
         conf_note = f" (confiance : {conf})" if conf else ""
         ms_text += f" — Date estimée : **~{milestone['eta_days']} jours**{conf_note}"
     elif milestone.get("eta_confidence") == "fragile":
         ms_text += " — Date estimée disponible après 7+ mesures"
+    elif milestone.get("eta_confidence") == "non extrapolée":
+        ms_text += " — Rythme trop élevé pour être extrapolé ; aucune date estimée"
     st.caption(ms_text)
 
     plateau = detect_plateau(analysis_df, window=14)
@@ -877,8 +881,9 @@ def _render_forecast_tab(df: pd.DataFrame, daily_summary: dict, trajectory_statu
         st.warning(history["insight"])
         if history.get("best_effort"):
             best = history["best_effort"]
+            period_label = "Plus forte baisse observée" if best["delta"] >= 0 else "Plus faible hausse observée"
             st.caption(
-                f"💪 Meilleur effort passé : **-{best['delta']:.1f} kg** en {best['days']} jours "
+                f"📊 {period_label} : **{format_fr_kg(-best['delta'], decimals=1, sign=True)}** en {best['days']} jours "
                 f"({best['start_date'].strftime('%d/%m/%Y')} → {best['end_date'].strftime('%d/%m/%Y')}, {best['measurements']} mesures)"
             )
     st.caption("La page Prévisions compare ces projections à des modèles statistiques validés par backtest.")
@@ -963,7 +968,7 @@ def _render_targets_tab(df: pd.DataFrame, targets: tuple[float, ...], target_wei
             status, eta = "✅ atteint", "—"
         elif rate.get("ready") and rate["direction"] == "baisse" and slope_day < 0:
             days = remaining / abs(slope_day)
-            eta = format_fr_date(last_date + pd.Timedelta(days=int(round(days)))) if days <= 3 * 365 else "> 3 ans"
+            eta = format_fr_date(last_date + pd.Timedelta(days=int(np.ceil(days)))) if days <= 3 * 365 else "> 3 ans"
             status = "⏳ en cours"
         else:
             status, eta = "⏳ en cours", "— (pente non établie)"
@@ -1004,7 +1009,9 @@ def _render_targets_tab(df: pd.DataFrame, targets: tuple[float, ...], target_wei
 
 def main() -> None:
     ensure_session_defaults()
-    df = _df()
+    source_df = _df()
+    duplicate_strategy = st.session_state.get("duplicate_strategy", "garder_la_derniere")
+    df = prepare_analysis_data(source_df, duplicate_strategy)
     if df.empty:
         empty_state("Aucune donnée disponible. Utilisez Journal ou import CSV.")
         return
@@ -1018,7 +1025,7 @@ def main() -> None:
     effort_start = effort["start_date"]
     effort_days = effort["days"]
     effort_measurements = effort["measurements"]
-    has_effort_period = effort["is_subset"] and len(effort_df) >= 2
+    has_effort_period = effort["is_subset"]
     is_startup = effort_days < 7
 
     height_m = st.session_state.get("height_m", 1.82)
@@ -1037,6 +1044,8 @@ def main() -> None:
         "Le poids du jour, la tendance débarrassée du bruit quotidien, le rythme réel et l'écart à l'objectif.",
         meta=f"Dernière mesure : {last_date.strftime('%d/%m/%Y')} · {len(df)} mesure(s) · objectif principal {_format_fr_kg(target_weight)}",
     )
+    aggregation_label = {"garder_la_derniere": "dernière mesure", "moyenne_journaliere": "moyenne", "mediane_journaliere": "médiane"}.get(duplicate_strategy, duplicate_strategy)
+    st.caption(f"Calculs : {aggregation_label} par jour · {len(source_df)} ligne(s) source, {len(df)} jour(s) analysé(s). Les mesures du Journal sont conservées.")
 
     if daily_summary.get("valid"):
         _render_daily_overview(daily_summary, target_weight, trajectory_status, context)
@@ -1067,7 +1076,7 @@ def main() -> None:
 
     with tab_analysis:
         summary = generate_action_summary(df, target_weight)
-        section_header("Votre résumé", "Un diagnostic court pour savoir où vous en êtes et quoi regarder ensuite.", "🧭")
+        section_header("Votre résumé", "Une lecture des mesures pour savoir où vous en êtes et quoi regarder ensuite.", "🧭")
         col_s, col_i, col_a = st.columns(3)
         with col_s:
             insight_card("Situation", summary["situation"], tone="info", icon="📍")
@@ -1104,7 +1113,7 @@ def main() -> None:
             if acc["interpretation"] != "données insuffisantes":
                 st.caption(f"📐 Accélération : {acc['interpretation']}")
             if not is_startup:
-                pace = pace_comparison(analysis_df, target_weight)
+                pace = pace_comparison(analysis_df, target_weight, target_date=trajectory_config.end_date)
                 if pace.get("current_pace") is not None:
                     st.caption(f"🏎️ {pace['interpretation']}")
             else:
@@ -1168,7 +1177,7 @@ def _render_weekly_view(df: pd.DataFrame, targets: tuple) -> None:
         nb_mesures=("Poids (Kgs)", "count"),
     ).reset_index()
     weekly = weekly[weekly["nb_mesures"] >= 1]
-    weekly["variation"] = weekly["poids_moyen"].diff()
+    weekly["variation"] = weekly["poids_moyen"].diff().where(weekly["week_start"].diff().dt.days == 7)
 
     if weekly.empty:
         st.info("Pas assez de données hebdomadaires.")

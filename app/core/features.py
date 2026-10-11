@@ -10,6 +10,7 @@ prédictives tant que leur disponibilité avant la prévision n'est pas définie
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 LAGS: tuple[int, ...] = (1, 3, 7, 14, 30)
@@ -19,8 +20,11 @@ WINDOWS: tuple[int, ...] = (7, 14, 30)
 def build_features(df: pd.DataFrame, height_m: float | None = None) -> pd.DataFrame:
     # Une colonne numérique importée peut être la cible elle-même (IMC courant,
     # copie du poids…) : ne jamais l'admettre implicitement dans les modèles.
-    data = df[["Date", "Poids (Kgs)"]].sort_values("Date", kind="mergesort").copy()
-    weight = pd.to_numeric(data["Poids (Kgs)"], errors="coerce")
+    data = df[["Date", "Poids (Kgs)"]].copy()
+    data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
+    data = data.sort_values("Date", kind="mergesort")
+    data["Poids (Kgs)"] = pd.to_numeric(data["Poids (Kgs)"], errors="coerce").replace([np.inf, -np.inf], np.nan)
+    weight = data["Poids (Kgs)"]
     previous = weight.shift(1)
 
     data["jour_semaine"] = data["Date"].dt.weekday
@@ -36,7 +40,7 @@ def build_features(df: pd.DataFrame, height_m: float | None = None) -> pd.DataFr
         data[f"roll_mean_{window}"] = previous.rolling(window, min_periods=1).mean()
         data[f"roll_std_{window}"] = previous.rolling(window, min_periods=2).std().fillna(0)
 
-    if height_m and height_m > 0:
+    if height_m and np.isfinite(height_m) and height_m > 0:
         # IMC de la pesée précédente : le même jour, ce serait la cible divisée par une constante.
         data["imc_precedent"] = previous / (height_m**2)
 

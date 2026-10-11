@@ -14,7 +14,7 @@ from app.core.business import (
     TARGET_TRAJECTORY_TOTAL_DURATION_DAYS,
 )
 from app.core.data import prepare_analysis_data
-from app.core.time_utils import normalize_datetime_series
+from app.core.time_utils import normalize_calendar_dates
 
 DEFAULT_TARGET_TRAJECTORY_START_DATE = TARGET_TRAJECTORY_START_DATE
 DEFAULT_TARGET_TRAJECTORY_END_DATE = TARGET_TRAJECTORY_END_DATE
@@ -71,7 +71,7 @@ def _prepare_weight_data(df: pd.DataFrame, duplicate_strategy: str = "garder_la_
     if df.empty or DATE_COL not in df.columns or WEIGHT_COL not in df.columns:
         return pd.DataFrame(columns=[DATE_COL, WEIGHT_COL])
     data = prepare_analysis_data(df.copy(deep=True), duplicate_strategy)
-    data[DATE_COL] = normalize_datetime_series(data[DATE_COL], dayfirst=True, normalize_day=True)
+    data[DATE_COL] = normalize_calendar_dates(data[DATE_COL], dayfirst=True)
     data[WEIGHT_COL] = pd.to_numeric(data[WEIGHT_COL], errors="coerce")
     return data.dropna(subset=[DATE_COL, WEIGHT_COL]).sort_values(DATE_COL, kind="mergesort").reset_index(drop=True)
 
@@ -103,7 +103,7 @@ def target_weight_on_date(
     final_weight: float | None = None,
 ) -> float | None:
     """Return the fixed scheduled weight for a date, or None outside bounds."""
-    current = normalize_datetime_series([date], dayfirst=True, normalize_day=True).iloc[0]
+    current = normalize_calendar_dates([date], dayfirst=True).iloc[0]
     start = DEFAULT_TARGET_TRAJECTORY_START_DATE
     end = DEFAULT_TARGET_TRAJECTORY_END_DATE
     if pd.isna(current) or current < start or current > end:

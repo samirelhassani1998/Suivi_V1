@@ -1,6 +1,8 @@
 # Suivi V1 — Application Streamlit de suivi de mesures
 
-L’[audit complet du 6 octobre 2026](AUDIT_CURRENT_STATE.md) couvre les sept onglets, les corrections livrées et la feuille de route UI/UX, statistiques et ML/IA. La [fiche des modèles](docs/MODEL_CARD.md) précise les conditions de disponibilité et les limites des prévisions.
+L’[audit du 11 octobre 2026](docs/AUDIT_2026-10-11.md) décrit les corrections de calcul, la conservation des données, les améliorations WHOOP/Boxe et leurs validations. La [fiche des modèles](docs/MODEL_CARD.md) précise les conditions de disponibilité et les limites des prévisions. L'[audit précédent](AUDIT_CURRENT_STATE.md) conserve la feuille de route générale.
+
+Après cette mise à jour, relancez une synchronisation WHOOP pour reconstruire les dates à partir des nuits associées. Les pesées Google Sheets et les modifications du Journal sont conservées séparément des analyses.
 
 ## 1. Présentation
 
@@ -43,6 +45,8 @@ Le journal permet de gérer les données chargées dans la session Streamlit :
 - import CSV local ;
 - export CSV ;
 - conservation des colonnes personnalisées.
+
+Les brouillons restent disponibles lorsque vous changez de page ; vous pouvez les enregistrer ou les annuler. Les données restent en session : exportez le CSV pour les conserver après fermeture. Les trois pages d'analyse appliquent la même règle journalière choisie dans Paramètres, sans supprimer les pesées du Journal.
 
 ### Variations calendaires
 

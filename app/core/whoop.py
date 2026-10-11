@@ -542,6 +542,8 @@ RECOVERY_COLUMNS = ("Date", "Récupération (%)", "HRV (ms)", "FC repos (bpm)", 
 def recoveries_to_frame(
     records: Iterable[Mapping[str, Any]],
     timezone_offsets: Mapping[Any, str] | None = None,
+    *,
+    sleep_dates: Mapping[Any, pd.Timestamp] | None = None,
 ) -> pd.DataFrame:
     """Normalise les récupérations en une ligne par jour.
 
@@ -550,14 +552,19 @@ def recoveries_to_frame(
     créée à 23h30 UTC appartient au lendemain pour un utilisateur en heure d'été
     européenne. Sans cette table, la date reste celle d'UTC.
     """
+    # created_at est la date d'enregistrement, parfois plusieurs jours après
+    # la nuit. Le sleep_id fournit la date du réveil lorsqu'elle est connue.
     offsets = dict(timezone_offsets or {})
+    dates = dict(sleep_dates or {})
     rows = []
     for record in records or []:
         if not _is_scored(record):
             continue
         score = _score(record)
         offset = offsets.get(record.get("cycle_id"))
-        date = _to_local_date(record.get("created_at") or record.get("updated_at"), offset)
+        date = dates.get(record.get("sleep_id"))
+        if date is None or pd.isna(date):
+            date = _to_local_date(record.get("created_at") or record.get("updated_at"), offset)
         if pd.isna(date):
             continue
         rows.append(
@@ -569,11 +576,12 @@ def recoveries_to_frame(
                 "Température peau (°C)": _number(score.get("skin_temp_celsius")),
                 "SpO2 (%)": _number(score.get("spo2_percentage")),
                 "Calibration": bool(score.get("user_calibrating", False)),
+                "_updated_at": pd.to_datetime(record.get("updated_at") or record.get("created_at"), errors="coerce", utc=True),
             }
         )
     if not rows:
         return _empty_frame(RECOVERY_COLUMNS)
-    frame = pd.DataFrame(rows).sort_values("Date", kind="mergesort")
+    frame = pd.DataFrame(rows).sort_values(["Date", "_updated_at"], kind="mergesort", na_position="first")
     # Deux récupérations le même jour rendaient la trame non réindexable, ce qui
     # faisait remonter une ValueError jusqu'à l'affichage de la page entière.
     frame = frame.drop_duplicates(subset=["Date"], keep="last").reset_index(drop=True)
@@ -711,13 +719,42 @@ def sleeps_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
 CYCLE_COLUMNS = ("Date", "Strain", "Calories (kcal)", "FC moyenne (bpm)", "FC max (bpm)", "Cycle en cours")
 
 
-def cycles_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
+def sleep_date_lookups(records: Iterable[Mapping[str, Any]]) -> tuple[dict[Any, pd.Timestamp], dict[Any, pd.Timestamp]]:
+    """Dates locales de réveil par nuit et par cycle, siestes exclues.
+
+    La nuit principale commence le cycle WHOOP : le dater au coucher
+    décale le strain à la veille. On utilise son réveil comme les autres
+    métriques journalières, même si le score de la nuit est encore en attente.
+    """
+    by_sleep: dict[Any, pd.Timestamp] = {}
+    by_cycle: dict[Any, pd.Timestamp] = {}
+    for record in records or []:
+        if record.get("nap", False):
+            continue
+        date = _to_local_date(record.get("end"), record.get("timezone_offset"))
+        if pd.isna(date):
+            continue
+        if record.get("id") is not None:
+            by_sleep[record["id"]] = date
+        if record.get("cycle_id") is not None:
+            by_cycle[record["cycle_id"]] = date
+    return by_sleep, by_cycle
+
+
+def cycles_to_frame(
+    records: Iterable[Mapping[str, Any]],
+    *,
+    cycle_dates: Mapping[Any, pd.Timestamp] | None = None,
+) -> pd.DataFrame:
     rows = []
+    dates = dict(cycle_dates or {})
     for record in records or []:
         if not _is_scored(record):
             continue
         score = _score(record)
-        date = _to_local_date(record.get("start"), record.get("timezone_offset"))
+        date = dates.get(record.get("id"))
+        if date is None or pd.isna(date):
+            date = _to_local_date(record.get("start"), record.get("timezone_offset"))
         if pd.isna(date):
             continue
         kilojoule = _number(score.get("kilojoule"))
@@ -732,11 +769,12 @@ def cycles_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
                 # venue : son strain est provisoire, et le compter comme une
                 # journée complète tire la charge de la semaine vers le bas.
                 "Cycle en cours": record.get("end") in (None, ""),
+                "_updated_at": pd.to_datetime(record.get("updated_at") or record.get("created_at") or record.get("start"), errors="coerce", utc=True),
             }
         )
     if not rows:
         return _empty_frame(CYCLE_COLUMNS)
-    frame = pd.DataFrame(rows).sort_values("Date", kind="mergesort")
+    frame = pd.DataFrame(rows).sort_values(["Date", "_updated_at"], kind="mergesort", na_position="first")
     frame = frame.drop_duplicates(subset=["Date"], keep="last").reset_index(drop=True)
     return frame[list(CYCLE_COLUMNS)]
 
@@ -759,6 +797,7 @@ WORKOUT_COLUMNS = (
     "Date",
     "Début",
     "Sport",
+    "Score WHOOP",
     "Durée (min)",
     "Strain séance",
     "Calories séance (kcal)",
@@ -792,9 +831,10 @@ def _zone_minutes(score: Mapping[str, Any]) -> dict[str, float]:
 def workouts_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     rows = []
     for record in records or []:
-        if not _is_scored(record):
-            continue
-        score = _score(record)
+        # L'absence de score n'efface pas l'existence de la séance : sinon les
+        # analyses la classent comme un jour de repos et zéro calorie de sport.
+        scored = _is_scored(record)
+        score = _score(record) if scored else {}
         date = _to_local_date(record.get("start"), record.get("timezone_offset"))
         if pd.isna(date):
             continue
@@ -815,6 +855,7 @@ def workouts_to_frame(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
                 "Date": date,
                 "Début": local_start,
                 "Sport": str(record.get("sport_name") or "Inconnu"),
+                "Score WHOOP": "Calculé" if scored else "En attente" if record.get("score_state") == "PENDING_SCORE" else "Non disponible",
                 "Durée (min)": duration,
                 "Strain séance": _number(score.get("strain")),
                 "Calories séance (kcal)": kilojoule * KJ_TO_KCAL if np.isfinite(kilojoule) else float("nan"),
@@ -968,10 +1009,22 @@ def mask_in_progress_cycle(frame: pd.DataFrame) -> pd.DataFrame:
     data = frame.copy(deep=True)
     in_progress = data["Cycle en cours"].fillna(False).astype(bool)
     if "Strain" in data.columns:
-        data["Strain provisoire"] = pd.to_numeric(data["Strain"], errors="coerce").where(in_progress)
+        provisional = pd.to_numeric(data["Strain"], errors="coerce")
+        if "Strain provisoire" in data.columns:
+            provisional = provisional.fillna(pd.to_numeric(data["Strain provisoire"], errors="coerce"))
+        data["Strain provisoire"] = provisional.where(in_progress)
     for column in CYCLE_METRICS:
         if column in data.columns:
             data[column] = pd.to_numeric(data[column], errors="coerce").where(~in_progress)
+    return data
+
+
+def mask_calibrating_recovery(frame: pd.DataFrame) -> pd.DataFrame:
+    """Garde les mesures brutes, mais écarte le score encore en calibration."""
+    if frame is None or frame.empty or "Calibration" not in frame.columns or "Récupération (%)" not in frame.columns:
+        return frame
+    data = frame.copy(deep=True)
+    data.loc[data["Calibration"].fillna(False).astype(bool), "Récupération (%)"] = np.nan
     return data
 
 
@@ -980,7 +1033,7 @@ def summarise_daily(frame: pd.DataFrame, days: int = 7) -> dict[str, dict[str, f
     summary: dict[str, dict[str, float]] = {}
     if frame is None or frame.empty:
         return summary
-    data = mask_in_progress_cycle(frame.copy(deep=True))
+    data = mask_calibrating_recovery(mask_in_progress_cycle(frame.copy(deep=True)))
     data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
     data = data.dropna(subset=["Date"]).sort_values("Date", kind="mergesort")
     if data.empty:

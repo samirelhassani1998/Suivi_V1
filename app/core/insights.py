@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest
 
-from app.core.business import FINAL_TARGET_WEIGHT_KG, StagnationConfig
+from app.core.business import FINAL_TARGET_WEIGHT_KG, INTERRUPTION_THRESHOLD_DAYS, StagnationConfig
 from app.core.plateau import evaluate_plateau_window, prepare_plateau_series
 from app.core.trend import MIN_POINTS_TREND, trend_weight
 
@@ -86,118 +88,66 @@ def detect_anomalies_robust(df: pd.DataFrame, use_iforest: bool = False, thresho
 
 
 def estimate_target_eta(df: pd.DataFrame, target_weight: float, effort_df: pd.DataFrame | None = None) -> dict[str, object]:
-    if len(_prepare_time_series(df)) < 7:
-        return {"credible": False, "message": "Données insuffisantes"}
+    """Extrapolations par fenêtre observée, sans probabilité de réussite inventée.
+
+    Les libellés décrivent la durée analysée : une pente de 7 jours n'est pas
+    systématiquement plus optimiste qu'une pente de 90 jours. Aucun historique
+    ancien ne remplace une fenêtre récente trop courte, et aucune vitesse
+    supposée ne remplace une vitesse qui dépasse le garde-fou existant.
+    """
     data = _prepare_time_series(df)
+    if data.empty:
+        return {"credible": False, "message": "Données insuffisantes", "scenarios": {}}
     target_weight = max(float(target_weight), FINAL_TARGET_WEIGHT_KG)
     current = float(data["Poids (Kgs)"].iloc[-1])
-    last_date = data["Date"].max()
-
+    last_date = data["Date"].iloc[-1]
     if current <= target_weight:
-        return {"credible": True, "message": "Objectif déjà atteint !", "eta": last_date,
-                "eta_min": last_date, "eta_max": last_date, "confidence": 1.0, "scenarios": {}}
+        return {"credible": True, "message": "Objectif déjà atteint !", "eta": last_date, "scenarios": {}}
 
-    # Multi-scenario ETA based on different calendar-day windows
-    scenarios = {}
-    for name, window in [("optimiste", 7), ("réaliste", 30), ("pessimiste", 90)]:
-        cutoff = last_date - pd.Timedelta(days=window)
-        subset = data[data["Date"] >= cutoff]
-        if len(subset) < 3:
-            continue
+    # A restart is a new observation period. Earlier slopes cannot describe it.
+    restarts = data.index[data["Date"].diff().dt.days > INTERRUPTION_THRESHOLD_DAYS]
+    if len(restarts):
+        data = data.loc[restarts[-1]:].copy()
+    if len(data) < 7:
+        return {"credible": False, "message": "Au moins 7 mesures dans la période de suivi actuelle sont nécessaires.", "scenarios": {}}
+
+    def estimate_window(subset: pd.DataFrame) -> dict[str, object]:
+        n = len(subset)
+        span = (subset["Date"].max() - subset["Date"].min()).days if n else 0
+        base = {"credible": False, "measurements": n, "span_days": span}
+        if n < 3 or span < 7:
+            return {**base, "message": "Recul insuffisant : au moins 3 mesures réparties sur 7 jours."}
         slope = _slope_kg_per_day(subset)
-        if slope is None:
-            continue
+        if slope is None or not np.isfinite(slope):
+            return {**base, "message": "Pente indisponible."}
+        base["slope"] = round(slope, 4)
         if slope >= -0.005:
-            scenarios[name] = {"slope": round(slope, 4), "credible": False,
-                               "message": "Tendance insuffisante sur cette fenêtre"}
-            continue
-        remaining = current - target_weight
-        days_needed = int(remaining / abs(slope))
-        eta = last_date + pd.Timedelta(days=max(days_needed, 0))
-        scenarios[name] = {
-            "slope": round(slope, 4),
-            "credible": True,
-            "eta": eta,
-            "days_remaining": days_needed,
-            "kg_per_week": round(slope * 7, 3),
-        }
+            return {**base, "message": "La tendance ne va pas clairement vers l'objectif."}
+        if abs(slope * 7) > 2.0:
+            return {**base, "message": "Rythme supérieur au garde-fou de projection (2 kg/sem) : non extrapolé."}
+        days = math.ceil((current - target_weight) / abs(slope))
+        if days > 3 * 365:
+            return {**base, "message": "Échéance au-delà de trois ans : non affichée."}
+        return {**base, "credible": True, "eta": last_date + pd.Timedelta(days=days),
+                "days_remaining": days, "kg_per_week": round(slope * 7, 3),
+                "message": "Extrapolation de la pente observée si elle se maintient ; ce n'est pas une prédiction."}
 
-    # Primary estimate: prefer effort period if available, else 30 calendar days
-    primary_data = None
-    primary_source = "30j"
-    if effort_df is not None and len(_prepare_time_series(effort_df)) >= 3:
-        primary_data = _prepare_time_series(effort_df)
-        primary_source = "effort"
-    else:
-        cutoff_30 = last_date - pd.Timedelta(days=30)
-        recent = data[data["Date"] >= cutoff_30]
-        if len(recent) >= 3:
-            primary_data = recent
-        else:
-            primary_data = data.tail(10)  # fallback
-
-    if primary_data is None or len(primary_data) < 3:
-        return {
-            "credible": False,
-            "message": "Données insuffisantes pour l'estimation primaire.",
-            "scenarios": scenarios,
-        }
-
-    slope = _slope_kg_per_day(primary_data)
-    if slope is None:
-        return {"credible": False, "message": "Durée insuffisante pour calculer une projection.", "scenarios": scenarios}
-
-    # Garde-fou 1 : tendance insuffisante
-    if slope >= -0.005:
-        return {
-            "credible": False,
-            "message": f"La tendance ({primary_source}) est de {slope*7:+.3f} kg/sem — insuffisante pour une estimation fiable.",
-            "slope_30d": round(slope, 4),
-            "scenarios": scenarios,
-        }
-
-    # Garde-fou 2 : si < 7 mesures dans l'effort, signal trop fragile
-    if effort_df is not None and len(_prepare_time_series(effort_df)) < 7:
-        return {
-            "credible": False,
-            "message": f"Phase de démarrage ({len(_prepare_time_series(effort_df))} mesures) — l'ETA sera fiable à partir de 7 mesures.",
-            "slope_30d": round(slope, 4),
-            "source": primary_source,
-            "scenarios": scenarios,
-        }
-
-    # Garde-fou 3 : si pente > 2 kg/sem, c'est du bruit (perte hydrique)
-    kg_per_week = abs(slope * 7)
-    if kg_per_week > 2.0:
-        # Plafonner à 0.75 kg/sem pour un ETA réaliste
-        capped_slope = -0.75 / 7
-        remaining = current - target_weight
-        days = int(remaining / abs(capped_slope))
-        eta = last_date + pd.Timedelta(days=max(days, 0))
-        return {
-            "credible": True,
-            "eta": eta,
-            "eta_min": eta - pd.Timedelta(days=30),
-            "eta_max": eta + pd.Timedelta(days=60),
-            "confidence": 0.3,
-            "message": f"Vitesse actuelle ({kg_per_week:.1f} kg/sem) probablement temporaire. ETA basé sur un rythme réaliste de 0.75 kg/sem.",
-            "slope_30d": round(slope, 4),
-            "source": primary_source,
-            "scenarios": scenarios,
-        }
-
-    remaining = current - target_weight
-    days = int(remaining / abs(slope))
-    eta = last_date + pd.Timedelta(days=max(days, 0))
-    return {
-        "credible": True,
-        "eta": eta,
-        "eta_min": eta - pd.Timedelta(days=14),
-        "eta_max": eta + pd.Timedelta(days=21),
-        "confidence": 0.6,
-        "slope_30d": round(slope, 4),
-        "source": primary_source,
-        "scenarios": scenarios,
+    scenarios = {
+        f"{window} jours": estimate_window(data[data["Date"] >= last_date - pd.Timedelta(days=window)])
+        for window in (7, 30, 90)
     }
+    primary_source = "30j"
+    recent = data[data["Date"] >= last_date - pd.Timedelta(days=30)]
+    if effort_df is not None:
+        effort = _prepare_time_series(effort_df)
+        effort = effort[(effort["Date"] >= data["Date"].iloc[0]) & (effort["Date"] <= last_date)]
+        if len(effort) < 7:
+            return {"credible": False, "message": "Phase de démarrage : au moins 7 mesures dans l'effort sont nécessaires.", "scenarios": scenarios}
+        # Use the same recent horizon and last observation as the main series.
+        recent = effort[effort["Date"] >= last_date - pd.Timedelta(days=30)]
+        if recent.empty or recent["Date"].iloc[-1] != last_date:
+            return {"credible": False, "message": "La période d'effort ne contient pas la dernière mesure.", "scenarios": scenarios}
+        primary_source = "effort (30j max)"
 
-
+    primary = estimate_window(recent)
+    return {**primary, "slope_30d": primary.get("slope"), "source": primary_source, "scenarios": scenarios}

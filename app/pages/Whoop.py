@@ -988,7 +988,7 @@ def _recovery_tab(daily: pd.DataFrame) -> None:
             "le score et ne l'explique pas — il dit ce que vous avez fait de cette récupération."
             + (
                 f" {_n(calibrating, 'journée')} en calibration WHOOP sur la période : ces premiers scores "
-                "sont provisoires, le bracelet apprend encore votre repère."
+                "sont provisoires et exclus des analyses de récupération ; le bracelet apprend encore votre repère."
                 if calibrating
                 else ""
             )
@@ -1307,7 +1307,7 @@ def _sessions_panel(daily: pd.DataFrame, workouts: pd.DataFrame) -> None:
         return
     section_header(
         "Répartition de l'intensité",
-        "Part du temps en zones faciles, modérées et dures, sport par sport, additionnée sur toutes les séances de la période.",
+        "Part du temps en zones faciles, modérées et dures, sport par sport, sur les séances dont les six zones sont renseignées.",
         "🎚️",
     )
     _render_chart(intensity_profile_chart(profile), "whoop-intensity")
@@ -1412,6 +1412,8 @@ def _effort_tab(daily: pd.DataFrame, workouts: pd.DataFrame) -> None:
             "repos et l'activité ordinaire portent l'essentiel de la dépense. Le savoir évite "
             "d'attendre d'une séance qu'elle compense un écart alimentaire."
         )
+        if share["excluded_days"]:
+            st.caption(f"{_n(share['excluded_days'], 'jour')} exclu(s) du ratio : les calories d'au moins une séance sont manquantes.")
 
     balance = strain_recovery_balance(daily)
     if not balance.empty:
@@ -1847,6 +1849,8 @@ def main() -> None:
         return
 
     _sync_panel(credentials, token)
+    for warning in st.session_state.get("whoop_sync_warnings", []):
+        st.warning(warning)
 
     full_daily = st.session_state.get("whoop_daily", pd.DataFrame())
     full_workouts = st.session_state.get("whoop_workouts", pd.DataFrame())

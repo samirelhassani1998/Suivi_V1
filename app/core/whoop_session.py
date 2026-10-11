@@ -210,5 +210,8 @@ def run_whoop_sync(credentials: WhoopCredentials, token: WhoopToken, days: int) 
         return False
 
     store_whoop_sync(result)
-    st.success(result.summary())
+    # Les exclusions restent affichées par les pages, même après un rerun.
+    # Ne pas annoncer une synchronisation pleinement complète en vert.
+    if not result.warnings:
+        st.success(result.summary())
     return True

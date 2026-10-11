@@ -262,7 +262,7 @@ def _overview_tab(context: dict[str, Any]) -> None:
     guidance = context["guidance"]
     table = context["table"]
 
-    section_header("Repère du jour", "Ce que votre récupération de ce matin autorise, lu selon les zones WHOOP.", "🧭")
+    section_header("Repère du jour", "Votre récupération de ce matin, à croiser avec le ressenti et la séance prévue.", "🧭")
     insight_card(guidance["title"], guidance["body"], tone=guidance["tone"], icon="🥊")
     st.caption(
         "Repère tiré des zones de récupération WHOOP (vert : prêt pour un effort soutenu, jaune : effort modéré, "
@@ -321,6 +321,7 @@ def _sessions_tab(context: dict[str, Any]) -> None:
         {
             "Date": display["Date"],
             "Début": [pd.Timestamp(value).strftime("%H:%M") if pd.notna(value) else MISSING_TEXT for value in display["Début"]],
+            "Score WHOOP": display["Score WHOOP"],
             "Durée (min)": display["Durée (min)"],
             "Strain séance": display["Strain séance"],
             "Intensité (% FCR)": display["Intensité (% FCR)"],
@@ -339,6 +340,8 @@ def _sessions_tab(context: dict[str, Any]) -> None:
     for column in ("Intensité (% FCR)", "Zones 4–5 (min)", "TRIMP", "Sommeil suivant (heures)"):
         if not view[column].notna().any():
             view = view.drop(columns=[column])
+    if view["Score WHOOP"].isin(["Calculé", "—"]).all():
+        view = view.drop(columns=["Score WHOOP"])
     st.dataframe(format_table(view.head(DATED_ROWS), default_decimals=SESSION_DECIMALS), use_container_width=True, hide_index=True)
     if len(view) > DATED_ROWS:
         with st.expander(f"Voir toutes les séances ({len(view)})", expanded=False):
@@ -665,6 +668,8 @@ def main() -> None:
     full_workouts = st.session_state.get("whoop_workouts", pd.DataFrame())
     has_data = not (full_daily is None or full_daily.empty) or not (full_workouts is None or full_workouts.empty)
     _sync_controls(token, expanded=not has_data)
+    for warning in st.session_state.get("whoop_sync_warnings", []):
+        st.warning(warning)
     if not has_data:
         empty_state("Lancez une synchronisation pour importer vos séances de boxe.")
         return

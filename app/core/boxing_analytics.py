@@ -77,6 +77,7 @@ SESSION_COLUMNS: tuple[str, ...] = (
     "Début",
     "Fin",
     "Sport",
+    "Score WHOOP",
     "Durée (min)",
     "Strain séance",
     "Calories séance (kcal)",
@@ -253,6 +254,7 @@ def session_table(
     table = pd.DataFrame({"Date": data["Date"]})
     table["Début"] = pd.to_datetime(data["Début"], errors="coerce") if "Début" in data.columns else pd.NaT
     table["Sport"] = data["Sport"].map(sport_label) if "Sport" in data.columns else BOXING_LABEL
+    table["Score WHOOP"] = data["Score WHOOP"] if "Score WHOOP" in data.columns else "—"
     duration = _numeric(data, "Durée (min)")
     table["Durée (min)"] = duration
     table["Fin"] = table["Début"] + pd.to_timedelta(duration, unit="m")
@@ -279,8 +281,8 @@ def session_table(
     zones = pd.DataFrame({column: _numeric(data, column) for column in HR_ZONE_COLUMNS})
     for column in HR_ZONE_COLUMNS:
         table[column] = zones[column]
-    zone_total = zones.sum(axis=1, min_count=1)
-    hard = zones[["Zone 4 (min)", "Zone 5 (min)"]].sum(axis=1, min_count=1)
+    zone_total = zones.sum(axis=1, min_count=len(HR_ZONE_COLUMNS))
+    hard = zones[["Zone 4 (min)", "Zone 5 (min)"]].sum(axis=1, min_count=2)
     # Une séance sans zones reste vide : zéro minute en zone haute est une
     # information, l'absence de mesure n'en est pas une.
     table["Zones 4–5 (min)"] = hard
@@ -374,7 +376,9 @@ def boxing_summary(table: pd.DataFrame | None, *, window_days: int, today: Any =
 
     def _sum(column: str) -> float:
         values = _clean_values(table[column]) if column in table.columns else np.array([])
-        return float(values.sum()) if values.size else float("nan")
+        # Un total concerne toutes les séances de la période. Une valeur
+        # absente ne peut pas être remplacée implicitement par zéro.
+        return float(values.sum()) if values.size == len(table) else float("nan")
 
     last = pd.Timestamp(unique_days.iloc[-1])
     rests = unique_days.diff().dt.days.dropna() - 1
@@ -422,13 +426,15 @@ def weekly_sessions(table: pd.DataFrame | None, *, start: Any, end: Any) -> pd.D
         frame["Séances"] = 0
         return frame[columns]
     data = table.copy()
+    data["Date"] = pd.to_datetime(data["Date"], errors="coerce").dt.normalize()
+    data = data[data["Date"].between(first, last)]
     data["Semaine"] = pd.to_datetime(data["Date"]).dt.normalize() - pd.to_timedelta(pd.to_datetime(data["Date"]).dt.dayofweek, unit="D")
     grouped = data.groupby("Semaine").agg(
         Séances=("Date", "size"),
         **{
-            "Durée totale (min)": ("Durée (min)", lambda values: values.sum(min_count=1)),
-            "TRIMP": ("TRIMP", lambda values: float(values.sum(min_count=1)) if values.notna().any() else np.nan),
-            "Calories (kcal)": ("Calories séance (kcal)", lambda values: values.sum(min_count=1)),
+            "Durée totale (min)": ("Durée (min)", lambda values: values.sum(min_count=len(values))),
+            "TRIMP": ("TRIMP", lambda values: values.sum(min_count=len(values))),
+            "Calories (kcal)": ("Calories séance (kcal)", lambda values: values.sum(min_count=len(values))),
             "Strain moyen": ("Strain séance", "mean"),
         },
     )
@@ -1041,7 +1047,7 @@ def boxing_energy(
     window = max(1, int(window_days))
     calories = pd.to_numeric(table["Calories séance (kcal)"], errors="coerce")
     duration = pd.to_numeric(table["Durée (min)"], errors="coerce")
-    if not calories.notna().any():
+    if not (np.isfinite(calories) & (calories >= 0)).all():
         return result
     weeks = window / 7.0
     result["gross_weekly"] = float(calories.sum()) / weeks
@@ -1091,16 +1097,12 @@ def todays_guidance(
     *,
     today: Any = None,
 ) -> dict[str, Any]:
-    """Quelle séance la récupération du jour autorise, d'après les zones WHOOP.
-
-    WHOOP associe la zone verte à un organisme prêt pour un effort soutenu, la
-    jaune à un effort modéré, la rouge à un besoin de repos. Ce repère traduit
-    ces zones en séance de boxe ; ce n'est pas une prescription.
-    """
+    """Repère de récupération du jour, sans autorisation de contact ou d'intensité."""
     day = _today(today)
     grid = daily_grid(daily)
     recovery = _lookup(grid, "Récupération (%)").get(day, float("nan"))
     zone = zone_of(recovery)
+    calibrating = bool(grid.loc[grid["Date"].eq(day), "Calibration"].fillna(False).any()) if "Calibration" in grid.columns else False
     dates = sorted(set(pd.to_datetime(table["Date"]).dt.normalize())) if table is not None and not table.empty else []
     boxed_today = bool(dates) and dates[-1] == day
     previous = [date for date in dates if date < day]
@@ -1110,8 +1112,12 @@ def todays_guidance(
 
     if boxed_today:
         title = "Séance du jour enregistrée"
-        body = "Le score de demain matin dira ce qu'elle vous a coûté : c'est le premier moment où elle devient mesurable."
+        body = "Comparez demain la récupération et votre ressenti : le score reflète aussi le sommeil, le stress et vos autres activités."
         tone = "success"
+    elif calibrating:
+        title = "Récupération en calibration"
+        body = "Pendant la calibration, WHOOP apprend votre niveau habituel. Ce score provisoire ne permet pas de guider l'intensité de la séance."
+        tone = "info"
     elif zone is None:
         title = "Score du jour pas encore disponible"
         body = "Synchronisez après votre réveil : le repère s'appuie sur la récupération calculée ce matin."
@@ -1127,19 +1133,23 @@ def todays_guidance(
     elif zone == "Jaune":
         title = "Journée jaune : une séance modérée"
         body = (
-            f"Récupération à {_fr(recovery)} %. Technique, pattes d'ours ou sac à intensité contrôlée ; les "
-            "rounds les plus durs trouvent mieux leur place un jour vert."
+            f"Récupération à {_fr(recovery)} %. Adaptez la durée et l'intensité prévues à votre ressenti "
+            "et aux consignes de votre entraîneur."
         )
         tone = "info"
     else:
-        title = "Feu vert pour une séance intense"
-        body = f"Récupération à {_fr(recovery)} %. Sparring, rounds au sac ou travail de puissance : c'est le jour."
+        title = "Récupération dans le vert"
+        body = (
+            f"Récupération à {_fr(recovery)} %. Ce score situe votre état physiologique par rapport à votre niveau habituel. "
+            "Il ne mesure pas les conséquences des impacts et ne décide pas de l'aptitude au sparring ; "
+            "le contenu de la séance dépend aussi de votre ressenti et de votre entraîneur."
+        )
         tone = "success"
         if status == "montée en charge brutale" and np.isfinite(ratio):
-            title = "Feu vert, mais volume à surveiller"
+            title = "Récupération verte, charge en hausse"
             body += (
                 f" Votre charge boxe des 7 derniers jours atteint toutefois {_fr(ratio, 1)} fois votre semaine "
-                "habituelle : l'intensité, oui ; un volume maîtrisé, aussi."
+                "habituelle : prenez aussi cette hausse en compte dans la séance prévue."
             )
             tone = "info"
     if not boxed_today and days_since is not None and days_since >= INACTIVITY_DAYS:

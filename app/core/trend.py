@@ -20,6 +20,7 @@ le cas échéant, la raison pour laquelle il n'est pas disponible.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Sequence
 
 import numpy as np
@@ -27,6 +28,7 @@ import pandas as pd
 from scipy import stats
 from statsmodels.nonparametric.smoothers_lowess import lowess
 
+from app.core.business import INTERRUPTION_THRESHOLD_DAYS
 from app.core.weight_summary import moving_average_by_days, prepare_weight_series
 
 DATE_COL = "Date"
@@ -62,6 +64,14 @@ def _t_quantile(dof: int) -> float:
     return float(stats.t.ppf(0.5 + CONFIDENCE_LEVEL / 2.0, max(1, dof)))
 
 
+def _latest_tracking_period(frame: pd.DataFrame) -> pd.DataFrame:
+    """A previous period cannot establish the current period's signal quality."""
+    if frame.empty:
+        return frame
+    restarts = frame.index[frame[DATE_COL].diff().dt.days > INTERRUPTION_THRESHOLD_DAYS]
+    return frame.loc[restarts[-1]:] if len(restarts) else frame
+
+
 def trend_weight(df: pd.DataFrame, window_days: int = TREND_WINDOW_DAYS) -> pd.DataFrame:
     """Série de poids dédoublonnée par jour, avec sa tendance robuste et le résidu.
 
@@ -74,6 +84,15 @@ def trend_weight(df: pd.DataFrame, window_days: int = TREND_WINDOW_DAYS) -> pd.D
     data = prepare_weight_series(df)
     if data.empty:
         return pd.DataFrame(columns=[DATE_COL, WEIGHT_COL, TREND_COL, RESIDUAL_COL])
+
+    blocks = (data[DATE_COL].diff().dt.days > INTERRUPTION_THRESHOLD_DAYS).cumsum()
+    if blocks.max() > 0:
+        # Fit each observed period independently instead of smoothing across
+        # several unobserved weeks. The history still contains every period.
+        return pd.concat(
+            [trend_weight(block, window_days) for _, block in data.groupby(blocks)],
+            ignore_index=True,
+        )
 
     y = data[WEIGHT_COL].to_numpy(dtype=float)
     n = len(data)
@@ -105,6 +124,8 @@ def noise_level(df: pd.DataFrame, window_days: int = TREND_WINDOW_DAYS) -> dict[
     ``band`` est une fluctuation ordinaire, pas un changement.
     """
     frame = trend_weight(df, window_days)
+    if not frame.empty:
+        frame = _latest_tracking_period(frame)
     residuals = frame[RESIDUAL_COL].dropna().to_numpy(dtype=float) if not frame.empty else np.array([])
     result = {"ready": False, "n": int(len(residuals)), "sigma": float("nan"), "band": float("nan")}
     if len(residuals) < MIN_POINTS_TREND:
@@ -167,7 +188,7 @@ def rate_of_change(df: pd.DataFrame, window_days: int = RATE_WINDOW_DAYS) -> dic
     historique ``stable`` signifie que la direction n'est pas établie par ce
     test, pas qu'une équivalence à une pente nulle est démontrée.
     """
-    data = prepare_weight_series(df)
+    data = _latest_tracking_period(prepare_weight_series(df))
     result: dict[str, Any] = {
         "ready": False,
         "reason": None,
@@ -395,17 +416,17 @@ def eta_to_target(
     if days > max_days:
         result["reason"] = "échéance au-delà de trois ans"
         return result
-    result.update({"ready": True, "days": int(round(days)), "eta": last_date + pd.Timedelta(days=int(round(days)))})
+    result.update({"ready": True, "days": math.ceil(days), "eta": last_date + pd.Timedelta(days=math.ceil(days))})
 
     fast_day = rate["ci_low"] / 7.0
     slow_day = rate["ci_high"] / 7.0
     if fast_day < 0:
         early = remaining / abs(fast_day)
-        result["eta_early"] = last_date + pd.Timedelta(days=int(round(early)))
+        result["eta_early"] = last_date + pd.Timedelta(days=math.ceil(early))
     if slow_day < 0:
         late = remaining / abs(slow_day)
         if late <= max_days:
-            result["eta_late"] = last_date + pd.Timedelta(days=int(round(late)))
+            result["eta_late"] = last_date + pd.Timedelta(days=math.ceil(late))
     return result
 
 

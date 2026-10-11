@@ -22,6 +22,12 @@ from app.core.date_labels import (
 REFERENCE = pd.Timestamp("2026-09-11")
 
 
+@pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")])
+@pytest.mark.parametrize("formatter", [format_duration_minutes, format_clock_hour])
+def test_nonfinite_time_metrics_are_missing_instead_of_crashing(value, formatter):
+    assert formatter(value) == MISSING_LABEL
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [

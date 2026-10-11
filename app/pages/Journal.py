@@ -7,9 +7,9 @@ import pandas as pd
 import streamlit as st
 
 from app.core.data import validate_journal
-from app.core.data_editing import has_unsaved_changes
+from app.core.data_editing import apply_editor_changes, has_unsaved_changes
 from app.core.formatting import format_fr_date, format_fr_kg
-from app.core.session_state import get_working_data, set_working_data
+from app.core.session_state import discard_journal_draft, get_working_data, set_working_data
 from app.ui.components import alert_banner, empty_state, kpi_card, page_hero, section_header
 
 
@@ -33,6 +33,26 @@ def _format_dates_for_display(df: pd.DataFrame) -> pd.DataFrame:
 
 def _dataframes_equal(left: pd.DataFrame, right: pd.DataFrame) -> bool:
     return not has_unsaved_changes(left, right)
+
+
+def _capture_editor_draft(key: str) -> None:
+    # Callbacks run before the sidebar: replacement controls must see edits
+    # immediately, not only on the next script run.
+    draft = apply_editor_changes(st.session_state["journal_editor_base"], st.session_state.get(key, {}))
+    st.session_state["journal_draft"] = draft
+    st.session_state["journal_has_unsaved_changes"] = has_unsaved_changes(draft, get_working_data())
+
+
+def _editor_input(saved: pd.DataFrame) -> tuple[pd.DataFrame, str]:
+    revision = st.session_state.get("journal_editor_revision", 0)
+    key = f"journal_editor_{revision}"
+    if "journal_editor_base" not in st.session_state:
+        st.session_state["journal_editor_base"] = saved.copy(deep=True)
+    elif key not in st.session_state and "journal_draft" in st.session_state:
+        # Streamlit deletes a widget when its page is no longer rendered.
+        # Recreate it from a separate draft, including invalid/unfinished rows.
+        st.session_state["journal_editor_base"] = st.session_state["journal_draft"].copy(deep=True)
+    return st.session_state["journal_editor_base"].copy(deep=True), key
 
 
 def _column_config(df: pd.DataFrame) -> dict:
@@ -115,6 +135,9 @@ def _status_strip(df: pd.DataFrame) -> None:
 
 def main() -> None:
     df = _ensure_df()
+    message = st.session_state.pop("journal_notice", None)
+    if message:
+        st.success(message)
     page_hero(
         "Données",
         "Journal",
@@ -147,13 +170,17 @@ def main() -> None:
                 preview = df[(df["Date"] >= start) & (df["Date"] <= end)]
                 st.dataframe(_format_dates_for_display(preview.tail(20)), use_container_width=True, hide_index=True)
 
+    editor_base, editor_key = _editor_input(df)
     edited = st.data_editor(
-        df,
+        editor_base,
         num_rows="dynamic",
         use_container_width=True,
-        key=f"journal_editor_{st.session_state.get('journal_editor_revision', 0)}",
-        column_config=_column_config(df),
+        key=editor_key,
+        column_config=_column_config(editor_base),
+        on_change=_capture_editor_draft,
+        args=(editor_key,),
     )
+    st.session_state["journal_draft"] = edited.copy(deep=True)
     report = validate_journal(edited)
     st.session_state["journal_has_unsaved_changes"] = not _dataframes_equal(edited, get_working_data())
 
@@ -169,7 +196,12 @@ def main() -> None:
                 st.error("Impossible d'enregistrer tant que les erreurs bloquantes persistent.")
             else:
                 set_working_data(report.cleaned)
-                st.success("Modifications enregistrées dans la session.")
+                st.session_state["journal_notice"] = "Modifications enregistrées dans la session."
+                st.rerun()
+        if st.button("Annuler les modifications de l’éditeur", disabled=not st.session_state["journal_has_unsaved_changes"]):
+            discard_journal_draft()
+            st.session_state["journal_notice"] = "Brouillon annulé. Les données enregistrées sont conservées."
+            st.rerun()
     with c2:
         if not _dataframes_equal(edited, get_working_data()):
             st.warning(
@@ -182,6 +214,7 @@ def main() -> None:
             file_name="journal_poids.csv",
             mime="text/csv",
         )
+    st.caption("Le brouillon est conservé lorsque vous changez de page. Les données restent dans cette session : exportez le CSV pour les conserver après sa fermeture.")
 
     section_header("Dernières lignes", "Contrôle rapide après édition ou import, de la plus récente à la plus ancienne.", "👀")
     recent = edited.copy()

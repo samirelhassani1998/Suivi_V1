@@ -36,6 +36,8 @@ from app.ui.whoop_visuals import (
     _add_bands,
     _base_layout,
     _calendar_axis,
+    _session_positions,
+    _session_axis,
 )
 
 NO_ZONE_COLOR = "#b5b4ad"
@@ -91,16 +93,17 @@ def boxing_sessions_chart(table: pd.DataFrame | None) -> go.Figure | None:
         return None
     figure = go.Figure()
     _add_bands(figure, STRAIN_BANDS)
+    positions, width = _session_positions(usable)
     zones = usable["Zone du matin"].fillna("—") if "Zone du matin" in usable.columns else pd.Series("—", index=usable.index)
     for zone, label in ZONE_ORDER:
         chunk = usable[zones == zone]
         if chunk.empty:
             continue
         figure.add_bar(
-            x=chunk["Date"],
+            x=positions.loc[chunk.index],
             y=chunk["Strain séance"],
             name=label,
-            width=DAY_BAR_WIDTH_MS,
+            width=width,
             marker=dict(color=ZONE_COLORS.get(zone, NO_ZONE_COLOR), line=dict(width=2, color=SURFACE)),
             customdata=[_session_hover(row) for _, row in chunk.iterrows()],
             hovertemplate="%{customdata}<extra></extra>",
@@ -108,7 +111,7 @@ def boxing_sessions_chart(table: pd.DataFrame | None) -> go.Figure | None:
     figure = _base_layout(figure, "Séances de boxe, colorées selon la récupération du matin", y_title="Strain de la séance", show_legend=len(figure.data) > 1)
     figure.update_layout(barmode="overlay", bargap=0.35, hovermode="closest")
     figure.update_yaxes(range=[0, 21])
-    return _calendar_axis(figure, usable["Date"])
+    return _session_axis(figure, positions)
 
 
 def weekly_frequency_chart(weekly: pd.DataFrame | None) -> go.Figure | None:
@@ -293,12 +296,14 @@ def session_intensity_chart(table: pd.DataFrame | None) -> go.Figure | None:
     if usable.empty:
         return None
     figure = go.Figure()
-    labels = [format_long_date(date) for date in usable["Date"]]
+    positions, width = _session_positions(usable)
+    labels = [_session_hover(row) for _, row in usable.iterrows()]
     for index, (band, members) in enumerate(INTENSITY_BANDS):
-        minutes = usable[list(members)].apply(pd.to_numeric, errors="coerce").sum(axis=1, min_count=1)
+        minutes = usable[list(members)].apply(pd.to_numeric, errors="coerce").sum(axis=1, min_count=len(members))
         figure.add_bar(
-            x=usable["Date"],
+            x=positions,
             y=minutes,
+            width=width,
             name=band,
             marker=dict(color=INTENSITY_COLORS[index % len(INTENSITY_COLORS)], line=dict(width=2, color=SURFACE)),
             customdata=labels,
@@ -306,7 +311,7 @@ def session_intensity_chart(table: pd.DataFrame | None) -> go.Figure | None:
         )
     figure = _base_layout(figure, "Intensité de chaque séance", y_title="Minutes", show_legend=True)
     figure.update_layout(barmode="stack", bargap=0.35, hovermode="closest")
-    return _calendar_axis(figure, usable["Date"])
+    return _session_axis(figure, positions)
 
 
 def progression_chart(table: pd.DataFrame | None, metric: str) -> go.Figure | None:
