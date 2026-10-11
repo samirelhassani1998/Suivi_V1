@@ -92,7 +92,6 @@ from app.ui.whoop_visuals import (
 )
 from app.core.session_state import (
     DEFAULT_WHOOP_SYNC_DAYS,
-    clear_whoop_session,
     ensure_session_defaults,
     get_filtered_or_working_data,
 )
@@ -101,13 +100,17 @@ from app.core.whoop_session import (
     RESUME_KEY,
     clear_oauth_params,
     clear_pending_callback,
+    disconnect_whoop,
     default_redirect_uri,
     pending_callback,
+    persistence_enabled,
     redirect_uri_candidates,
     resolve_credentials,
+    render_connection_status,
     run_whoop_sync,
     store_token,
     stored_token,
+    sync_restored_connection,
 )
 from app.core.whoop import (
     SLEEP_COLUMNS,
@@ -234,7 +237,8 @@ def _consume_oauth_callback(credentials) -> None:
         st.error("Connexion WHOOP impossible : réponse inattendue du service.")
         return
 
-    _store_token(token)
+    if not _store_token(token):
+        return
     st.session_state.pop(RESUME_KEY, None)
     st.session_state["whoop_oauth_state"] = None
     st.success("Compte WHOOP connecté.")
@@ -333,6 +337,53 @@ def _connection_panel(credentials) -> None:
     if _render_callback_resume(credentials):
         return
 
+    if persistence_enabled():
+        if not credentials.is_complete:
+            st.info("Configurez les identifiants WHOOP dans les secrets du serveur pour lier votre compte durablement.")
+    else:
+        _manual_credentials_panel(credentials)
+
+    credentials = _resolve_credentials()
+    if not credentials.is_complete:
+        st.info(
+            "Client ID, Client Secret et Redirect URI sont nécessaires pour lancer l'autorisation WHOOP."
+        )
+        return
+    if st.session_state.get("whoop_persistence_error"):
+        return
+
+    if st.session_state.get("whoop_oauth_state") is None:
+        st.session_state["whoop_oauth_state"] = generate_state()
+
+    try:
+        auth_url = build_authorization_url(credentials, str(st.session_state["whoop_oauth_state"]))
+    except WhoopError as exc:
+        st.error(str(exc))
+        return
+
+    cols = st.columns([2, 1])
+    with cols[0]:
+        st.link_button("Autoriser l'accès WHOOP", auth_url, use_container_width=True)
+    with cols[1]:
+        if st.button("Réinitialiser la connexion", use_container_width=True):
+            if disconnect_whoop():
+                st.rerun()
+            render_connection_status()
+
+    with st.expander("Terminer une autorisation ouverte dans un autre onglet", expanded=False):
+        st.caption("Collez ici l'URL proposée par l'onglet de retour WHOOP. Elle sera vérifiée puis effacée de ce champ.")
+        with st.form("whoop_callback_form"):
+            st.text_input("URL de retour WHOOP", type="password", key="whoop_callback_url")
+            st.form_submit_button("Terminer la connexion", on_click=_resume_oauth_callback, args=(credentials,))
+
+    with st.expander("La redirection est refusée par WHOOP ?", expanded=False):
+        _render_redirect_uri_help(credentials)
+        if not persistence_enabled():
+            st.divider()
+            _scope_controls()
+
+
+def _manual_credentials_panel(credentials) -> None:
     with st.expander("Identifiants de l'application WHOOP", expanded=not credentials.is_complete):
         st.caption(
             "Renseignez de préférence ces valeurs dans les secrets Streamlit "
@@ -356,41 +407,6 @@ def _connection_panel(credentials) -> None:
                     "redirect_uri": redirect_uri.strip(),
                 }
                 st.success("Identifiants enregistrés pour cette session.")
-
-    credentials = _resolve_credentials()
-    if not credentials.is_complete:
-        st.info(
-            "Client ID, Client Secret et Redirect URI sont nécessaires pour lancer l'autorisation WHOOP."
-        )
-        return
-
-    if st.session_state.get("whoop_oauth_state") is None:
-        st.session_state["whoop_oauth_state"] = generate_state()
-
-    try:
-        auth_url = build_authorization_url(credentials, str(st.session_state["whoop_oauth_state"]))
-    except WhoopError as exc:
-        st.error(str(exc))
-        return
-
-    cols = st.columns([2, 1])
-    with cols[0]:
-        st.link_button("Autoriser l'accès WHOOP", auth_url, use_container_width=True)
-    with cols[1]:
-        if st.button("Réinitialiser la connexion", use_container_width=True):
-            clear_whoop_session()
-            st.info("Session WHOOP réinitialisée.")
-
-    with st.expander("Terminer une autorisation ouverte dans un autre onglet", expanded=False):
-        st.caption("Collez ici l'URL proposée par l'onglet de retour WHOOP. Elle sera vérifiée puis effacée de ce champ.")
-        with st.form("whoop_callback_form"):
-            st.text_input("URL de retour WHOOP", type="password", key="whoop_callback_url")
-            st.form_submit_button("Terminer la connexion", on_click=_resume_oauth_callback, args=(credentials,))
-
-    with st.expander("La redirection est refusée par WHOOP ?", expanded=False):
-        _render_redirect_uri_help(credentials)
-        st.divider()
-        _scope_controls()
 
 
 def _sync_panel(credentials, token: WhoopToken) -> None:
@@ -427,9 +443,12 @@ def _sync_controls(credentials, token: WhoopToken) -> None:
     st.session_state["whoop_sync_days"] = int(days)
 
     if st.button("Déconnecter WHOOP"):
-        clear_whoop_session()
-        st.info("Compte WHOOP déconnecté.")
+        if disconnect_whoop():
+            st.rerun()
+        render_connection_status()
         return
+    if persistence_enabled():
+        st.caption("Déconnecter supprime la liaison enregistrée pour cette application. Vous pourrez aussi révoquer son accès depuis WHOOP.")
 
     if not launch:
         return
@@ -1842,13 +1861,20 @@ def main() -> None:
     _consume_oauth_callback(credentials)
 
     token = _stored_token()
+    render_connection_status()
     if token is None:
         _connection_panel(credentials)
         st.divider()
         st.caption("Aucun compte WHOOP connecté : les autres onglets restent pleinement fonctionnels.")
         return
 
+    sync_restored_connection(credentials)
+    # A failed restore/sync must not leave account data visible on this run.
+    if not st.session_state.get("whoop_token"):
+        return
     _sync_panel(credentials, token)
+    if not st.session_state.get("whoop_token"):
+        return
     for warning in st.session_state.get("whoop_sync_warnings", []):
         st.warning(warning)
 

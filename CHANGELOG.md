@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-11 — Connexion WHOOP persistante, option personnelle
+
+- Coffre PostgreSQL externe optionnel pour les jetons OAuth chiffrés avec Fernet ; activation explicite en mode `personal`, avec application protégée par mot de passe et identifiants WHOOP côté serveur.
+- Connexion retrouvée par les sessions authentifiées dans `Whoop` et `Boxe`, avec une tentative de synchronisation à la restauration. Les données physiologiques restent en session.
+- Renouvellement des jetons sous verrou transactionnel pour coordonner les onglets ; accès refusé si le coffre est indisponible, sans réutiliser un jeton local obsolète ni supprimer la liaison sur erreur temporaire.
+- Déconnexion supprimant la liaison partagée et purge des autres sessions à leur prochaine relecture du coffre ; révocation de l'autorisation WHOOP distincte.
+- [Guide d'activation](docs/WHOOP_PERSISTENCE.md) et migration SQL pour une base existante. Aucun service n'est provisionné automatiquement. Ce mode à mot de passe commun n'isole pas plusieurs utilisateurs, et une nouvelle autorisation peut rester nécessaire après révocation ou interruption d'un renouvellement.
+
 ## 2026-10-11 — Calculs fiables, brouillons et rapprochements WHOOP
 
 - Dates civiles, semaines ISO, fenêtres de suivi et doublons cohérents dans les analyses ; suppression des projections fondées sur des périodes obsolètes ou des taux supposés.

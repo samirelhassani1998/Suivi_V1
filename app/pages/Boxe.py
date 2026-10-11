@@ -54,7 +54,10 @@ from app.core.formatting import MISSING_VALUE as MISSING_TEXT, format_fr_number
 from app.core.session_state import DEFAULT_WHOOP_SYNC_DAYS, ensure_session_defaults, get_filtered_or_working_data
 from app.core.target_trajectory import required_daily_loss
 from app.core.whoop_analytics import KCAL_PER_KG, filter_period, plural
-from app.core.whoop_session import resolve_credentials, run_whoop_sync, stored_token
+from app.core.whoop_session import (
+    render_connection_status, resolve_credentials, run_whoop_sync,
+    stored_token, sync_restored_connection,
+)
 from app.ui.boxing_visuals import (
     boxing_sessions_chart,
     habits_heatmap,
@@ -660,14 +663,25 @@ def main() -> None:
     )
 
     token = stored_token()
+    render_connection_status()
     if token is None:
         _not_connected()
         return
 
+    sync_restored_connection(resolve_credentials())
+    if not st.session_state.get("whoop_token"):
+        return
     full_daily = st.session_state.get("whoop_daily", pd.DataFrame())
     full_workouts = st.session_state.get("whoop_workouts", pd.DataFrame())
     has_data = not (full_daily is None or full_daily.empty) or not (full_workouts is None or full_workouts.empty)
     _sync_controls(token, expanded=not has_data)
+    if not st.session_state.get("whoop_token"):
+        return
+    # A connection change during synchronization can purge the session while
+    # these local frames still refer to the old account.
+    full_daily = st.session_state.get("whoop_daily", pd.DataFrame())
+    full_workouts = st.session_state.get("whoop_workouts", pd.DataFrame())
+    has_data = not (full_daily is None or full_daily.empty) or not (full_workouts is None or full_workouts.empty)
     for warning in st.session_state.get("whoop_sync_warnings", []):
         st.warning(warning)
     if not has_data:

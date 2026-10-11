@@ -96,6 +96,10 @@ class WhoopError(RuntimeError):
     """Erreur fonctionnelle remontée à l'UI sans exposer de secret."""
 
 
+class WhoopReauthorizationRequired(WhoopError):
+    """WHOOP explicitly rejected the refresh grant; temporary errors differ."""
+
+
 @dataclass(frozen=True)
 class HttpResponse:
     """Réponse HTTP minimale, indépendante de la librairie utilisée."""
@@ -319,6 +323,11 @@ def _token_from_payload(payload: Mapping[str, Any], *, now: datetime | None = No
 def _post_token(data: Mapping[str, Any], transport: Transport, *, now: datetime | None = None, fallback_refresh: str | None = None) -> WhoopToken:
     response = transport("POST", TOKEN_URL, data=dict(data), headers={"Content-Type": "application/x-www-form-urlencoded"})
     if not response.ok:
+        if (data.get("grant_type") == "refresh_token" and response.status_code in (400, 401)
+                and isinstance(response.payload, Mapping) and response.payload.get("error") == "invalid_grant"):
+            raise WhoopReauthorizationRequired(
+                "WHOOP ne reconnaît plus cette autorisation. Déconnectez la liaison puis reliez votre compte dans l’onglet Whoop."
+            )
         raise WhoopError(f"Échec d'authentification WHOOP (HTTP {response.status_code}).")
     if not isinstance(response.payload, Mapping):
         raise WhoopError("Réponse d'authentification WHOOP illisible.")

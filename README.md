@@ -120,7 +120,7 @@ Les données peuvent être chargées depuis une source CSV distante configurée 
 
 ### Authentification optionnelle
 
-Une protection par mot de passe peut être activée via les secrets Streamlit. Lorsqu'elle est désactivée, l'application démarre sans étape d'authentification.
+Une protection par mot de passe peut être activée via les secrets Streamlit. Lorsqu'elle est désactivée, l'application démarre sans étape d'authentification. Le mode optionnel de connexion WHOOP persistante exige cette protection et une session authentifiée.
 
 ### Intégration WHOOP
 
@@ -159,7 +159,7 @@ Garde-fous statistiques : les corrélations sont corrigées pour tests multiples
 
 Chaque analyse annonce son effectif minimal et affiche le nombre de jours restants tant qu'il n'est pas atteint : sur un historique trop court, une corrélation ou une pente reflète le bruit de mesure plutôt qu'une tendance. Les graphiques laissent visibles les jours sans mesure au lieu de les relier par une droite, et les tableaux sont mis en forme (décimales maîtrisées, dates courtes, valeurs manquantes explicites).
 
-Les données WHOOP vivent uniquement dans la session Streamlit : elles ne sont jamais écrites dans la source de poids, ni dans `working_data`. Sans compte connecté, l'onglet affiche l'écran de connexion et le reste de l'application fonctionne à l'identique.
+Les données physiologiques WHOOP vivent uniquement dans la session Streamlit : elles ne sont jamais écrites dans la source de poids, ni dans `working_data`. Les jetons OAuth peuvent, en option, être conservés chiffrés dans une base PostgreSQL externe pour retrouver la connexion entre les visites ([activation du mode personnel](docs/WHOOP_PERSISTENCE.md)). Sans compte connecté, l'onglet affiche l'écran de connexion et le reste de l'application fonctionne à l'identique.
 
 ### Onglet Boxe
 
@@ -205,7 +205,8 @@ Suivi_V1/
 │   │   ├── whoop.py
 │   │   ├── whoop_analytics.py
 │   │   ├── whoop_session.py
-│   │   └── whoop_sync.py
+│   │   ├── whoop_sync.py
+│   │   └── whoop_token_store.py
 │   ├── pages/
 │   │   ├── Boxe.py
 │   │   ├── Dashboard.py
@@ -262,6 +263,7 @@ Suivi_V1/
 - `app/core/whoop.py` : client WHOOP (OAuth 2.0, pagination API v2), normalisation des enregistrements en DataFrames, agrégat journalier et croisement avec le poids. Le transport HTTP est injectable, ce qui rend le module testable sans réseau.
 - `app/core/whoop_analytics.py` : analyses croisées WHOOP × poids : grille calendaire continue, zones de récupération, charge aigüe/chronique, dette de sommeil, bilan énergétique, corrélations décalées, synthèses hebdomadaire et par jour de semaine. Chaque fonction refuse de conclure sous son effectif minimal.
 - `app/core/whoop_session.py` : glue Streamlit du flux OAuth : détection de l'URL publique de l'application, capture du retour de redirection sur n'importe quelle page et bascule vers l'onglet Whoop ; identifiants, jeton et synchronisation partagés par les onglets Whoop et Boxe.
+- `app/core/whoop_token_store.py` : coffre OAuth PostgreSQL optionnel, chiffrement Fernet et verrou transactionnel du renouvellement partagé entre sessions.
 - `app/core/whoop_sync.py` : import d'une période WHOOP (cycles, récupérations, nuits, séances, profil et mesures corporelles dont la FC maximale), sans dépendance à Streamlit et à transport HTTP injectable.
 - `app/core/boxing_analytics.py` : analyses de l'onglet Boxe : sélection des séances, intensité en réserve cardiaque, TRIMP, coût du lendemain, profil de récupération, effet de la récupération du matin, séances tardives et sommeil, balance du lendemain, charge, progression, part de la boxe dans le déficit visé, repère du jour et constats. Chaque comparaison est testée et corrigée pour le nombre de mesures.
 - `app/pages/` : pages visibles de l'application : Dashboard, Journal, Prévisions, Insights, Whoop, Boxe et Paramètres.
@@ -362,20 +364,26 @@ Le template `.streamlit/secrets.example.toml` peut servir de point de départ. L
 
 1. Créer une application sur le tableau de bord développeur WHOOP et relever le `client_id` et le `client_secret`.
 2. Déclarer côté WHOOP, dans le champ *Redirect URLs*, l'URL exacte de l'application (par exemple `https://votre-app.streamlit.app/` en ligne, ou `http://localhost:8501` en local). **WHOOP compare caractère pour caractère** : une barre oblique finale en trop ou en moins suffit à provoquer l'erreur `invalid_request` avec le message *« The "redirect_uri" parameter does not match any of the OAuth 2.0 Client's pre-registered redirect urls »*. L'onglet affiche l'URL qu'il détecte et celle qu'il envoie, à recopier telle quelle dans le tableau de bord WHOOP.
-3. Renseigner le bloc `[whoop]` dans les secrets Streamlit. Trois autres sources sont acceptées, par ordre de priorité décroissante : saisie manuelle dans l'onglet (valable le temps de la session), clés à plat `whoop_client_id` / `whoop_client_secret` / `whoop_redirect_uri`, variables d'environnement `WHOOP_CLIENT_ID` / `WHOOP_CLIENT_SECRET` / `WHOOP_REDIRECT_URI`.
+3. Renseigner le bloc `[whoop]` dans les secrets Streamlit. L'ordre de priorité complet est : saisie manuelle dans l'onglet (valable le temps de la session), bloc `[whoop]`, clés à plat `whoop_client_id` / `whoop_client_secret` / `whoop_redirect_uri`, puis variables d'environnement `WHOOP_CLIENT_ID` / `WHOOP_CLIENT_SECRET` / `WHOOP_REDIRECT_URI`. En mode persistant, la saisie manuelle est ignorée : les identifiants viennent du serveur.
 4. Ouvrir l'onglet `Whoop`, cliquer sur « Autoriser l'accès WHOOP », accepter côté WHOOP, puis lancer une synchronisation.
 
-Les scopes demandés sont en lecture seule : `read:profile`, `read:body_measurement`, `read:cycles`, `read:recovery`, `read:sleep`, `read:workout`, plus `offline` qui permet de renouveler le jeton sans redemander l'autorisation. Le jeton d'accès est conservé en session et rafraîchi automatiquement à l'approche de son expiration.
+Les scopes demandés sont en lecture seule : `read:profile`, `read:body_measurement`, `read:cycles`, `read:recovery`, `read:sleep`, `read:workout`, plus `offline` qui permet de renouveler le jeton sans redemander l'autorisation. Par défaut, les jetons restent en session. Le renouvellement intervient automatiquement lors d'une synchronisation si le jeton approche de son expiration.
 
 Points d'attention :
 
 - la redirection peut pointer vers la racine de l'application : le code d'autorisation est alors capté par le point d'entrée, avant la porte d'authentification et avant tout rendu de page, puis l'onglet Whoop est activé automatiquement. Les trois formes gérées sont la racine avec barre oblique finale, sans barre oblique, et le chemin `/Whoop` ;
-- le scope `offline` peut être retiré depuis l'onglet si l'application WHOOP ne l'autorise pas : la connexion fonctionne alors sans renouvellement automatique du jeton ;
+- en mode session, le scope `offline` peut être retiré depuis l'onglet si l'application WHOOP ne l'autorise pas : la connexion fonctionne alors sans renouvellement automatique du jeton. En mode persistant, ce scope est obligatoire ;
 - l'API WHOOP plafonne la pagination à 25 éléments par page ; le client suit les pages via `nextToken` jusqu'à épuisement ;
 - une nuit de sommeil est rattachée au jour du réveil, ce qui la rend comparable à la pesée du matin ;
 - les siestes ne remplacent pas la nuit principale : la plus longue période de sommeil du jour est conservée ;
 - les dépenses énergétiques renvoyées en kilojoules sont converties en kilocalories ;
 - les corrélations affichées sont des associations linéaires sur de courtes séries : elles n'établissent aucune causalité.
+
+### Connexion WHOOP persistante : option personnelle
+
+Pour retrouver WHOOP dans `Whoop` et `Boxe` après fermeture du navigateur ou redémarrage de Streamlit, activer le coffre PostgreSQL externe en suivant [le guide de configuration](docs/WHOOP_PERSISTENCE.md). Il détaille la migration SQL, le rôle de base dédié, la clé Fernet, les secrets Streamlit et la vérification dans deux onglets. Aucun backend n'est créé automatiquement ; cette option reste désactivée tant que la base et les secrets ne sont pas configurés.
+
+Le mode `personal` exige la protection de l'application par mot de passe. Toute personne connaissant ce mot de passe partage la même liaison WHOOP : ce mécanisme ne convient pas à une application multiutilisateur. Seuls les jetons sont persistés, les données physiologiques restant en session. Une restauration tente une synchronisation ; les erreurs temporaires ne suppriment pas la liaison. La déconnexion la retire du coffre, mais la révocation de l'autorisation doit se faire chez WHOOP.
 
 ### Configuration applicative
 
